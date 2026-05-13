@@ -28,6 +28,18 @@ public sealed class CostManagementService : ICostManagementService
     private const int MaxRetries = 4;
     private static readonly TimeSpan DefaultRetryDelay = TimeSpan.FromSeconds(60);
 
+    // ── Azure Cost Management API hard limits ─────────────────────────────────
+    // Source: learn.microsoft.com/azure/cost-management-billing/costs/manage-automation
+    //  • /query endpoint: 5 requests per minute per subscription  (429 + Retry-After)
+    //  • Daily granularity: max 365 days per request              (400 if exceeded)
+    //  • Monthly granularity: max 12 months per request           (400 if exceeded)
+    //  • Response payload: ~84,000 records max; overflow via nextLink pagination
+    private const int MaxQueryDays     = 365;
+    private const int RowCapWarning    = 70_000; // warn when > 70 k of 84 k cap
+    // Minimum gap between successive requests to the same subscription.
+    // 5 req/min = one per 12 s; we use 13 s to give a comfortable margin.
+    private static readonly TimeSpan MinRequestInterval = TimeSpan.FromSeconds(13);
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true
@@ -37,6 +49,12 @@ public sealed class CostManagementService : ICostManagementService
     private const string KeyMain = "cm_main";
     private const string KeyRg   = "cm_rg";
     private const string KeyTag  = "cm_tag";
+
+    // ── per-subscription rate-limit gate ────────────────────────────────────
+    // Tracks the last time a real API request was dispatched for each sub.
+    // Checked before each ExecuteAsync call to enforce MinRequestInterval.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>
+        _lastRequestTime = new();
 
     private readonly IHttpClientFactory _httpFactory;
     private readonly IMemoryCache _cache;
@@ -58,9 +76,10 @@ public sealed class CostManagementService : ICostManagementService
         _logger       = logger;
     }
 
-    // ── date range for queries: Jan 1st of prior year → today ───────────────
+    // ── date range for queries: rolling 365 days → today ───────────────────
+    // Daily granularity is hard-capped at 365 days by the API (returns 400 otherwise).
     private static DateOnly QueryStart =>
-        DateOnly.FromDateTime(new DateTime(DateTime.UtcNow.Year - 1, 1, 1));
+        DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-(MaxQueryDays - 1)));
     private static DateOnly QueryEnd =>
         DateOnly.FromDateTime(DateTime.UtcNow);
 
@@ -142,9 +161,14 @@ public sealed class CostManagementService : ICostManagementService
 
         string? nextLink = null;
         bool    isFirst  = true;
+        int     page     = 0;
 
         do
         {
+            // Enforce MinRequestInterval between successive calls to this subscription
+            // to stay comfortably inside the 5-req/min per-subscription rate limit.
+            await ThrottleAsync(subscriptionId, ct);
+
             var (rows, next) = isFirst
                 ? await ExecuteAsync(postUrl, body, isGet: false, subscriptionId, type, ct)
                 : await ExecuteAsync(nextLink!, body: null, isGet: true, subscriptionId, type, ct);
@@ -152,10 +176,40 @@ public sealed class CostManagementService : ICostManagementService
             allRows.AddRange(rows);
             nextLink = next;
             isFirst  = false;
+            page++;
+
+            if (allRows.Count >= RowCapWarning)
+                _logger.LogWarning(
+                    "Subscription {SubId} ({Type}) has returned {Count} rows after {Pages} page(s), " +
+                    "approaching the API's ~84,000-record cap. Consider narrowing the date range.",
+                    subscriptionId, type, allRows.Count, page);
 
         } while (!string.IsNullOrEmpty(nextLink));
 
         return allRows;
+    }
+
+    /// <summary>
+    /// Sleeps until at least <see cref="MinRequestInterval"/> has elapsed since the
+    /// last request for <paramref name="subscriptionId"/>, then records the new timestamp.
+    /// This keeps us inside the 5-requests-per-minute per-subscription quota.
+    /// </summary>
+    private async Task ThrottleAsync(string subscriptionId, CancellationToken ct)
+    {
+        var now  = DateTime.UtcNow;
+        var last = _lastRequestTime.GetOrAdd(subscriptionId, DateTime.MinValue);
+        var gap  = now - last;
+
+        if (gap < MinRequestInterval)
+        {
+            var wait = MinRequestInterval - gap;
+            _logger.LogDebug(
+                "Rate-limit pacing: waiting {Ms}ms before next request for {SubId}.",
+                (int)wait.TotalMilliseconds, subscriptionId);
+            await Task.Delay(wait, ct);
+        }
+
+        _lastRequestTime[subscriptionId] = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -200,6 +254,27 @@ public sealed class CostManagementService : ICostManagementService
                     continue;
                 }
 
+                // 400 Bad Request = malformed query body – retrying won't help, log and throw immediately.
+                if ((int)response.StatusCode == 400)
+                {
+                    var errorBody = await response.Content.ReadAsStringAsync(ct);
+                    _logger.LogError(
+                        "API returned 400 Bad Request for subscription {SubId} ({Type}).\nURL: {Url}\nResponse body: {Body}",
+                        subscriptionId, type, url, errorBody);
+                    throw new InvalidOperationException(
+                        $"Cost Management API rejected the query (400 Bad Request) for subscription {subscriptionId}. " +
+                        $"See logs for the full API error. Body: {errorBody}");
+                }
+
+                // Any other non-success status – log body and let EnsureSuccessStatusCode throw.
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorBody = await response.Content.ReadAsStringAsync(ct);
+                    _logger.LogError(
+                        "API returned {Status} for subscription {SubId} ({Type}). Response body: {Body}",
+                        (int)response.StatusCode, subscriptionId, type, errorBody);
+                }
+
                 response.EnsureSuccessStatusCode();
 
                 var apiResponse = await response.Content
@@ -210,6 +285,11 @@ public sealed class CostManagementService : ICostManagementService
 
                 var rows = ParseRows(apiResponse.Properties, subscriptionId, type);
                 return (rows, apiResponse.Properties.NextLink);
+            }
+            catch (InvalidOperationException)
+            {
+                // InvalidOperationException is thrown above for 400 Bad Request – do not retry.
+                throw;
             }
             catch (Exception ex) when (attempt < MaxRetries - 1 && !ct.IsCancellationRequested)
             {
