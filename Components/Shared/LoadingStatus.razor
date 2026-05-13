@@ -1,0 +1,133 @@
+@rendermode InteractiveServer
+@implements IDisposable
+@inject DataLoadingStateService LoadingState
+
+@if (_visible)
+{
+    <MudPaper Elevation="2" Class="pa-3 mb-4"
+              Style="border-left: 4px solid var(--mud-palette-primary);">
+
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Wrap="Wrap.Wrap">
+
+            @* ── Status icon + headline ─────────────────────────────────── *@
+            @if (LoadingState.IsLoading)
+            {
+                <MudProgressCircular Indeterminate="true"
+                                     Size="Size.Small"
+                                     Color="Color.Primary" />
+                <MudText Typo="Typo.body2">
+                    <strong>Loading Azure cost data</strong> – please wait…
+                </MudText>
+            }
+            else if (LoadingState.IsAllDone)
+            {
+                <MudIcon Icon="@Icons.Material.Filled.CheckCircle"
+                         Color="Color.Success" Size="Size.Small" />
+                <MudText Typo="Typo.body2"><strong>All datasets ready.</strong></MudText>
+            }
+            else
+            {
+                <MudProgressCircular Indeterminate="true"
+                                     Size="Size.Small"
+                                     Color="Color.Warning" />
+                <MudText Typo="Typo.body2"><strong>Preparing…</strong></MudText>
+            }
+
+            <MudSpacer />
+
+            @* ── Per-dataset status chips ───────────────────────────────── *@
+            @foreach (var ds in LoadingState.All)
+            {
+                <MudChip T="string"
+                         Color="@ChipColor(ds.Phase)"
+                         Size="Size.Small"
+                         Variant="Variant.Outlined">
+                    @ChipIcon(ds.Phase)&nbsp;@ds.Label
+                    @if (ds.Detail is not null)
+                    {
+                        <text>&nbsp;(@ds.Detail)</text>
+                    }
+                </MudChip>
+            }
+
+            @* ── Dismiss button (only when all done) ───────────────────── *@
+            @if (LoadingState.IsAllDone)
+            {
+                <MudIconButton Icon="@Icons.Material.Filled.Close"
+                               Size="Size.Small"
+                               OnClick="@(() => _visible = false)"
+                               aria-label="Dismiss" />
+            }
+
+        </MudStack>
+
+        @* ── Progress bar ──────────────────────────────────────────────── *@
+        @if (!LoadingState.IsAllDone)
+        {
+            <MudProgressLinear Value="@((double)LoadingState.DoneCount * 100 / 3)"
+                               Color="Color.Primary"
+                               Rounded="true"
+                               Class="mt-2" />
+        }
+
+    </MudPaper>
+}
+
+@code {
+    private bool _visible;
+    private bool _autoDismissPending;
+    private readonly CancellationTokenSource _cts = new();
+
+    protected override void OnInitialized()
+    {
+        // Only show the banner when there is something to report (warmup not yet complete).
+        _visible = !LoadingState.IsAllDone;
+        LoadingState.OnChanged += HandleStateChange;
+    }
+
+    private void HandleStateChange()
+    {
+        // OnChanged is raised from a background thread; marshal to the circuit thread.
+        InvokeAsync(async () =>
+        {
+            StateHasChanged();
+
+            if (LoadingState.IsAllDone && !_autoDismissPending)
+            {
+                _autoDismissPending = true;
+                try
+                {
+                    // Auto-dismiss 5 seconds after all datasets report Ready/Failed.
+                    await Task.Delay(5_000, _cts.Token);
+                    _visible = false;
+                    StateHasChanged();
+                }
+                catch (OperationCanceledException) { /* component disposed */ }
+            }
+        });
+    }
+
+    public void Dispose()
+    {
+        LoadingState.OnChanged -= HandleStateChange;
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+
+    private static Color ChipColor(LoadPhase p) => p switch
+    {
+        LoadPhase.Loading => Color.Warning,
+        LoadPhase.Ready   => Color.Success,
+        LoadPhase.Failed  => Color.Error,
+        _                 => Color.Default
+    };
+
+    // Returns a small Unicode symbol used inline inside the chip text.
+    private static string ChipIcon(LoadPhase p) => p switch
+    {
+        LoadPhase.Loading => "⟳",
+        LoadPhase.Ready   => "✓",
+        LoadPhase.Failed  => "✗",
+        _                 => "·"
+    };
+}

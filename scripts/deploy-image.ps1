@@ -1,0 +1,293 @@
+<#
+.SYNOPSIS
+    Build, push, and redeploy the CmCSP container image to Azure Container Apps.
+
+.DESCRIPTION
+    Uses `dotnet publish /t:PublishContainer` — no Dockerfile or Docker daemon required.
+    The .NET SDK builds a container image and pushes it directly to ACR in one step.
+
+    1. Determines a tag (<yyyyMMdd>-<git-short-sha> by default).
+    2. Authenticates against ACR via az acr login (feeds the .NET SDK's credential store).
+    3. dotnet publish /t:PublishContainer  → builds the app AND pushes the image to ACR.
+    4. Resolves the exact sha256 digest of the image that was just pushed.
+    5. Updates the Container App with the digest-pinned image reference so ACA always
+       pulls the new image even if the tag name did not change.
+    6. Polls until the new revision becomes active, then prints the live app URL.
+
+.EXAMPLE
+    # Standard deployment from repo root
+    .\scripts\deploy-image.ps1 -AcrName cmcspacrXXXXXX -AppName cmcsp -AppRg rg-cmcsp-app
+
+    # Skip build (image already pushed to ACR by CI)
+    .\scripts\deploy-image.ps1 -AcrName cmcspacrXXXXXX -AppName cmcsp -AppRg rg-cmcsp-app -SkipBuild -Tag "20260513-abc1234"
+
+    # Override tag (e.g. CI-assigned version string)
+    .\scripts\deploy-image.ps1 -AcrName cmcspacrXXXXXX -AppName cmcsp -AppRg rg-cmcsp-app -Tag "1.2.3"
+
+.NOTES
+    Requirements:
+      - .NET 10 SDK  (dotnet --version)
+      - az CLI logged in  (az login)
+      - No Dockerfile or Docker daemon required
+#>
+
+[CmdletBinding()]
+param (
+    [Parameter(Mandatory)][string]$AcrName,
+    [Parameter(Mandatory)][string]$AppName,
+    [Parameter(Mandatory)][string]$AppRg,
+
+    # Override the image tag. Defaults to <yyyyMMdd>-<git-short-sha>
+    [string]$Tag = '',
+
+    # Image repository name inside ACR (defaults to AppName lowercased)
+    [string]$Repository = '',
+
+    # Path to the .csproj. Defaults to auto-detection from repo root.
+    [string]$ProjectPath = '',
+
+    # Skip build+push (image already in ACR); requires -Tag
+    [switch]$SkipBuild,
+
+    # Also tag the pushed image as 'latest'
+    [switch]$PushLatest,
+
+    # Dry-run: print commands without executing
+    [switch]$WhatIf
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+function Write-Step([string]$msg) {
+    Write-Host ""
+    Write-Host "─────────────────────────────────────────────────────" -ForegroundColor Cyan
+    Write-Host "  $msg" -ForegroundColor Cyan
+    Write-Host "─────────────────────────────────────────────────────" -ForegroundColor Cyan
+}
+
+function Invoke-Cmd([string]$exe, [string[]]$argList) {
+    Write-Host "  > $exe $($argList -join ' ')" -ForegroundColor DarkGray
+    if ($WhatIf) {
+        Write-Host "  [WhatIf] skipped" -ForegroundColor Yellow
+        return ""
+    }
+    $stdoutLines = [System.Collections.Generic.List[string]]::new()
+
+    & $exe @argList 2>&1 | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) {
+            Write-Host $_.ToString() -ForegroundColor DarkGray
+        } elseif ($_ -notmatch '^\s*[\\/|\-]\s') {
+            $stdoutLines.Add([string]$_)
+        }
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "${exe} failed (exit $LASTEXITCODE) — see output above"
+    }
+    return $stdoutLines -join "`n"
+}
+
+function Invoke-AzCli([string[]]$azArgs) {
+    return Invoke-Cmd 'az' $azArgs
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Defaults
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Repo root is one level above scripts/
+$repoRoot = Split-Path $PSScriptRoot -Parent
+
+if (-not $Repository) { $Repository = $AppName.ToLowerInvariant() }
+
+$acrLoginServer = "$AcrName.azurecr.io"
+
+# Locate .csproj automatically
+if (-not $ProjectPath) {
+    $found = Get-ChildItem -Path $repoRoot -Filter '*.csproj' -Depth 1 | Select-Object -First 1
+    if (-not $found) { Write-Error "No .csproj found under '$repoRoot'. Pass -ProjectPath explicitly." }
+    $ProjectPath = $found.FullName
+}
+Write-Host "  Project: $ProjectPath"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1 – Determine tag
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Step "Step 1 – Determine image tag"
+
+if (-not $Tag) {
+    $datePart = (Get-Date -Format 'yyyyMMdd')
+    $gitSha   = git -C $repoRoot rev-parse --short HEAD 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $gitSha) {
+        $gitSha = [System.Guid]::NewGuid().ToString('N').Substring(0, 7)
+        Write-Host "  No git history found – using random suffix: $gitSha" -ForegroundColor Yellow
+    }
+    $Tag = "$datePart-$($gitSha.Trim())"
+}
+
+if ($SkipBuild -and -not $Tag) {
+    Write-Error "-SkipBuild requires -Tag to be specified so the existing image can be located in ACR."
+}
+
+$fullImage = "$acrLoginServer/$Repository`:$Tag"
+Write-Host "  Tag:   $Tag"
+Write-Host "  Image: $fullImage"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2 – ACR login (feeds credentials into the .NET SDK's credential store)
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Step "Step 2 – ACR login"
+
+Invoke-AzCli @('acr', 'login', '--name', $AcrName, '--only-show-errors') | Out-Null
+Write-Host "  Logged in to $acrLoginServer"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3 – dotnet publish /t:PublishContainer  (build + push in one step)
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Step "Step 3 – dotnet publish /t:PublishContainer"
+
+if ($SkipBuild) {
+    Write-Host "  -SkipBuild set – verifying image exists in ACR..."
+    $manifest = Invoke-AzCli @(
+        'acr', 'manifest', 'show-metadata',
+        '--registry', $AcrName,
+        '--name', "$Repository`:$Tag",
+        '--only-show-errors'
+    )
+    if (-not $manifest) {
+        Write-Error "Image '$fullImage' not found in ACR. Push it first or remove -SkipBuild."
+    }
+    Write-Host "  Image confirmed in ACR."
+} else {
+    $containerTags = @($Tag)
+    if ($PushLatest) { $containerTags += 'latest' }
+    $tagsArg = $containerTags -join ';'
+
+    Invoke-Cmd 'dotnet' @(
+        'publish', $ProjectPath,
+        '--configuration', 'Release',
+        '--os', 'linux',
+        '--arch', 'x64',
+        '/t:PublishContainer',
+        "-p:ContainerRegistry=$acrLoginServer",
+        "-p:ContainerRepository=$Repository",
+        "-p:ContainerImageTags=$tagsArg"
+    ) | Out-Null
+
+    Write-Host "  Published and pushed: $fullImage" -ForegroundColor Green
+    if ($PushLatest) { Write-Host "  Also pushed: $acrLoginServer/$Repository`:latest" -ForegroundColor Green }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 5 – Resolve exact SHA digest
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Step "Step 4 – Resolve image digest (SHA)"
+
+$digestRaw = Invoke-AzCli @(
+    'acr', 'manifest', 'show-metadata',
+    '--registry', $AcrName,
+    '--name', "$Repository`:$Tag",
+    '--query', 'digest',
+    '-o', 'tsv',
+    '--only-show-errors'
+)
+
+$digest = $digestRaw.Trim()
+
+if (-not $WhatIf) {
+    if (-not $digest -or -not $digest.StartsWith('sha256:')) {
+        Write-Error "Could not resolve digest for '$fullImage'. Got: '$digest'"
+    }
+}
+
+# Pin by digest: <registry>/<repo>@sha256:<hash>
+$pinnedImage = "$acrLoginServer/$Repository@$digest"
+Write-Host "  Digest: $digest"
+Write-Host "  Pinned: $pinnedImage"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 6 – Update Container App with pinned digest
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Step "Step 5 – Update Container App"
+
+Write-Host "  Setting image on '$AppName' in '$AppRg'..."
+
+Invoke-AzCli @(
+    'containerapp', 'update',
+    '--name', $AppName,
+    '--resource-group', $AppRg,
+    '--image', $pinnedImage,
+    '--only-show-errors'
+) | Out-Null
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 7 – Wait for new revision to be active
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Step "Step 6 – Wait for active revision"
+
+$maxWait = 120   # seconds
+$interval = 5
+$elapsed  = 0
+$activeRevision = $null
+
+while ($elapsed -lt $maxWait) {
+    if ($WhatIf) { Write-Host "  [WhatIf] skipping revision poll"; break }
+
+    $revJson = az containerapp revision list `
+        --name $AppName `
+        --resource-group $AppRg `
+        --query '[?properties.active == `true`] | [-1].{name:name, image:properties.template.containers[0].image, traffic:properties.trafficWeight}' `
+        -o json 2>$null | ConvertFrom-Json
+
+    if ($revJson -and $revJson.image -and $revJson.image -match [regex]::Escape($digest)) {
+        $activeRevision = $revJson
+        break
+    }
+
+    Write-Host "  Waiting for revision with new digest... ($elapsed/$maxWait s)"
+    Start-Sleep -Seconds $interval
+    $elapsed += $interval
+}
+
+if ($activeRevision) {
+    Write-Host ""
+    Write-Host "  Active revision: $($activeRevision.name)"  -ForegroundColor Green
+    Write-Host "  Image:           $($activeRevision.image)" -ForegroundColor Green
+    Write-Host "  Traffic:         $($activeRevision.traffic)%" -ForegroundColor Green
+} elseif (-not $WhatIf) {
+    Write-Host ""
+    Write-Host "  Timed out waiting – check revision status manually:" -ForegroundColor Yellow
+    Write-Host "    az containerapp revision list -n $AppName -g $AppRg -o table" -ForegroundColor Yellow
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 8 – Print app URL
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Step "Done"
+
+$fqdn = Invoke-AzCli @(
+    'containerapp', 'show',
+    '--name', $AppName,
+    '--resource-group', $AppRg,
+    '--query', 'properties.configuration.ingress.fqdn',
+    '-o', 'tsv',
+    '--only-show-errors'
+)
+
+Write-Host ""
+Write-Host "  App URL:  https://$($fqdn.Trim())" -ForegroundColor Green
+Write-Host "  Image:    $fullImage"              -ForegroundColor Green
+Write-Host "  Digest:   $digest"                 -ForegroundColor Green
+Write-Host ""

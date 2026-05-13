@@ -36,4 +36,63 @@ public class CostManagementOptions
 
     /// <summary>Azure Cost Management REST API version to use.</summary>
     public string ApiVersion { get; set; } = "2025-03-01";
+
+    // ── Export / Blob mode ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// When Enabled = true, the dashboard reads pre-built cost exports from Azure Blob Storage
+    /// instead of calling the Cost Management Query API directly. This eliminates the
+    /// 5-req/min rate limit and is the recommended approach for production.
+    /// Deploy bicep/export-sub.bicep (and optionally bicep/export-billing.bicep) to create
+    /// the scheduled exports, then configure this section.
+    /// </summary>
+    public ExportBlobOptions ExportBlob { get; set; } = new();
+
+    public sealed class ExportBlobOptions
+    {
+        /// <summary>Set to true to use blob exports instead of the Query API.</summary>
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>
+        /// Full URI of the storage account, e.g. https://&lt;account&gt;.blob.core.windows.net
+        /// Used with DefaultAzureCredential (recommended for production / managed identity).
+        /// Leave empty and set ConnectionString instead for local development without az login.
+        /// </summary>
+        public string StorageAccountUri { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Storage connection string. Only used when StorageAccountUri is empty.
+        /// Use dotnet user-secrets or an environment variable — never commit this.
+        /// </summary>
+        public string ConnectionString { get; set; } = string.Empty;
+
+        /// <summary>Name of the blob container that receives the export files.</summary>
+        public string ContainerName { get; set; } = "cost-exports";
+
+        /// <summary>
+        /// Prefix path inside the container where export files are written.
+        /// Matches the rootFolderPath parameter in the Bicep files (default: "exports").
+        /// </summary>
+        public string BlobPrefix { get; set; } = "exports";
+    }
+
+    // ── Azure distributed cache (Table + Blob Storage) ────────────────────────
+
+    /// <summary>
+    /// When Enabled = true, cost data is cached in Azure Storage instead of in-process memory.
+    /// Small payloads (≤ 64 KB serialised) go to Azure Table Storage.
+    /// Large payloads (> 64 KB) are stored in Blob Storage under the CacheContainerName container.
+    /// This allows multiple Container App replicas to share the same cache and survive restarts.
+    /// Uses DefaultAzureCredential – the Container App managed identity needs
+    /// 'Storage Table Data Contributor' and 'Storage Blob Data Contributor' on the storage account.
+    /// </summary>
+    public AzureCacheOptions AzureCache { get; set; } = new();
+
+    public sealed class AzureCacheOptions
+    {
+        public bool   Enabled            { get; set; } = false;
+        public string StorageAccountUri  { get; set; } = string.Empty;  // https://<account>.table/blob.core.windows.net prefix — use base URI
+        public string TableName          { get; set; } = "cmcspcache";
+        public string CacheContainerName { get; set; } = "cmcspcache";
+    }
 }

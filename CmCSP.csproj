@@ -6,9 +6,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
     <UserSecretsId>bb9e6b00-7c45-4ffd-91d6-98b1177930b1</UserSecretsId>
+
+    <!-- dotnet publish /t:PublishContainer defaults -->
+    <ContainerImageName>cmcsp</ContainerImageName>
+    <ContainerBaseImage>mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled</ContainerBaseImage>
+    <ContainerPort>8080</ContainerPort>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Azure.Data.Tables" Version="*" />
+    <PackageReference Include="Azure.Identity" Version="*" />
+    <PackageReference Include="Azure.Storage.Blobs" Version="*" />
     <PackageReference Include="Blazor-ApexCharts" Version="*" />
     <PackageReference Include="Microsoft.Identity.Client" Version="*" />
     <PackageReference Include="MudBlazor" Version="*" />

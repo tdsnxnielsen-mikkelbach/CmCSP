@@ -13,7 +13,13 @@ builder.Services.AddRazorComponents()
 builder.Services.AddMudServices();
 
 // ── Caching ─────────────────────────────────────────────────────────────────
+// IMemoryCache is always registered (used as the in-process layer inside AzureStorageCacheService).
 builder.Services.AddMemoryCache();
+
+// AzureStorageCacheService wraps IMemoryCache.
+// When AzureCache:Enabled = true it also persists to Azure Table + Blob Storage so that
+// multiple Container App replicas share the same cache and survive restarts.
+builder.Services.AddSingleton<AzureStorageCacheService>();
 
 // ── Named HttpClient for Azure Management API ────────────────────────────────
 builder.Services.AddHttpClient("AzureMgmt", client =>
@@ -36,13 +42,37 @@ if (ratesFromConfig is { Count: > 0 })
 
 builder.Services.AddSingleton(costOptions);
 
+// SubscriptionStoreService must be registered immediately after costOptions so that
+// user-persisted subscription IDs are merged into costOptions.SubscriptionIds before
+// any cost service starts up.
+builder.Services.AddSingleton<SubscriptionStoreService>();
+
 // ── Azure services ───────────────────────────────────────────────────────────
 // AzureTokenService is Singleton: MSAL manages its own internal token cache.
 builder.Services.AddSingleton<AzureTokenService>();
 
+// DataLoadingStateService is Singleton: tracks per-dataset load phases so the
+// loading banner in the UI can react in real time without polling.
+builder.Services.AddSingleton<DataLoadingStateService>();
+
 // CostManagementService is Singleton: IMemoryCache and IHttpClientFactory are
 // both Singleton-safe; rate-limit state should survive across requests.
-builder.Services.AddSingleton<ICostManagementService, CostManagementService>();
+// When ExportBlob.Enabled = true the BlobCostManagementService is used instead,
+// which reads pre-built export CSVs from Azure Blob Storage — no Query API rate limits.
+if (costOptions.ExportBlob.Enabled)
+{
+    builder.Services.AddSingleton<ICostManagementService, BlobCostManagementService>();
+    builder.Services.AddHostedService<CacheWarmupService>();
+    // AzureTokenService is still registered for potential fallback and future use,
+    // but is not called by BlobCostManagementService.
+}
+else
+{
+    builder.Services.AddSingleton<ICostManagementService, CostManagementService>();
+    // CacheWarmupService pre-fetches all three datasets in the background after
+    // startup so the first user doesn't wait for cold API calls.
+    builder.Services.AddHostedService<CacheWarmupService>();
+}
 
 // DashboardStateService is Scoped: one instance per SignalR circuit so each
 // browser tab gets its own date-range filter.

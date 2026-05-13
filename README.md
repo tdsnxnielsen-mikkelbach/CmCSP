@@ -13,13 +13,16 @@ The dashboard mirrors the seven pages from the [TD SYNNEX tds_cc reference repor
 3. [Prerequisites](#prerequisites)
 4. [Getting Started](#getting-started)
 5. [Configuration Reference](#configuration-reference)
-6. [Authentication & Security](#authentication--security)
-7. [Data Flow](#data-flow)
-8. [Caching & Rate Limiting](#caching--rate-limiting)
-9. [Currency Normalisation](#currency-normalisation)
-10. [Dashboard Pages](#dashboard-pages)
-11. [Service Registration](#service-registration)
-12. [Deployment Notes](#deployment-notes)
+6. [Azure Role Assignments](docs/azure-roles.md)
+7. [CSP Deployment Guide](docs/csp-deployment-guide.md)
+8. [Authentication & Security](#authentication--security)
+9. [Data Flow](#data-flow)
+10. [Caching & Rate Limiting](#caching--rate-limiting)
+11. [Blob Exports (Production)](#blob-exports-production)
+12. [Currency Normalisation](#currency-normalisation)
+13. [Dashboard Pages](#dashboard-pages)
+14. [Service Registration](#service-registration)
+15. [Deployment Notes](#deployment-notes)
 
 ---
 
@@ -81,7 +84,11 @@ CmCSP/
 ├── Services/
 │   ├── AzureTokenService.cs              ← MSAL client-credentials flow
 │   ├── ICostManagementService.cs
-│   ├── CostManagementService.cs          ← fetch / cache / normalise / retry
+│   ├── CostManagementService.cs          ← Query API: fetch / cache / normalise / retry
+│   ├── BlobCostManagementService.cs      ← Blob Export: read CSVs from storage account
+│   ├── AzureStorageCacheService.cs       ← Table+Blob cache (wraps IMemoryCache)
+│   ├── DataLoadingStateService.cs        ← tracks per-dataset load phase for the UI
+│   ├── CacheWarmupService.cs             ← background pre-warm on startup
 │   └── DashboardStateService.cs         ← shared date-range slicer (Scoped)
 ├── Components/
 │   ├── App.razor                         ← HTML shell (MudBlazor + ApexCharts JS)
@@ -91,16 +98,26 @@ CmCSP/
 │   │   ├── MainLayout.razor              ← MudLayout, AppBar, Drawer, dark mode
 │   │   ├── NavMenu.razor                 ← 7 MudNavLinks
 │   │   └── ReconnectModal.razor
-│   └── Pages/
-│       ├── Home.razor                    ← Page 1: Cost Overview
-│       ├── Budgets.razor                 ← Page 2: Budgets
-│       ├── SubscriptionBreakdown.razor   ← Page 3: Subscription Breakdown
-│       ├── ResourceGroupBreakdown.razor  ← Page 4: Resource Group Breakdown
-│       ├── TagChargeback.razor           ← Page 5: Tag Chargeback
-│       ├── TrendAndForecast.razor        ← Page 6: Trend & Forecast
-│       ├── MoMWaterfall.razor            ← Page 7: MoM Waterfall
-│       ├── Error.razor
-│       └── NotFound.razor
+│   ├── Pages/
+│   │   ├── Home.razor                    ← Page 1: Cost Overview
+│   │   ├── Budgets.razor                 ← Page 2: Budgets
+│   │   ├── SubscriptionBreakdown.razor   ← Page 3: Subscription Breakdown
+│   │   ├── ResourceGroupBreakdown.razor  ← Page 4: Resource Group Breakdown
+│   │   ├── TagChargeback.razor           ← Page 5: Tag Chargeback
+│   │   ├── TrendAndForecast.razor        ← Page 6: Trend & Forecast
+│   │   ├── MoMWaterfall.razor            ← Page 7: MoM Waterfall
+│   │   ├── Error.razor
+│   │   └── NotFound.razor
+│   └── Shared/
+│       └── LoadingStatus.razor           ← data-load progress banner
+├── bicep/
+│   ├── main.bicep                        ← export storage account + Table Storage + role assignments
+│   ├── app.bicep                         ← Container App, ACR, Key Vault, Log Analytics (app RG)
+│   ├── export-sub.bicep                  ← subscription-scope export (managed identity)
+│   └── export-billing.bicep             ← billing-account-scope export (SAS token)
+├── docs/
+│   ├── azure-roles.md                   ← RBAC guide for all identities
+│   └── csp-deployment-guide.md         ← step-by-step deployment guide for CSPs
 └── wwwroot/
     └── app.css
 ```
@@ -114,6 +131,10 @@ CmCSP/
 | .NET SDK | 10.0 |
 | Azure subscription(s) | With `Cost Management Reader` assigned to the service principal |
 | Microsoft Entra ID | App registration with a client secret |
+| *(Blob mode only)* Azure Storage account | Created by `bicep/main.bicep` |
+| *(Blob mode only)* Cost Management Export | Created by `bicep/export-sub.bicep` or `export-billing.bicep` |
+
+See [docs/azure-roles.md](docs/azure-roles.md) for the exact role assignments required for each mode.
 
 ---
 
@@ -387,6 +408,80 @@ HTTP 400 indicates a malformed or out-of-range query — retrying will not help.
 
 ---
 
+## Blob Exports (Production)
+
+The Blob Export mode is an alternative to the Query API that eliminates rate limits and is the recommended approach for production deployments.
+
+### How it works
+
+```mermaid
+flowchart LR
+    subgraph Azure["Azure (scheduled)"]
+        direction TB
+        Export["CostManagement/exports\n(bicep/export-sub.bicep)"]
+        Blob["Azure Blob Storage\ncost-exports/{date}/*.csv"]
+        Export -->|"daily CSV drop"| Blob
+    end
+
+    subgraph App["CmCSP on startup"]
+        direction TB
+        Warmup["CacheWarmupService"]
+        BlobSvc["BlobCostManagementService\nDefaultAzureCredential"]
+        Cache["IMemoryCache\n(cm_main, cm_rg, cm_tag)"]
+        Warmup --> BlobSvc
+        BlobSvc -->|"list + download CSVs"| Blob
+        BlobSvc -->|"parse + aggregate rows"| Cache
+    end
+```
+
+### Switching to blob mode
+
+1. Deploy the storage infrastructure:
+   ```bash
+   az deployment group create \
+     --resource-group rg-cmcsp-app \
+     --template-file bicep/main.bicep \
+     --parameters storageAccountName=cmcspcostexports
+   ```
+2. Deploy the export schedule per subscription:
+   ```bash
+   az deployment sub create \
+     --location swedencentral \
+     --template-file bicep/export-sub.bicep \
+     --parameters exportName=daily-cost-export \
+       storageAccountResourceId="<id>" \
+       recurrenceFrom="2026-01-01T02:00:00Z"
+   ```
+3. Grant the export managed identity `Storage Blob Data Contributor` (see step 3 in [docs/azure-roles.md](docs/azure-roles.md)).
+4. Grant the application identity `Storage Blob Data Reader` on the storage account.
+5. Set configuration (via user-secrets locally, environment variables in production):
+   ```
+   AzureCostManagement:ExportBlob:Enabled          = true
+   AzureCostManagement:ExportBlob:StorageAccountUri = https://<account>.blob.core.windows.net
+   ```
+
+### Configuration keys
+
+| Key | Description |
+|---|---|
+| `ExportBlob:Enabled` | `true` = use blobs, `false` (default) = use Query API |
+| `ExportBlob:StorageAccountUri` | Full URI of the storage account; uses `DefaultAzureCredential` |
+| `ExportBlob:ConnectionString` | Alternative to URI; use user-secrets only |
+| `ExportBlob:ContainerName` | Blob container name (default: `cost-exports`) |
+| `ExportBlob:BlobPrefix` | Root folder path inside the container (default: `exports`) |
+
+### Comparison with Query API mode
+
+| | Query API | Blob Exports |
+|---|---|---|
+| Rate limit | 5 req/min per subscription | None |
+| Data freshness | Same (both lag 8–24 h behind billing) | Same |
+| Historic depth | 365 days per request | All accumulated files |
+| Secrets required | `ClientSecret` | None (managed identity) |
+| Infrastructure | None | Storage account + export resource |
+
+---
+
 ## Currency Normalisation
 
 The Cost Management API returns costs in each subscription's **billing currency**, which may differ between subscriptions (USD, EUR, GBP, etc.). Every `CostRow` has two cost fields:
@@ -607,3 +702,5 @@ Set environment variables under **Configuration → Application settings** in th
 | `MudBlazor` | UI component library (layout, cards, data grids, navigation, date pickers) |
 | `Blazor-ApexCharts` | Interactive charts (line, bar, donut, radial bar) |
 | `Microsoft.Identity.Client` | MSAL – OAuth2 client-credentials token acquisition with built-in cache |
+| `Azure.Storage.Blobs` | Read cost export CSV files from Azure Blob Storage (blob mode) |
+| `Azure.Identity` | `DefaultAzureCredential` – managed identity / az login for blob authentication |

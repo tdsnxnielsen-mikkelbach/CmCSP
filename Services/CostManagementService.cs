@@ -56,23 +56,26 @@ public sealed class CostManagementService : ICostManagementService
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>
         _lastRequestTime = new();
 
-    private readonly IHttpClientFactory _httpFactory;
-    private readonly IMemoryCache _cache;
-    private readonly AzureTokenService _tokenService;
-    private readonly CostManagementOptions _options;
+    private readonly IHttpClientFactory            _httpFactory;
+    private readonly AzureStorageCacheService       _cache;
+    private readonly AzureTokenService              _tokenService;
+    private readonly CostManagementOptions          _options;
+    private readonly DataLoadingStateService        _loadingState;
     private readonly ILogger<CostManagementService> _logger;
 
     public CostManagementService(
-        IHttpClientFactory httpFactory,
-        IMemoryCache cache,
-        AzureTokenService tokenService,
-        CostManagementOptions options,
+        IHttpClientFactory           httpFactory,
+        AzureStorageCacheService      cache,
+        AzureTokenService             tokenService,
+        CostManagementOptions         options,
+        DataLoadingStateService        loadingState,
         ILogger<CostManagementService> logger)
     {
         _httpFactory  = httpFactory;
         _cache        = cache;
         _tokenService = tokenService;
         _options      = options;
+        _loadingState = loadingState;
         _logger       = logger;
     }
 
@@ -99,6 +102,10 @@ public sealed class CostManagementService : ICostManagementService
         _cache.Remove(KeyMain);
         _cache.Remove(KeyRg);
         _cache.Remove(KeyTag);
+        // Reset phases so the loading banner re-appears on the next fetch.
+        _loadingState.Update(KeyMain, LoadPhase.Idle);
+        _loadingState.Update(KeyRg,   LoadPhase.Idle);
+        _loadingState.Update(KeyTag,  LoadPhase.Idle);
         _logger.LogInformation("Cost Management cache invalidated.");
     }
 
@@ -107,19 +114,27 @@ public sealed class CostManagementService : ICostManagementService
     private async Task<List<CostRow>> GetOrFetchAsync(
         string cacheKey, QueryType type, CancellationToken ct)
     {
-        if (_cache.TryGetValue(cacheKey, out List<CostRow>? cached) && cached is not null)
+        if (_cache.TryGetValue<List<CostRow>>(cacheKey, TimeSpan.FromMinutes(_options.CacheExpirationMinutes), out var cached) && cached is not null)
         {
             _logger.LogDebug("Cache hit for {Key}.", cacheKey);
+            // Ensure the UI shows Ready even when the warmup service didn't run
+            // (e.g. the page called the service before the background service fired).
+            if (_loadingState.For(cacheKey).Phase != LoadPhase.Ready)
+                _loadingState.Update(cacheKey, LoadPhase.Ready,
+                    $"{cached.Count:N0} rows (cached)");
             return cached;
         }
 
         _logger.LogInformation("Cache miss for {Key}. Fetching from API…", cacheKey);
+        _loadingState.Update(cacheKey, LoadPhase.Loading);
 
         var allRows = new List<CostRow>();
+        bool anyError = false;
 
         if (_options.SubscriptionIds.Count == 0)
         {
             _logger.LogWarning("No subscription IDs configured – returning empty dataset.");
+            _loadingState.Update(cacheKey, LoadPhase.Failed, "No subscriptions configured");
             return allRows;
         }
 
@@ -135,6 +150,7 @@ public sealed class CostManagementService : ICostManagementService
             }
             catch (Exception ex)
             {
+                anyError = true;
                 _logger.LogError(ex,
                     "Failed to fetch cost data for subscription {SubId} ({Type}). Skipping.",
                     subId, type);
@@ -143,6 +159,10 @@ public sealed class CostManagementService : ICostManagementService
 
         var expiry = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
         _cache.Set(cacheKey, allRows, expiry);
+        _loadingState.Update(
+            cacheKey,
+            anyError && allRows.Count == 0 ? LoadPhase.Failed : LoadPhase.Ready,
+            anyError && allRows.Count == 0 ? "fetch failed" : $"{allRows.Count:N0} rows");
         _logger.LogInformation(
             "Cached {Total} combined rows under '{Key}' for {Min} min.",
             allRows.Count, cacheKey, _options.CacheExpirationMinutes);

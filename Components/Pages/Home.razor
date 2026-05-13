@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @inject ICostManagementService CostService
 @inject DashboardStateService State
+@inject SubscriptionStoreService SubStore
 @implements IDisposable
 
 <PageTitle>Cost Overview – CSP Dashboard</PageTitle>
@@ -97,6 +98,101 @@
         </MudPaper>
     </MudItem>
 </MudGrid>
+
+@* ── Subscription Management ─────────────────────────────────────────────── *@
+<MudExpansionPanels Class="mt-4" Elevation="2">
+    <MudExpansionPanel Text="Manage Subscriptions" Icon="@Icons.Material.Filled.ManageAccounts">
+
+        @* Active subscription chips *@
+        <MudText Typo="Typo.subtitle2" Class="mb-2">Active Subscriptions (@SubStore.AllIds.Count)</MudText>
+        <div class="d-flex flex-wrap gap-2 mb-4">
+            @foreach (var sub in SubStore.AllIds)
+            {
+                var capturedId = sub;
+                var isConfig   = SubStore.ConfiguredIds.Any(c => c.Equals(capturedId, StringComparison.OrdinalIgnoreCase));
+                @if (isConfig)
+                {
+                    <MudChip T="string"
+                             Icon="@Icons.Material.Filled.Lock"
+                             Color="Color.Default"
+                             Size="Size.Small"
+                             title="Defined in configuration — not removable at runtime">
+                        @capturedId
+                    </MudChip>
+                }
+                else
+                {
+                    <MudChip T="string"
+                             Color="Color.Primary"
+                             Size="Size.Small"
+                             OnClose="@(async _ => await RemoveSubAsync(capturedId))">
+                        @capturedId
+                    </MudChip>
+                }
+            }
+            @if (!SubStore.AllIds.Any())
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary">(none configured)</MudText>
+            }
+        </div>
+
+        @* Status alert *@
+        @if (_subResult is not null)
+        {
+            <MudAlert Severity="@_subResult.Severity" Dense="true" ShowCloseIcon="true"
+                      CloseIconClicked="@(() => _subResult = null)" Class="mb-3">
+                @_subResult.Message
+            </MudAlert>
+        }
+
+        <MudGrid Spacing="3">
+            @* ── Add manually ───────────────────────────────────────────────── *@
+            <MudItem xs="12" md="6">
+                <MudPaper Class="pa-3" Outlined="true">
+                    <MudText Typo="Typo.subtitle2" Class="mb-2">Add Manually</MudText>
+                    <MudTextField @bind-Value="_newSubId"
+                                  Label="Subscription ID (GUID)"
+                                  Placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                                  FullWidth
+                                  Variant="Variant.Outlined"
+                                  OnKeyDown="@OnSubKeyDown" />
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Class="mt-2"
+                               OnClick="AddManualAsync" Disabled="_subBusy">
+                        Add
+                    </MudButton>
+                </MudPaper>
+            </MudItem>
+
+            @* ── Import from CSV / paste ─────────────────────────────────────── *@
+            <MudItem xs="12" md="6">
+                <MudPaper Class="pa-3" Outlined="true">
+                    <MudText Typo="Typo.subtitle2" Class="mb-2">Import from CSV / Text</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-1">
+                        Paste subscription IDs (one per line, or any CSV — GUIDs are extracted automatically)
+                    </MudText>
+                    <MudTextField @bind-Value="_csvPaste"
+                                  Lines="4"
+                                  FullWidth
+                                  Variant="Variant.Outlined"
+                                  Placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+                    <div class="d-flex align-center gap-2 mt-2 flex-wrap">
+                        <MudButton Variant="Variant.Filled" Color="Color.Secondary"
+                                   OnClick="ImportPastedAsync" Disabled="_subBusy">
+                            Import Pasted
+                        </MudButton>
+                        <MudText Typo="Typo.caption">— or —</MudText>
+                        @* Hidden file input; the MudButton acts as its label *@
+                        <InputFile id="subCsvFile" OnChange="ImportFileAsync" accept=".csv,.txt" style="display:none" />
+                        <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                                   HtmlTag="label" for="subCsvFile" Disabled="_subBusy">
+                            Upload .csv / .txt
+                        </MudButton>
+                    </div>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </MudExpansionPanel>
+</MudExpansionPanels>
 
 @code {
     private record DailyPoint(int Day, decimal Cost);
@@ -227,4 +323,107 @@
     private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
 
     public void Dispose() => State.OnStateChanged -= RefreshData;
+
+    // ── Subscription management ──────────────────────────────────────────────
+
+    private string _newSubId  = string.Empty;
+    private string _csvPaste  = string.Empty;
+    private bool   _subBusy   = false;
+
+    private sealed record SubResult(Severity Severity, string Message);
+    private SubResult? _subResult;
+
+    private async Task AddManualAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newSubId)) return;
+        _subBusy = true;
+        try
+        {
+            var (added, invalid) = await SubStore.AddAsync([_newSubId.Trim()]);
+            if (invalid.Count > 0)
+                _subResult = new(Severity.Error, $"Not a valid GUID: {invalid[0]}");
+            else if (added == 0)
+                _subResult = new(Severity.Info, "Subscription ID is already in the list.");
+            else
+            {
+                _subResult = new(Severity.Success, "Subscription added.");
+                _newSubId  = string.Empty;
+            }
+        }
+        finally { _subBusy = false; }
+    }
+
+    private async Task OnSubKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await AddManualAsync();
+    }
+
+    private async Task ImportPastedAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_csvPaste)) return;
+        var ids = ExtractGuids(_csvPaste);
+        await BulkImportAsync(ids);
+        _csvPaste = string.Empty;
+    }
+
+    private async Task ImportFileAsync(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            // 1 MB max; subscription ID files are tiny in practice
+            await using var stream = e.File.OpenReadStream(maxAllowedSize: 1_048_576);
+            using var reader       = new StreamReader(stream);
+            var text               = await reader.ReadToEndAsync();
+            await BulkImportAsync(ExtractGuids(text));
+        }
+        catch (Exception ex)
+        {
+            _subResult = new(Severity.Error, $"Could not read file: {ex.Message}");
+        }
+    }
+
+    private async Task BulkImportAsync(List<string> ids)
+    {
+        if (ids.Count == 0)
+        {
+            _subResult = new(Severity.Warning, "No subscription IDs (GUIDs) found in the input.");
+            return;
+        }
+        _subBusy = true;
+        try
+        {
+            var (added, invalid) = await SubStore.AddAsync(ids);
+            var parts = new List<string>();
+            if (added   > 0) parts.Add($"{added} added");
+            if (invalid.Count > 0)
+            {
+                var preview = string.Join(", ", invalid.Take(3));
+                if (invalid.Count > 3) preview += "…";
+                parts.Add($"{invalid.Count} invalid ({preview})");
+            }
+            var skipped = ids.Count - added - invalid.Count;
+            if (skipped > 0) parts.Add($"{skipped} already present");
+            _subResult = new(
+                added > 0 ? Severity.Success : Severity.Warning,
+                string.Join("; ", parts));
+        }
+        finally { _subBusy = false; }
+    }
+
+    private async Task RemoveSubAsync(string id)
+    {
+        await SubStore.RemoveAsync(id);
+    }
+
+    /// <summary>Extracts all GUIDs found anywhere in <paramref name="text"/>.</summary>
+    private static List<string> ExtractGuids(string text)
+    {
+        var matches = System.Text.RegularExpressions.Regex.Matches(
+            text,
+            @"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b");
+        return matches
+            .Select(m => m.Value.ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
 }
