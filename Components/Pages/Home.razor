@@ -1,0 +1,230 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@inject ICostManagementService CostService
+@inject DashboardStateService State
+@implements IDisposable
+
+<PageTitle>Cost Overview – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+@* ── Summary cards ────────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3" Class="mb-4">
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Cost (selected range)</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@FormatCost(_totalCost)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Cost Month-to-Date</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@FormatCost(_costMtd)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Cost Year-to-Date</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@FormatCost(_costYtd)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Avg Daily Cost</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@FormatCost(_avgDailyCost)</MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@* ── Charts ───────────────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3">
+    @* Cost vs Prior Month *@
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Daily Cost – Current vs Prior Month</MudText>
+            <ApexChart TItem="DailyPoint" Options="_twoLineOpts">
+                <ApexPointSeries TItem="DailyPoint"
+                                 Items="_currentMonthDaily"
+                                 Name="Current Month"
+                                 XValue="@(e => e.Day)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Line" />
+                <ApexPointSeries TItem="DailyPoint"
+                                 Items="_priorMonthDaily"
+                                 Name="Prior Month"
+                                 XValue="@(e => e.Day)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Line" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* Monthly Trend *@
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Cost Trend</MudText>
+            <ApexChart TItem="MonthlyPoint" Options="_barOpts">
+                <ApexPointSeries TItem="MonthlyPoint"
+                                 Items="_monthlyTrend"
+                                 Name="Monthly Cost"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Bar" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* Top 10 Services *@
+    <MudItem xs="12">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top 10 Services by Cost</MudText>
+            <ApexChart TItem="ServicePoint" Options="_hbarOpts">
+                <ApexPointSeries TItem="ServicePoint"
+                                 Items="_topServices"
+                                 Name="Cost"
+                                 XValue="@(e => e.ServiceName)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Bar" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private record DailyPoint(int Day, decimal Cost);
+    private record MonthlyPoint(string Label, decimal Cost);
+    private record ServicePoint(string ServiceName, decimal Cost);
+
+    private bool _loading = true;
+    private string? _error;
+    private List<CostRow> _data = [];
+
+    private decimal _totalCost;
+    private decimal _costMtd;
+    private decimal _costYtd;
+    private decimal _avgDailyCost;
+
+    private List<DailyPoint> _currentMonthDaily = [];
+    private List<DailyPoint> _priorMonthDaily = [];
+    private List<MonthlyPoint> _monthlyTrend = [];
+    private List<ServicePoint> _topServices = [];
+
+    private readonly ApexChartOptions<DailyPoint> _twoLineOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        Stroke = new Stroke { Curve = Curve.Smooth, Width = [2, 2] },
+        Xaxis = new XAxis { Type = XAxisType.Numeric }
+    };
+
+    private readonly ApexChartOptions<MonthlyPoint> _barOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { BorderRadius = 4 } }
+    };
+
+    private readonly ApexChartOptions<ServicePoint> _hbarOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true } }
+    };
+
+    protected override void OnInitialized() =>
+        State.OnStateChanged += RefreshData;
+
+    protected override async Task OnInitializedAsync() =>
+        await LoadAsync();
+
+    private async void RefreshData()
+    {
+        await LoadAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            _data = await CostService.GetMainCostDataAsync();
+            Compute();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load cost data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Compute()
+    {
+        var start  = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
+        var end    = State.SelectedRange.End   ?? DateTime.Now;
+        var today  = DateTime.UtcNow;
+        var filtered = _data.Where(r => r.Date >= start && r.Date <= end).ToList();
+
+        _totalCost    = filtered.Sum(r => r.NormalizedCost);
+        _costMtd      = filtered.Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month)
+                                .Sum(r => r.NormalizedCost);
+        _costYtd      = filtered.Where(r => r.Date.Year == today.Year)
+                                .Sum(r => r.NormalizedCost);
+        var distinctDays = filtered.Select(r => r.Date.Date).Distinct().Count();
+        _avgDailyCost = distinctDays > 0 ? _totalCost / distinctDays : 0m;
+
+        // Daily data for current and prior month
+        var curMonth  = new DateTime(today.Year, today.Month, 1);
+        var priorMonth = curMonth.AddMonths(-1);
+
+        _currentMonthDaily = filtered
+            .Where(r => r.Date.Year == curMonth.Year && r.Date.Month == curMonth.Month)
+            .GroupBy(r => r.Date.Day)
+            .Select(g => new DailyPoint(g.Key, g.Sum(r => r.NormalizedCost)))
+            .OrderBy(p => p.Day)
+            .ToList();
+
+        _priorMonthDaily = filtered
+            .Where(r => r.Date.Year == priorMonth.Year && r.Date.Month == priorMonth.Month)
+            .GroupBy(r => r.Date.Day)
+            .Select(g => new DailyPoint(g.Key, g.Sum(r => r.NormalizedCost)))
+            .OrderBy(p => p.Day)
+            .ToList();
+
+        // Monthly trend
+        _monthlyTrend = filtered
+            .GroupBy(r => new { r.Date.Year, r.Date.Month })
+            .Select(g => new MonthlyPoint(
+                new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMM yy"),
+                g.Sum(r => r.NormalizedCost)))
+            .OrderBy(p => DateTime.ParseExact(p.Label, "MMM yy", null))
+            .ToList();
+
+        // Top 10 services
+        _topServices = filtered
+            .GroupBy(r => r.ServiceName)
+            .Select(g => new ServicePoint(
+                string.IsNullOrWhiteSpace(g.Key) ? "(unassigned)" : g.Key,
+                g.Sum(r => r.NormalizedCost)))
+            .OrderByDescending(p => p.Cost)
+            .Take(10)
+            .ToList();
+    }
+
+    private string FormatCost(decimal value) => Fmt(value);
+
+    // Re-format using injected options at component level
+    [Inject] private CostManagementOptions Options { get; set; } = default!;
+    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
+
+    public void Dispose() => State.OnStateChanged -= RefreshData;
+}

@@ -1,0 +1,172 @@
+@page "/resource-groups"
+@rendermode InteractiveServer
+@inject ICostManagementService CostService
+@inject DashboardStateService State
+@inject CostManagementOptions Options
+@implements IDisposable
+
+<PageTitle>Resource Group Breakdown – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Resource Group Breakdown</MudText>
+
+<MudGrid Spacing="3" Class="mb-4">
+    <MudItem xs="12" sm="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Cost</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_totalCost)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Resource Groups (top 15 shown)</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_totalRgCount</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Avg Monthly Cost (top 15)</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_avgMonthly)</MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+<MudGrid Spacing="3">
+    @* Horizontal bar – top 15 RGs *@
+    <MudItem xs="12" md="7">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top 15 Resource Groups by Cost</MudText>
+            <ApexChart TItem="RgPoint" Options="_hbarOpts">
+                <ApexPointSeries TItem="RgPoint"
+                                 Items="_barData"
+                                 Name="Total Cost"
+                                 XValue="@(e => e.RgName)"
+                                 YValue="@(e => (decimal?)e.TotalCost)"
+                                 SeriesType="SeriesType.Bar" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* Table *@
+    <MudItem xs="12" md="5">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Details</MudText>
+            <MudDataGrid T="RgPoint"
+                         Items="_barData"
+                         Dense
+                         SortMode="SortMode.Single">
+                <Columns>
+                    <PropertyColumn Property="r => r.RgName"       Title="Resource Group" />
+                    <PropertyColumn Property="r => r.TotalCost"     Title="Total Cost"    Format="N0" />
+                    <PropertyColumn Property="r => r.MtdCost"       Title="MTD"           Format="N0" />
+                    <TemplateColumn Title="Share %">
+                        <CellTemplate>
+                            @context.Item.SharePct.ToString("F1")%
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+            </MudDataGrid>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private record RgPoint(string RgName, decimal TotalCost, decimal MtdCost, decimal SharePct, decimal AvgMonthly);
+
+    private bool _loading = true;
+    private string? _error;
+
+    private decimal _totalCost;
+    private decimal _avgMonthly;
+    private int _totalRgCount;
+    private List<RgPoint> _barData = [];
+
+    private readonly ApexChartOptions<RgPoint> _hbarOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Height = 420 },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } },
+        DataLabels = new DataLabels { Enabled = false }
+    };
+
+    protected override void OnInitialized() =>
+        State.OnStateChanged += RefreshData;
+
+    protected override async Task OnInitializedAsync() =>
+        await LoadAsync();
+
+    private async void RefreshData()
+    {
+        await LoadAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            var data  = await CostService.GetRgCostDataAsync();
+            var start = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
+            var end   = State.SelectedRange.End   ?? DateTime.Now;
+            var today = DateTime.UtcNow;
+
+            var filtered = data.Where(r => r.Date >= start && r.Date <= end).ToList();
+            _totalCost   = filtered.Sum(r => r.NormalizedCost);
+
+            var byRg = filtered
+                .GroupBy(r => string.IsNullOrWhiteSpace(r.ResourceGroupName)
+                    ? "(unassigned)" : r.ResourceGroupName.ToLowerInvariant())
+                .Select(g =>
+                {
+                    var total        = g.Sum(r => r.NormalizedCost);
+                    var mtd          = g.Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month)
+                                       .Sum(r => r.NormalizedCost);
+                    var distinctMths = g.Select(r => new { r.Date.Year, r.Date.Month }).Distinct().Count();
+                    return new
+                    {
+                        Name     = g.Key,
+                        Total    = total,
+                        Mtd      = mtd,
+                        AvgMthly = distinctMths > 0 ? total / distinctMths : total
+                    };
+                })
+                .OrderByDescending(x => x.Total)
+                .ToList();
+
+            _totalRgCount = byRg.Count;
+
+            var top15 = byRg.Take(15).ToList();
+            _avgMonthly = top15.Count > 0 ? top15.Average(x => x.AvgMthly) : 0m;
+
+            _barData = top15
+                .Select(x => new RgPoint(
+                    x.Name,
+                    x.Total,
+                    x.Mtd,
+                    _totalCost > 0 ? x.Total / _totalCost * 100m : 0m,
+                    x.AvgMthly))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load resource group data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
+
+    public void Dispose() => State.OnStateChanged -= RefreshData;
+}

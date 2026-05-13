@@ -1,0 +1,175 @@
+@page "/tags"
+@rendermode InteractiveServer
+@inject ICostManagementService CostService
+@inject DashboardStateService State
+@inject CostManagementOptions Options
+@implements IDisposable
+
+<PageTitle>Tag Chargeback – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Tag Chargeback</MudText>
+
+<MudGrid Spacing="3" Class="mb-4">
+    <MudItem xs="12" sm="6" md="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Tagged Cost</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_taggedCost)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Untagged Cost</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Warning">@Fmt(_untaggedCost)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Distinct Tag Keys</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_tagData.Count</MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+<MudGrid Spacing="3">
+    @* Cost distribution – horizontal bar instead of treemap (treemap not in SeriesType) *@
+    <MudItem xs="12" md="8">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Cost Distribution by Tag</MudText>
+            <ApexChart TItem="TagPoint" Options="_treemapOpts">
+                <ApexPointSeries TItem="TagPoint"
+                                 Items="_tagData"
+                                 Name="Cost"
+                                 XValue="@(e => e.Tag)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Bar" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* Horizontal bar – top tags ranked *@
+    <MudItem xs="12" md="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Tag Cost Ranked</MudText>
+            <ApexChart TItem="TagPoint" Options="_hbarOpts">
+                <ApexPointSeries TItem="TagPoint"
+                                 Items="_tagData"
+                                 Name="Cost"
+                                 XValue="@(e => e.Tag)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Bar" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* Table *@
+    <MudItem xs="12">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Tag Reference Table</MudText>
+            <MudDataGrid T="TagPoint"
+                         Items="_tagData"
+                         Dense
+                         SortMode="SortMode.Single"
+                         Filterable
+                         FilterMode="DataGridFilterMode.ColumnFilterRow">
+                <Columns>
+                    <PropertyColumn Property="t => t.Tag"  Title="Tag Key" />
+                    <PropertyColumn Property="t => t.Cost" Title="Total Cost" Format="N0" />
+                    <TemplateColumn Title="Share %">
+                        <CellTemplate>
+                            @context.Item.SharePct.ToString("F1")%
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+            </MudDataGrid>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private record TagPoint(string Tag, decimal Cost, decimal SharePct);
+
+    private bool _loading = true;
+    private string? _error;
+
+    private decimal _taggedCost;
+    private decimal _untaggedCost;
+    private List<TagPoint> _tagData = [];
+
+    private readonly ApexChartOptions<TagPoint> _treemapOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Height = 380 },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = false, BorderRadius = 3 } },
+        DataLabels = new DataLabels { Enabled = false }
+    };
+
+    private readonly ApexChartOptions<TagPoint> _hbarOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } },
+        DataLabels = new DataLabels { Enabled = false }
+    };
+
+    protected override void OnInitialized() =>
+        State.OnStateChanged += RefreshData;
+
+    protected override async Task OnInitializedAsync() =>
+        await LoadAsync();
+
+    private async void RefreshData()
+    {
+        await LoadAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            var data  = await CostService.GetTagCostDataAsync();
+            var start = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
+            var end   = State.SelectedRange.End   ?? DateTime.Now;
+
+            var filtered = data.Where(r => r.Date >= start && r.Date <= end).ToList();
+            var total    = filtered.Sum(r => r.NormalizedCost);
+
+            var tagged   = filtered.Where(r => !string.IsNullOrWhiteSpace(r.Tag)).ToList();
+            var untagged = filtered.Where(r => string.IsNullOrWhiteSpace(r.Tag)).ToList();
+
+            _taggedCost   = tagged.Sum(r => r.NormalizedCost);
+            _untaggedCost = untagged.Sum(r => r.NormalizedCost);
+
+            _tagData = tagged
+                .GroupBy(r => r.Tag)
+                .Select(g =>
+                {
+                    var cost = g.Sum(r => r.NormalizedCost);
+                    return new TagPoint(g.Key, cost, total > 0 ? cost / total * 100m : 0m);
+                })
+                .OrderByDescending(t => t.Cost)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load tag data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
+
+    public void Dispose() => State.OnStateChanged -= RefreshData;
+}

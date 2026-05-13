@@ -1,0 +1,201 @@
+@page "/budgets"
+@rendermode InteractiveServer
+@inject ICostManagementService CostService
+@inject DashboardStateService State
+@inject CostManagementOptions Options
+@implements IDisposable
+
+<PageTitle>Budgets – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Budgets</MudText>
+
+@* ── KPI cards ─────────────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3" Class="mb-4">
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Monthly Budget</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(Options.MonthlyBudget)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Spend MTD</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_costMtd)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Budget Variance</MudText>
+            <MudText Typo="Typo.h5"
+                     Class="mt-1 fw-bold"
+                     Color="@(_variance > 0 ? Color.Error : Color.Success)">
+                @Fmt(_variance)
+            </MudText>
+            <MudText Typo="Typo.caption" Color="@(_variance > 0 ? Color.Error : Color.Success)">
+                @(_variance > 0 ? "over budget" : "under budget")
+            </MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Budget Variance %</MudText>
+            <MudText Typo="Typo.h5"
+                     Class="mt-1 fw-bold"
+                     Color="@(_variancePct > 0 ? Color.Error : Color.Success)">
+                @_variancePct.ToString("F1")%
+            </MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@* ── Spend vs Budget gauge (radial bar) ────────────────────────────────────── *@
+<MudGrid Spacing="3">
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Spend vs Budget (MTD)</MudText>
+            <ApexChart TItem="GaugePoint" Options="_gaugeOpts">
+                <ApexPointSeries TItem="GaugePoint"
+                                 Items="_gaugeData"
+                                 Name="Budget usage"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.Pct)"
+                                 SeriesType="SeriesType.RadialBar" />
+            </ApexChart>
+            <MudText Typo="Typo.caption" Align="Align.Center" Class="mt-2">
+                @Fmt(_costMtd) of @Fmt(Options.MonthlyBudget)
+            </MudText>
+        </MudPaper>
+    </MudItem>
+
+    @* Monthly spend vs budget bar chart *@
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Spend vs Budget</MudText>
+            <ApexChart TItem="MonthBudgetPoint" Options="_groupedBarOpts">
+                <ApexPointSeries TItem="MonthBudgetPoint"
+                                 Items="_monthlySpend"
+                                 Name="Actual Spend"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.Actual)"
+                                 SeriesType="SeriesType.Bar" />
+                <ApexPointSeries TItem="MonthBudgetPoint"
+                                 Items="_monthlySpend"
+                                 Name="Budget"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.Budget)"
+                                 SeriesType="SeriesType.Line" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private record GaugePoint(string Label, decimal Pct);
+    private record MonthBudgetPoint(string Label, decimal Actual, decimal Budget);
+
+    private bool _loading = true;
+    private string? _error;
+
+    private decimal _costMtd;
+    private decimal _variance;
+    private decimal _variancePct;
+
+    private List<GaugePoint> _gaugeData = [];
+    private List<MonthBudgetPoint> _monthlySpend = [];
+
+    private readonly ApexChartOptions<GaugePoint> _gaugeOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions
+        {
+            RadialBar = new PlotOptionsRadialBar
+            {
+                StartAngle = -135,
+                EndAngle   = 135,
+                Hollow     = new Hollow { Size = "55%" },
+                DataLabels = new RadialBarDataLabels
+                {
+                    Name  = new RadialBarDataLabelsName  { Show = true },
+                    Value = new RadialBarDataLabelsValue { Show = true, FontSize = "22px" }
+                }
+            }
+        }
+    };
+
+    private readonly ApexChartOptions<MonthBudgetPoint> _groupedBarOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { BorderRadius = 3 } },
+        Stroke = new Stroke { Width = [0, 2], Curve = Curve.Straight }
+    };
+
+    protected override void OnInitialized() =>
+        State.OnStateChanged += RefreshData;
+
+    protected override async Task OnInitializedAsync() =>
+        await LoadAsync();
+
+    private async void RefreshData()
+    {
+        await LoadAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            var data  = await CostService.GetMainCostDataAsync();
+            var today = DateTime.UtcNow;
+
+            _costMtd = data
+                .Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month)
+                .Sum(r => r.NormalizedCost);
+
+            _variance    = _costMtd - Options.MonthlyBudget;
+            _variancePct = Options.MonthlyBudget > 0
+                ? _variance / Options.MonthlyBudget * 100m
+                : 0m;
+
+            var spendPct = Options.MonthlyBudget > 0
+                ? Math.Min((double)(_costMtd / Options.MonthlyBudget * 100m), 200d)
+                : 0d;
+
+            _gaugeData = [new GaugePoint("Budget", (decimal)spendPct)];
+
+            // Last 6 months
+            _monthlySpend = data
+                .GroupBy(r => new { r.Date.Year, r.Date.Month })
+                .Select(g => new MonthBudgetPoint(
+                    new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMM yy"),
+                    g.Sum(r => r.NormalizedCost),
+                    Options.MonthlyBudget))
+                .OrderBy(p => DateTime.ParseExact(p.Label, "MMM yy", null))
+                .TakeLast(6)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load budget data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
+
+    public void Dispose() => State.OnStateChanged -= RefreshData;
+}

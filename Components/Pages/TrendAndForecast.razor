@@ -1,0 +1,286 @@
+@page "/trend"
+@rendermode InteractiveServer
+@inject ICostManagementService CostService
+@inject DashboardStateService State
+@inject CostManagementOptions Options
+@implements IDisposable
+
+<PageTitle>Trend &amp; Forecast – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Trend &amp; Forecast</MudText>
+
+@* ── Global date-range slicer ─────────────────────────────────────────────── *@
+<MudPaper Class="pa-4 mb-4" Elevation="2">
+    <MudDateRangePicker Label="Date Range"
+                        DateRange="_selectedRange"
+                        DateRangeChanged="OnDateRangeChanged"
+                        Variant="Variant.Outlined" />
+</MudPaper>
+
+@* ── KPI cards ─────────────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3" Class="mb-4">
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Cost MTD</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_costMtd)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Month-End Forecast</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_forecast)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Rolling 3-Month Avg</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_rolling3m)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">YoY Change %</MudText>
+            <MudText Typo="Typo.h5"
+                     Class="mt-1 fw-bold"
+                     Color="@(_yoyPct > 0 ? Color.Error : Color.Success)">
+                @_yoyPct.ToString("F1")%
+            </MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+<MudGrid Spacing="3">
+    @* Actual vs Forecast (daily) *@
+    <MudItem xs="12">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Actual vs Month-End Forecast (daily)</MudText>
+            <ApexChart TItem="DailyPoint" Options="_forecastOpts">
+                <ApexPointSeries TItem="DailyPoint"
+                                 Items="_actualDaily"
+                                 Name="Actual"
+                                 XValue="@(e => e.Date)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Line" />
+                <ApexPointSeries TItem="DailyPoint"
+                                 Items="_forecastDaily"
+                                 Name="Forecast"
+                                 XValue="@(e => e.Date)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Line" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* Monthly trend + Rolling 3M Avg *@
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Cost + Rolling 3-Month Avg</MudText>
+            <ApexChart TItem="MonthlyPoint" Options="_rollingOpts">
+                <ApexPointSeries TItem="MonthlyPoint"
+                                 Items="_monthlyTrend"
+                                 Name="Monthly Cost"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Bar" />
+                <ApexPointSeries TItem="MonthlyPoint"
+                                 Items="_rolling3mLine"
+                                 Name="3-Month Avg"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Line" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* YoY Comparison *@
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Year-over-Year Comparison</MudText>
+            <ApexChart TItem="MonthlyPoint" Options="_yoyOpts">
+                <ApexPointSeries TItem="MonthlyPoint"
+                                 Items="_currentYearMonthly"
+                                 Name="Current Year"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Line" />
+                <ApexPointSeries TItem="MonthlyPoint"
+                                 Items="_priorYearMonthly"
+                                 Name="Prior Year"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Line" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private record DailyPoint(DateTime Date, decimal Cost);
+    private record MonthlyPoint(string Label, decimal Cost);
+
+    private bool _loading = true;
+    private string? _error;
+    private DateRange _selectedRange = new(
+        new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1),
+        DateTime.Now);
+
+    private decimal _costMtd;
+    private decimal _forecast;
+    private decimal _rolling3m;
+    private decimal _yoyPct;
+
+    private List<DailyPoint> _actualDaily = [];
+    private List<DailyPoint> _forecastDaily = [];
+    private List<MonthlyPoint> _monthlyTrend = [];
+    private List<MonthlyPoint> _rolling3mLine = [];
+    private List<MonthlyPoint> _currentYearMonthly = [];
+    private List<MonthlyPoint> _priorYearMonthly = [];
+
+    private readonly ApexChartOptions<DailyPoint> _forecastOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        Stroke = new Stroke { Curve = Curve.Smooth, Width = [2, 2], DashArray = [0, 5] },
+        Xaxis = new XAxis { Type = XAxisType.Datetime }
+    };
+
+    private readonly ApexChartOptions<MonthlyPoint> _rollingOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        Stroke = new Stroke { Width = [0, 2] }
+    };
+
+    private readonly ApexChartOptions<MonthlyPoint> _yoyOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        Stroke = new Stroke { Curve = Curve.Smooth, Width = [2, 2] }
+    };
+
+    protected override void OnInitialized()
+    {
+        _selectedRange = State.SelectedRange;
+        State.OnStateChanged += RefreshData;
+    }
+
+    protected override async Task OnInitializedAsync() =>
+        await LoadAsync();
+
+    private async void RefreshData()
+    {
+        _selectedRange = State.SelectedRange;
+        await LoadAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnDateRangeChanged(DateRange range)
+    {
+        State.SetDateRange(range);   // broadcasts to all other pages
+        _selectedRange = range;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            var data  = await CostService.GetMainCostDataAsync();
+            var today = DateTime.UtcNow;
+
+            // ── Forecast ──────────────────────────────────────────────────────
+            var curMonthData = data
+                .Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month)
+                .ToList();
+            _costMtd = curMonthData.Sum(r => r.NormalizedCost);
+
+            var daysElapsed   = today.Day;
+            var daysInMonth   = DateTime.DaysInMonth(today.Year, today.Month);
+            var dailyAvg      = daysElapsed > 0 ? _costMtd / daysElapsed : 0m;
+            _forecast         = dailyAvg * daysInMonth;
+
+            // Actual daily (current month)
+            _actualDaily = curMonthData
+                .GroupBy(r => r.Date.Date)
+                .Select(g => new DailyPoint(g.Key, g.Sum(r => r.NormalizedCost)))
+                .OrderBy(p => p.Date)
+                .ToList();
+
+            // Forecast line: extend from today to end of month
+            _forecastDaily = Enumerable.Range(daysElapsed, daysInMonth - daysElapsed + 1)
+                .Select(d =>
+                {
+                    var date = new DateTime(today.Year, today.Month, d);
+                    return new DailyPoint(date, dailyAvg * d);
+                })
+                .ToList();
+
+            // ── Monthly totals ────────────────────────────────────────────────
+            var monthlyTotals = data
+                .GroupBy(r => new { r.Date.Year, r.Date.Month })
+                .Select(g => (
+                    Year:  g.Key.Year,
+                    Month: g.Key.Month,
+                    Cost:  g.Sum(r => r.NormalizedCost)))
+                .OrderBy(x => x.Year).ThenBy(x => x.Month)
+                .ToList();
+
+            _monthlyTrend = monthlyTotals
+                .Select(x => new MonthlyPoint(
+                    new DateTime(x.Year, x.Month, 1).ToString("MMM yy"), x.Cost))
+                .ToList();
+
+            // ── Rolling 3-month avg ───────────────────────────────────────────
+            _rolling3mLine = monthlyTotals
+                .Select((x, i) =>
+                {
+                    var window  = monthlyTotals.Skip(Math.Max(0, i - 2)).Take(Math.Min(3, i + 1));
+                    var rolling = window.Average(w => w.Cost);
+                    return new MonthlyPoint(
+                        new DateTime(x.Year, x.Month, 1).ToString("MMM yy"), rolling);
+                })
+                .ToList();
+
+            _rolling3m = _rolling3mLine.Count > 0
+                ? _rolling3mLine[^1].Cost
+                : 0m;
+
+            // ── YoY ──────────────────────────────────────────────────────────
+            _currentYearMonthly = monthlyTotals
+                .Where(x => x.Year == today.Year)
+                .Select(x => new MonthlyPoint(
+                    new DateTime(x.Year, x.Month, 1).ToString("MMM"), x.Cost))
+                .ToList();
+
+            _priorYearMonthly = monthlyTotals
+                .Where(x => x.Year == today.Year - 1)
+                .Select(x => new MonthlyPoint(
+                    new DateTime(x.Year, x.Month, 1).ToString("MMM"), x.Cost))
+                .ToList();
+
+            var curTotal   = _currentYearMonthly.Sum(p => p.Cost);
+            var priorTotal = _priorYearMonthly.Sum(p => p.Cost);
+            _yoyPct = priorTotal > 0 ? (curTotal - priorTotal) / priorTotal * 100m : 0m;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load trend data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
+
+    public void Dispose() => State.OnStateChanged -= RefreshData;
+}

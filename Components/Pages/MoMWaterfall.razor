@@ -1,0 +1,302 @@
+@page "/waterfall"
+@rendermode InteractiveServer
+@inject ICostManagementService CostService
+@inject DashboardStateService State
+@inject CostManagementOptions Options
+@implements IDisposable
+
+<PageTitle>MoM Waterfall – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Month-over-Month Waterfall</MudText>
+
+@* ── Global date-range slicer ─────────────────────────────────────────────── *@
+<MudPaper Class="pa-4 mb-4" Elevation="2">
+    <MudDateRangePicker Label="Date Range"
+                        DateRange="_selectedRange"
+                        DateRangeChanged="OnDateRangeChanged"
+                        Variant="Variant.Outlined" />
+</MudPaper>
+
+@* ── KPI cards ─────────────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3" Class="mb-4">
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">MoM Change</MudText>
+            <MudText Typo="Typo.h5"
+                     Class="mt-1 fw-bold"
+                     Color="@(_momChange > 0 ? Color.Error : Color.Success)">
+                @Fmt(_momChange)
+            </MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">MoM Change %</MudText>
+            <MudText Typo="Typo.h5"
+                     Class="mt-1 fw-bold"
+                     Color="@(_momPct > 0 ? Color.Error : Color.Success)">
+                @_momPct.ToString("F1")%
+            </MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">YoY Change %</MudText>
+            <MudText Typo="Typo.h5"
+                     Class="mt-1 fw-bold"
+                     Color="@(_yoyPct > 0 ? Color.Error : Color.Success)">
+                @_yoyPct.ToString("F1")%
+            </MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Current Month Spend</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_currentMonthCost)</MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+<MudGrid Spacing="3">
+    @* MoM Variance – bar chart with conditional colouring (ApexCharts waterfall-style) *@
+    <MudItem xs="12">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Month-over-Month Cost Change</MudText>
+            <ApexChart TItem="MomPoint" Options="_momBarOpts">
+                <ApexPointSeries TItem="MomPoint"
+                                 Items="_momData"
+                                 Name="MoM Change"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.Change)"
+                                 SeriesType="SeriesType.Bar" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* MoM by Subscription *@
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">MoM Change by Subscription (latest two months)</MudText>
+            <ApexChart TItem="SubMomPoint" Options="_subMomOpts">
+                <ApexPointSeries TItem="SubMomPoint"
+                                 Items="_subMomData"
+                                 Name="MoM Change"
+                                 XValue="@(e => e.SubName)"
+                                 YValue="@(e => (decimal?)e.Change)"
+                                 SeriesType="SeriesType.Bar" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* Monthly totals table *@
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Summary</MudText>
+            <MudDataGrid T="MonthSummaryRow"
+                         Items="_monthSummary"
+                         Dense
+                         SortMode="SortMode.Single">
+                <Columns>
+                    <PropertyColumn Property="r => r.Label"    Title="Month" />
+                    <PropertyColumn Property="r => r.Total"    Title="Total Cost"  Format="N0" />
+                    <PropertyColumn Property="r => r.Change"   Title="MoM Change"  Format="N0" />
+                    <TemplateColumn Title="MoM %">
+                        <CellTemplate>
+                            <MudText Color="@(context.Item.ChangePct > 0 ? Color.Error : Color.Success)">
+                                @context.Item.ChangePct.ToString("F1")%
+                            </MudText>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+            </MudDataGrid>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private record MomPoint(string Label, decimal Change);
+    private record SubMomPoint(string SubName, decimal Change);
+    private record MonthSummaryRow(string Label, decimal Total, decimal Change, decimal ChangePct);
+
+    private bool _loading = true;
+    private string? _error;
+    private DateRange _selectedRange = new(
+        new DateTime(DateTime.Now.Year - 1, 1, 1),
+        DateTime.Now);
+
+    private decimal _momChange;
+    private decimal _momPct;
+    private decimal _yoyPct;
+    private decimal _currentMonthCost;
+
+    private List<MomPoint> _momData = [];
+    private List<SubMomPoint> _subMomData = [];
+    private List<MonthSummaryRow> _monthSummary = [];
+
+    private readonly ApexChartOptions<MomPoint> _momBarOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions
+        {
+            Bar = new PlotOptionsBar
+            {
+                BorderRadius = 3,
+                Colors = new PlotOptionsBarColors
+                {
+                    Ranges =
+                    [
+                        new PlotOptionsBarColorRange { From = -10_000_000d, To = -0.01d, Color = "#00C853" },
+                        new PlotOptionsBarColorRange { From = 0d,           To = 10_000_000d, Color = "#D50000" }
+                    ]
+                }
+            }
+        },
+        DataLabels = new DataLabels { Enabled = false }
+    };
+
+    private readonly ApexChartOptions<SubMomPoint> _subMomOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions
+        {
+            Bar = new PlotOptionsBar
+            {
+                Horizontal   = true,
+                BorderRadius = 3,
+                Colors = new PlotOptionsBarColors
+                {
+                    Ranges =
+                    [
+                        new PlotOptionsBarColorRange { From = -10_000_000d, To = -0.01d, Color = "#00C853" },
+                        new PlotOptionsBarColorRange { From = 0d,           To = 10_000_000d, Color = "#D50000" }
+                    ]
+                }
+            }
+        },
+        DataLabels = new DataLabels { Enabled = false }
+    };
+
+    protected override void OnInitialized()
+    {
+        _selectedRange = State.SelectedRange;
+        State.OnStateChanged += RefreshData;
+    }
+
+    protected override async Task OnInitializedAsync() =>
+        await LoadAsync();
+
+    private async void RefreshData()
+    {
+        _selectedRange = State.SelectedRange;
+        await LoadAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnDateRangeChanged(DateRange range)
+    {
+        State.SetDateRange(range);
+        _selectedRange = range;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            var data  = await CostService.GetMainCostDataAsync();
+            var today = DateTime.UtcNow;
+
+            // Monthly totals (all data, for rolling MoM)
+            var monthlyTotals = data
+                .GroupBy(r => new { r.Date.Year, r.Date.Month })
+                .Select(g => (
+                    Year:  g.Key.Year,
+                    Month: g.Key.Month,
+                    Date:  new DateTime(g.Key.Year, g.Key.Month, 1),
+                    Cost:  g.Sum(r => r.NormalizedCost)))
+                .OrderBy(x => x.Date)
+                .ToList();
+
+            // Build MoM change series
+            _momData = monthlyTotals
+                .Skip(1)
+                .Select((x, i) => new MomPoint(
+                    x.Date.ToString("MMM yy"),
+                    x.Cost - monthlyTotals[i].Cost))
+                .ToList();
+
+            // Monthly summary table
+            _monthSummary = monthlyTotals
+                .Skip(1)
+                .Select((x, i) =>
+                {
+                    var change = x.Cost - monthlyTotals[i].Cost;
+                    var pct    = monthlyTotals[i].Cost > 0
+                        ? change / monthlyTotals[i].Cost * 100m
+                        : 0m;
+                    return new MonthSummaryRow(x.Date.ToString("MMM yy"), x.Cost, change, pct);
+                })
+                .OrderByDescending(r => DateTime.ParseExact(r.Label, "MMM yy", null))
+                .ToList();
+
+            // Latest MoM stats
+            var curMonth   = monthlyTotals.LastOrDefault(x => x.Year == today.Year && x.Month == today.Month);
+            var priorMonth = monthlyTotals.LastOrDefault(x =>
+                (x.Year == today.Year && x.Month == today.Month - 1) ||
+                (today.Month == 1 && x.Year == today.Year - 1 && x.Month == 12));
+
+            _currentMonthCost = curMonth != default ? curMonth.Cost : 0m;
+            _momChange = (curMonth != default && priorMonth != default)
+                ? curMonth.Cost - priorMonth.Cost
+                : 0m;
+            _momPct = (priorMonth != default && priorMonth.Cost > 0)
+                ? _momChange / priorMonth.Cost * 100m
+                : 0m;
+
+            // YoY: same month last year
+            var priorYearSameMonth = monthlyTotals
+                .LastOrDefault(x => x.Year == today.Year - 1 && x.Month == today.Month);
+            _yoyPct = (priorYearSameMonth != default && priorYearSameMonth.Cost > 0 && curMonth != default)
+                ? (curMonth.Cost - priorYearSameMonth.Cost) / priorYearSameMonth.Cost * 100m
+                : 0m;
+
+            // MoM by subscription (current month vs prior month)
+            var priorYear  = today.Month == 1 ? today.Year - 1 : today.Year;
+            var priorMonth2 = today.Month == 1 ? 12 : today.Month - 1;
+
+            _subMomData = data
+                .Where(r => (r.Date.Year == today.Year && r.Date.Month == today.Month) ||
+                             (r.Date.Year == priorYear && r.Date.Month == priorMonth2))
+                .GroupBy(r => r.SubscriptionName)
+                .Select(g => new SubMomPoint(
+                    string.IsNullOrWhiteSpace(g.Key) ? "(unknown)" : g.Key,
+                    g.Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month).Sum(r => r.NormalizedCost)
+                    - g.Where(r => !(r.Date.Year == today.Year && r.Date.Month == today.Month)).Sum(r => r.NormalizedCost)))
+                .OrderBy(x => x.Change)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load MoM data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
+
+    public void Dispose() => State.OnStateChanged -= RefreshData;
+}

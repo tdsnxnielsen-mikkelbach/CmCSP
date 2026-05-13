@@ -1,0 +1,196 @@
+@page "/subscriptions"
+@rendermode InteractiveServer
+@inject ICostManagementService CostService
+@inject DashboardStateService State
+@inject CostManagementOptions Options
+@implements IDisposable
+
+<PageTitle>Subscription Breakdown – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Subscription Breakdown</MudText>
+
+@* ── Summary card *@
+<MudGrid Spacing="3" Class="mb-4">
+    <MudItem xs="12" sm="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Cost</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_totalCost)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Subscriptions</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_rows.Count</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Largest Subscription Share</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_topShare.ToString("F1")%</MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+<MudGrid Spacing="3">
+    @* Bar chart – cost by subscription *@
+    <MudItem xs="12" md="8">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Cost by Subscription</MudText>
+            <ApexChart TItem="SubPoint" Options="_hbarOpts">
+                <ApexPointSeries TItem="SubPoint"
+                                 Items="_barData"
+                                 Name="Total Cost"
+                                 XValue="@(e => e.SubName)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Bar" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* Donut – share by subscription *@
+    <MudItem xs="12" md="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Cost Share</MudText>
+            <ApexChart TItem="SubPoint" Options="_donutOpts">
+                <ApexPointSeries TItem="SubPoint"
+                                 Items="_barData"
+                                 Name="Share"
+                                 XValue="@(e => e.SubName)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Donut" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* Reference table *@
+    <MudItem xs="12">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Subscription Reference</MudText>
+            <MudDataGrid T="TableRow"
+                         Items="_rows"
+                         SortMode="SortMode.Multiple"
+                         Filterable
+                         FilterMode="DataGridFilterMode.ColumnFilterRow"
+                         Dense>
+                <Columns>
+                    <PropertyColumn Property="r => r.SubId"    Title="Subscription ID" />
+                    <PropertyColumn Property="r => r.SubName"  Title="Name" />
+                    <PropertyColumn Property="r => r.TotalCost" Title="Total Cost"
+                                    Format="N0" />
+                    <PropertyColumn Property="r => r.MtdCost"  Title="MTD Cost"
+                                    Format="N0" />
+                    <TemplateColumn Title="Share %">
+                        <CellTemplate>
+                            @context.Item.SharePct.ToString("F1")%
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+            </MudDataGrid>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private record SubPoint(string SubName, decimal Cost);
+    private record TableRow(string SubId, string SubName, decimal TotalCost, decimal MtdCost, decimal SharePct);
+
+    private bool _loading = true;
+    private string? _error;
+
+    private decimal _totalCost;
+    private decimal _topShare;
+    private List<SubPoint> _barData = [];
+    private List<TableRow> _rows = [];
+
+    private readonly ApexChartOptions<SubPoint> _hbarOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } }
+    };
+
+    private readonly ApexChartOptions<SubPoint> _donutOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        Legend = new Legend { Position = LegendPosition.Bottom }
+    };
+
+    protected override void OnInitialized() =>
+        State.OnStateChanged += RefreshData;
+
+    protected override async Task OnInitializedAsync() =>
+        await LoadAsync();
+
+    private async void RefreshData()
+    {
+        await LoadAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            var data  = await CostService.GetMainCostDataAsync();
+            var start = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
+            var end   = State.SelectedRange.End   ?? DateTime.Now;
+            var today = DateTime.UtcNow;
+
+            var filtered = data.Where(r => r.Date >= start && r.Date <= end).ToList();
+
+            _totalCost = filtered.Sum(r => r.NormalizedCost);
+
+            var bySub = filtered
+                .GroupBy(r => new { r.SubscriptionId, r.SubscriptionName })
+                .Select(g => new
+                {
+                    g.Key.SubscriptionId,
+                    g.Key.SubscriptionName,
+                    Total = g.Sum(r => r.NormalizedCost),
+                    Mtd   = g.Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month)
+                             .Sum(r => r.NormalizedCost)
+                })
+                .OrderByDescending(x => x.Total)
+                .ToList();
+
+            _barData = bySub
+                .Select(x => new SubPoint(
+                    string.IsNullOrWhiteSpace(x.SubscriptionName) ? x.SubscriptionId : x.SubscriptionName,
+                    x.Total))
+                .ToList();
+
+            _rows = bySub
+                .Select(x => new TableRow(
+                    x.SubscriptionId,
+                    string.IsNullOrWhiteSpace(x.SubscriptionName) ? x.SubscriptionId : x.SubscriptionName,
+                    x.Total,
+                    x.Mtd,
+                    _totalCost > 0 ? x.Total / _totalCost * 100m : 0m))
+                .ToList();
+
+            _topShare = _rows.Count > 0 ? _rows.Max(r => r.SharePct) : 0m;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load subscription data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
+
+    public void Dispose() => State.OnStateChanged -= RefreshData;
+}
