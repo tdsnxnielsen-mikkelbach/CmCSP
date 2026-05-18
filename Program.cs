@@ -66,8 +66,9 @@ if (costOptions.ExportBlob.Enabled)
     builder.Services.AddSingleton<CostManagementService>();
     builder.Services.AddSingleton<ICostManagementService, BlobCostManagementService>();
     builder.Services.AddHostedService<CacheWarmupService>();
-    // AzureTokenService is still registered for potential fallback and future use,
-    // but is not called by BlobCostManagementService.
+    // Daily refresh: call the Query API once per day so dashboards always show
+    // up-to-date figures, independent of when the blob export last landed.
+    builder.Services.AddHostedService<DailyApiRefreshService>();
 }
 else
 {

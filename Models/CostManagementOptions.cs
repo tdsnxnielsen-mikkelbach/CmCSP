@@ -37,6 +37,14 @@ public class CostManagementOptions
     /// <summary>Azure Cost Management REST API version to use.</summary>
     public string ApiVersion { get; set; } = "2025-03-01";
 
+    /// <summary>
+    /// UTC hour (0–23) at which the daily background API refresh runs.
+    /// Only applies when ExportBlob.Enabled = true.  The refresh calls the Cost Management
+    /// Query API directly so the cache always contains data from the last few hours,
+    /// regardless of when the daily blob export landed.  Default 0 = 00:00 UTC.
+    /// </summary>
+    public int ApiDailyRefreshHourUtc { get; set; } = 0;
+
     // ── Export / Blob mode ────────────────────────────────────────────────────
 
     /// <summary>
