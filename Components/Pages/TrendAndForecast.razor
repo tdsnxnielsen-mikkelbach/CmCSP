@@ -146,21 +146,24 @@
 
     private readonly ApexChartOptions<DailyPoint> _forecastOpts = new()
     {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        Chart  = new Chart { Toolbar = new Toolbar { Show = false } },
         Stroke = new Stroke { Curve = Curve.Smooth, Width = [2, 2], DashArray = [0, 5] },
-        Xaxis = new XAxis { Type = XAxisType.Datetime }
+        Xaxis  = new XAxis { Type = XAxisType.Datetime },
+        Yaxis  = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
     };
 
     private readonly ApexChartOptions<MonthlyPoint> _rollingOpts = new()
     {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
-        Stroke = new Stroke { Width = [0, 2] }
+        Chart  = new Chart { Toolbar = new Toolbar { Show = false } },
+        Stroke = new Stroke { Width = [0, 2] },
+        Yaxis  = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
     };
 
     private readonly ApexChartOptions<MonthlyPoint> _yoyOpts = new()
     {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
-        Stroke = new Stroke { Curve = Curve.Smooth, Width = [2, 2] }
+        Chart  = new Chart { Toolbar = new Toolbar { Show = false } },
+        Stroke = new Stroke { Curve = Curve.Smooth, Width = [2, 2] },
+        Yaxis  = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
     };
 
     protected override void OnInitialized()
@@ -222,8 +225,11 @@
                 })
                 .ToList();
 
-            // ── Monthly totals ────────────────────────────────────────────────
+            // ── Monthly totals (scoped to the selected date range) ──────────────
+            var rangeStart = _selectedRange.Start ?? today.AddYears(-1);
+            var rangeEnd   = _selectedRange.End   ?? today;
             var monthlyTotals = data
+                .Where(r => r.Date >= rangeStart && r.Date <= rangeEnd)
                 .GroupBy(r => new { r.Date.Year, r.Date.Month })
                 .Select(g => (
                     Year:  g.Key.Year,

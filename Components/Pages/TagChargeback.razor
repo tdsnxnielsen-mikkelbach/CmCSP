@@ -107,14 +107,16 @@
     {
         Chart = new Chart { Toolbar = new Toolbar { Show = false }, Height = 380 },
         PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = false, BorderRadius = 3 } },
-        DataLabels = new DataLabels { Enabled = false }
+        DataLabels = new DataLabels { Enabled = false },
+        Yaxis = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
     };
 
     private readonly ApexChartOptions<TagPoint> _hbarOpts = new()
     {
         Chart = new Chart { Toolbar = new Toolbar { Show = false } },
         PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } },
-        DataLabels = new DataLabels { Enabled = false }
+        DataLabels = new DataLabels { Enabled = false },
+        Xaxis = new XAxis { Labels = new XAxisLabels { Formatter = "function(val) { return val != null ? parseFloat(val).toFixed(2) : ''; }" } }
     };
 
     protected override void OnInitialized() =>

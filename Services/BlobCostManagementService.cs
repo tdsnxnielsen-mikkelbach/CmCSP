@@ -47,6 +47,7 @@ public sealed class BlobCostManagementService : ICostManagementService
     private const string ColCostAlt      = "cost";              // fallback column name
     private const string ColCurrency     = "billingcurrencycode";
     private const string ColCurrencyAlt  = "currency";          // fallback
+    private const string ColCurrencyAlt2 = "billingcurrency";   // CSP export format (no "code" suffix)
     private const string ColTags         = "tags";
 
     // ── Cache ──────────────────────────────────────────────────────────────────
@@ -102,6 +103,11 @@ public sealed class BlobCostManagementService : ICostManagementService
         _loadingState.Update(KeyTag,  LoadPhase.Idle);
         _logger.LogInformation("Blob cost cache invalidated.");
     }
+
+    public Task<List<SubscriptionBudget>> GetSubscriptionBudgetsAsync(CancellationToken ct = default) =>
+        _apiService is not null
+            ? _apiService.GetSubscriptionBudgetsAsync(ct)
+            : Task.FromResult(new List<SubscriptionBudget>());
 
     // ── Internal ───────────────────────────────────────────────────────────────
 
@@ -214,8 +220,25 @@ public sealed class BlobCostManagementService : ICostManagementService
                     using var stream = await blobClient.OpenReadAsync(cancellationToken: ct);
                     using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
 
+                    // Parse into a per-blob accumulator (rows with the same key within
+                    // one blob are summed as normal).
+                    var blobMain = new Dictionary<string, CostRow>(StringComparer.Ordinal);
+                    var blobRg   = new Dictionary<string, CostRow>(StringComparer.Ordinal);
+                    var blobTag  = new Dictionary<string, CostRow>(StringComparer.Ordinal);
+
                     await ParseCsvIntoAccumulatorsAsync(
-                        reader, mainAccum, rgAccum, tagAccum, blob.Name, ct);
+                        reader, blobMain, blobRg, blobTag, blob.Name, ct);
+
+                    // Merge with replacement: if the same (date|sub|meter) key already
+                    // exists from an earlier blob, overwrite it with this blob's value.
+                    // Azure "MonthToDate" exports write a NEW cumulative CSV each day
+                    // (blob path includes the run date), so a given day's cost appears in
+                    // every subsequent blob of that month. Blobs are ordered oldest-first,
+                    // so the final (newest) blob always wins — giving us the most
+                    // up-to-date cost for each day without double-counting.
+                    foreach (var (k, v) in blobMain) mainAccum[k] = v;
+                    foreach (var (k, v) in blobRg)   rgAccum[k]   = v;
+                    foreach (var (k, v) in blobTag)  tagAccum[k]  = v;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -284,7 +307,7 @@ public sealed class BlobCostManagementService : ICostManagementService
         int idxMeter   = FindCol(colMap, ColMeterCat);
         int idxRg      = FindCol(colMap, ColRgName);
         int idxCost    = FindCol(colMap, ColCost, ColCostAlt);
-        int idxCurr    = FindCol(colMap, ColCurrency, ColCurrencyAlt);
+        int idxCurr    = FindCol(colMap, ColCurrency, ColCurrencyAlt, ColCurrencyAlt2);
         int idxTags    = FindCol(colMap, ColTags);
 
         if (idxDate < 0 || idxCost < 0)

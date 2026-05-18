@@ -19,6 +19,7 @@
     <PackageReference Include="Azure.Storage.Blobs" Version="*" />
     <PackageReference Include="Blazor-ApexCharts" Version="*" />
     <PackageReference Include="Microsoft.Identity.Client" Version="*" />
+    <PackageReference Include="Microsoft.Identity.Web" Version="*" />
     <PackageReference Include="MudBlazor" Version="*" />
   </ItemGroup>
 

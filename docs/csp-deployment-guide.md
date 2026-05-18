@@ -51,6 +51,16 @@ the cost-export schedule.
   -ClientSecret  "<client-secret>" `
   -SubscriptionIds "<sub-id-1>", "<sub-id-2>" `
   -DeployExports
+
+# First deploy only — backfill the last 12 calendar months of cost data into blob storage.
+# Omit -HistoricalMonths on subsequent deploys (blobs already exist).
+.\scripts\deploy.ps1 `
+  -TenantId      "<entra-tenant-id>" `
+  -ClientId      "<app-client-id>" `
+  -ClientSecret  "<client-secret>" `
+  -SubscriptionIds "<sub-id-1>", "<sub-id-2>" `
+  -DeployExports `
+  -HistoricalMonths 12
 ```
 
 All resource names (`-AcrName`, `-KeyVaultName`, `-StorageAccount`, `-AppRg`,
@@ -90,6 +100,15 @@ forced to pull the new image even if the tag name did not change.
   -AppName  "cmcsp" `
   -AppRg    "rg-cmcsp-app" `
   -Tag      "1.2.3"
+
+# Also update the Entra identity env vars alongside the new image
+# (use when the app registration TenantId or ClientId has changed)
+.\scripts\deploy-image.ps1 `
+  -AcrName  "<acr-name>" `
+  -AppName  "cmcsp" `
+  -AppRg    "rg-cmcsp-app" `
+  -TenantId "<entra-tenant-id>" `
+  -ClientId "<app-client-id>"
 ```
 
 Both scripts support `-WhatIf` to print all commands without executing them.
@@ -154,6 +173,28 @@ echo "ClientId:     $APP_ID"
 echo "ClientSecret: $SECRET   ← copy now, store in Key Vault (Step 8)"
 ```
 
+### 3b – Configure redirect URIs for user authentication
+
+The same app registration handles both the Cost Management API client credentials flow and the browser-based OIDC login flow. You need to register the redirect URIs for each environment you will use.
+
+```bash
+# Replace <fqdn> with the Container App FQDN from Step 8 output.
+# Run this once after you know the FQDN (re-running is safe – it overwrites).
+APP_ID="<your-app-client-id>"
+
+az ad app update --id "$APP_ID" \
+  --web-redirect-uris \
+    "https://localhost:7105/signin-oidc" \
+    "http://localhost:5106/signin-oidc" \
+    "https://<fqdn>/signin-oidc"
+```
+
+You can also add these manually in **Azure Portal → App registrations → {app} → Authentication → Platform configurations → Web → Redirect URIs**.
+
+> **Required platform type:** Make sure the platform is **Web** (not SPA or Mobile). Under  
+> **Implicit grant and hybrid flows**, leave both token checkboxes **unchecked** — the app uses  
+> the authorization code flow, not implicit flow.
+
 ---
 
 ## Step 4 – Assign Cost Management Reader to the app registration
@@ -194,7 +235,7 @@ az deployment group create \
   --parameters \
     storageAccountName="$STORAGE_NAME" \
     location=swedencentral \
-    tags='{"project":"cmcsp","env":"prod"}'
+    tags='{"project":"cmcsp","application":"csp-cost-dashboard","environment":"production","managed-by":"bicep","owner":"platform-engineering","cost-center":"cloud-ops"}'
 
 # Save the storage account resource ID for later steps
 STORAGE_ID=$(az deployment group show -g rg-cmcsp-app -n main \
@@ -275,6 +316,15 @@ az deployment tenant create \
 
 > **Note:** The billing export will produce its first file after the scheduled run time.
 > You can trigger it manually in **Azure Portal → Cost Management → Exports → Run now**.
+>
+> After clicking **Run now**, expect:
+> - **1–10 minutes** for the export job to complete and CSVs to appear in blob storage
+> - **Up to 60 minutes** before the app serves the new data (cache TTL)  
+>   To skip the wait, restart the container revision:
+>   ```bash
+>   az containerapp revision restart -n cmcsp -g rg-cmcsp-app --revision "$(az containerapp show -n cmcsp -g rg-cmcsp-app --query 'properties.latestRevisionName' -o tsv)"
+>   ```
+>   This triggers `CacheWarmupService` which reads the fresh blobs within seconds of startup.
 
 ---
 
@@ -294,7 +344,7 @@ az deployment group create \
     acrName="$ACR_NAME" \
     keyVaultName="$KV_NAME" \
     location=swedencentral \
-    tags='{"project":"cmcsp","env":"prod"}'
+    tags='{"project":"cmcsp","application":"csp-cost-dashboard","environment":"production","managed-by":"bicep","owner":"platform-engineering","cost-center":"cloud-ops"}'
 
 # Save outputs
 APP_MI=$(az deployment group show -g rg-cmcsp-app -n app \
@@ -418,6 +468,7 @@ echo "Pinned image: $PINNED_IMAGE"
 ```bash
 TENANT_ID=$(az account show --query tenantId -o tsv)
 
+# 12a. Set non-sensitive environment variables
 az containerapp update \
   -n cmcsp -g rg-cmcsp-app \
   --image "$ACR_SERVER/cmcsp:latest" \
@@ -433,14 +484,21 @@ az containerapp update \
     "AzureCostManagement__AzureCache__Enabled=true" \
     "AzureCostManagement__AzureCache__StorageAccountUri=$STORAGE_URI" \
     "AzureCostManagement__AzureCache__TableName=cmcspcache" \
-    "AzureCostManagement__AzureCache__CacheContainerName=cmcspcache"
+    "AzureCostManagement__AzureCache__CacheContainerName=cmcspcache" \
+    "AzureCostManagement__ApiDailyRefreshHourUtc=1"
 
-# For ClientSecret: reference from Key Vault (recommended) or set directly:
-# az containerapp secret set -n cmcsp -g rg-cmcsp-app \
-#   --secrets "clientsecret=keyvaultref:$KV_URI/secrets/AzureCostManagement--ClientSecret,identityref:system"
-# az containerapp update -n cmcsp -g rg-cmcsp-app \
-#   --set-env-vars "AzureCostManagement__ClientSecret=secretref:clientsecret"
+# 12b. Wire the ClientSecret from Key Vault as a Container App secret
+#      The Container App's Managed Identity must have Key Vault Secrets User (granted by app.bicep).
+#      The KV secret name must be: CmCSP--ClientSecret
+az containerapp secret set -n cmcsp -g rg-cmcsp-app \
+  --secrets "client-secret=keyvaultref:$KV_URI/secrets/CmCSP--ClientSecret,identityref:system"
+
+az containerapp update -n cmcsp -g rg-cmcsp-app \
+  --set-env-vars "AzureCostManagement__ClientSecret=secretref:client-secret"
 ```
+
+> **Why is `ClientSecret` required in blob mode?**  
+> The Container App's Managed Identity can read blob storage and Key Vault directly. However, for CSP resellers to query customer subscriptions via the Azure Cost Management Query API (used on first startup before any blobs exist, and for the daily background refresh), the request must be made with an Entra app credential (`ClientSecret`) scoped to the CSP reseller tenant. Managed Identity alone does not have cross-tenant Cost Management rights.
 
 ---
 
@@ -479,9 +537,11 @@ For each additional customer subscription:
 
    **Option A – Dashboard UI (no restart required)**
    Open the app, go to the **Home** page, expand **Manage Subscriptions**, and paste or
-   type the GUID. IDs are saved to `Data/subscriptions.json` inside the container and
+   type the GUID. IDs are persisted to a JSON file in the container's temp directory and
    merged at runtime. You can also upload a `.csv` or `.txt` file — any GUIDs found in
    the file are extracted automatically.
+
+   > **Note:** The file is stored at `/tmp/cmcsp-data/subscriptions.json` in the container (the app runs as a non-root user and `/app` is root-owned). The data does not survive container restarts; use Option B or C to make IDs permanent.
 
    **Option B – Re-run `deploy.ps1` with the updated list**
    ```powershell
@@ -539,9 +599,26 @@ For each additional customer subscription:
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | HTTP 400 `IndirectCostDisabled` | Cost visibility not enabled | Step 2 – Partner Center |
+| HTTP 403 on Cost Management API | Entra app SP missing Cost Management Reader | Step 4 – assign role |
 | HTTP 403 on blob read | Container App MI missing Storage Blob Data Reader | Step 9 |
 | HTTP 403 on table read/write | Container App MI missing Storage Table Data Contributor | Step 9 |
 | No CSV files in container | Export hasn't run yet | Portal → Cost Management → Exports → Run now |
+| Data appears stale after forced export | Cache hasn't expired yet | Restart revision to trigger `CacheWarmupService` (see Step 7 note) |
 | Image pull failure | ACR pull role not yet propagated | Wait 2 min; AcrPull assigned in app.bicep |
 | Key Vault 403 | Container App MI missing Key Vault Secrets User | Check app.bicep deployment |
-| All chips show ✗ | Both export and Query API failing | Check app logs (`az containerapp logs show`) |
+| All chips show ✗ immediately | `ClientSecret` not wired; Query API auth failing | Check Step 12b; confirm KV secret `CmCSP--ClientSecret` exists |
+| All chips show ✗ on startup only | No blobs yet AND `ClientSecret` missing | Either add `ClientSecret` (Step 12b) or wait for first export run |
+| Daily refresh not updating data | `ApiDailyRefreshHourUtc` set but `ClientSecret` absent | Set `ClientSecret` via KV ref; without it, `CostManagementService` cannot auth |
+| Budgets page shows “no budgets found” | No subscription-scope budgets exist in Azure | Create a budget in Portal: Cost Management → Budgets, per subscription |
+| Budgets page shows 403 error | Entra app SP missing Cost Management Reader | Same role used for cost data – confirm Step 4 || Budgets page shows 0 current spend | CSP `currentSpend` API field returned null/0 | Expected for CSP — spend is automatically computed from `cm_main` cost rows instead; no action needed |
+| Login redirect loop | Redirect URI not registered in Entra app | Add `https://<fqdn>/signin-oidc` to the app's Web platform redirect URIs (Step 3b) |
+| `AADSTS50011` error on sign-in | Redirect URI mismatch | Check the exact URI (including trailing slash) matches what was registered in Step 3b |
+| `AADSTS700054` error on sign-in | `response_type 'id_token' is not enabled` | The app uses pure authorization code flow — **do not** enable ID tokens under Implicit grant in the app registration. This error appears only if ID token implicit flow is explicitly requested; the app overrides `ResponseType = "code"` in `Program.cs` to prevent it. If you see this after a code change, verify the `Configure<OpenIdConnectOptions>` call is still present. |
+| `AADSTS700016` error on sign-in | Wrong `ClientId` configured | Verify `AzureCostManagement:ClientId` matches the Application ID in Entra |
+| Login page shown before app loads | `TenantId` or `ClientId` not set | Set them via user-secrets (local) or Container App env vars / Key Vault (production) || Tag Chargeback shows no tagged data | No tagged resources, or CSP tag API limitation | Verify tags exist on resources; blob exports are required for reliable tag data |
+| Date range picker shows wrong range | `cm_main` cache empty on first render | Click the “Fit to data” (⊡) button after the loading chips turn ✓ |
+| `SubscriptionStoreService` startup error | DI misconfiguration | Ensure `CostManagementOptions` is registered before hosted services |
+| Dashboard shows data only for current month; older months blank | Export uses `MonthToDate` — no historical blobs exist | Re-run `deploy.ps1 -DeployExports -HistoricalMonths 12` to backfill prior months |
+| Currency not normalised correctly in blob mode | CSP export uses `billingCurrency` column instead of `billingCurrencyCode` | Handled automatically — parser checks `billingcurrencycode`, `currency`, `billingcurrency` in order |
+| MTD / YTD figures are inflated (e.g. ~11× expected) | Azure `MonthToDate` exports are cumulative — a new blob is written each day containing all data from day 1; the old code summed across all blobs, counting early days many times | Fixed in `BlobCostManagementService` (merge-with-replacement across blobs). Deploy the latest image; then click **Refresh Data** in the nav sidebar (or restart the revision) to clear the cached inflated values |
+| Need to force-refresh data without waiting 60 min | In-memory cache hasn't expired | Click **Refresh Data** in the nav sidebar — it invalidates the cache and triggers an immediate re-fetch on all open pages |

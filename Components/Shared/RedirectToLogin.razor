@@ -1,0 +1,12 @@
+@* Redirects unauthenticated users to the Entra OIDC login endpoint.
+   Must use forceLoad:true because HTTP challenges cannot be issued from
+   inside an active Blazor SignalR circuit. *@
+@inject NavigationManager Nav
+
+@code {
+    protected override void OnInitialized()
+    {
+        var returnUrl = Uri.EscapeDataString(Nav.Uri);
+        Nav.NavigateTo($"/login?redirectUri={returnUrl}", forceLoad: true);
+    }
+}

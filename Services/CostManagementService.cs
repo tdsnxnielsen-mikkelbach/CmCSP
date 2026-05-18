@@ -46,9 +46,13 @@ public sealed class CostManagementService : ICostManagementService
     };
 
     // ── cache keys ──────────────────────────────────────────────────────────
-    private const string KeyMain = "cm_main";
-    private const string KeyRg   = "cm_rg";
-    private const string KeyTag  = "cm_tag";
+    private const string KeyMain    = "cm_main";
+    private const string KeyRg      = "cm_rg";
+    private const string KeyTag     = "cm_tag";
+    private const string KeyBudgets = "cm_budgets";
+
+    // Budget endpoint uses a stable GA API version separate from the query endpoint.
+    private const string BudgetsApiVersion = "2023-11-01";
 
     // ── per-subscription rate-limit gate ────────────────────────────────────
     // Tracks the last time a real API request was dispatched for each sub.
@@ -102,11 +106,78 @@ public sealed class CostManagementService : ICostManagementService
         _cache.Remove(KeyMain);
         _cache.Remove(KeyRg);
         _cache.Remove(KeyTag);
+        _cache.Remove(KeyBudgets);
         // Reset phases so the loading banner re-appears on the next fetch.
         _loadingState.Update(KeyMain, LoadPhase.Idle);
         _loadingState.Update(KeyRg,   LoadPhase.Idle);
         _loadingState.Update(KeyTag,  LoadPhase.Idle);
         _logger.LogInformation("Cost Management cache invalidated.");
+    }
+
+    public async Task<List<SubscriptionBudget>> GetSubscriptionBudgetsAsync(CancellationToken ct = default)
+    {
+        var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
+        if (_cache.TryGetValue<List<SubscriptionBudget>>(KeyBudgets, ttl, out var cached) && cached is not null)
+        {
+            _logger.LogDebug("Cache hit for {Key}.", KeyBudgets);
+            return cached;
+        }
+
+        _logger.LogInformation("Fetching subscription budgets for {Count} subscription(s).",
+            _options.SubscriptionIds.Count);
+
+        var results = new List<SubscriptionBudget>();
+        using var client = _httpFactory.CreateClient("AzureMgmt");
+        var token = await _tokenService.GetAccessTokenAsync(ct);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        foreach (var subId in _options.SubscriptionIds)
+        {
+            try
+            {
+                var url = $"https://management.azure.com/subscriptions/{subId}" +
+                          $"/providers/Microsoft.Consumption/budgets?api-version={BudgetsApiVersion}";
+
+                var response = await client.GetAsync(url, ct);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning(
+                        "Budgets API returned {Status} for subscription {SubId} – skipping.",
+                        (int)response.StatusCode, subId);
+                    continue;
+                }
+
+                var list = await response.Content
+                    .ReadFromJsonAsync<BudgetListResponse>(JsonOpts, ct);
+
+                if (list?.Value is null || list.Value.Count == 0) continue;
+
+                foreach (var b in list.Value)
+                {
+                    if (b.Properties is null) continue;
+                    var currency = b.Properties.CurrentSpend?.Unit ?? string.Empty;
+                    results.Add(new SubscriptionBudget(
+                        SubscriptionId:   subId,
+                        BudgetName:       b.Name,
+                        Amount:           NormaliseCurrency(b.Properties.Amount, currency),
+                        CurrentSpend:     NormaliseCurrency(b.Properties.CurrentSpend?.Amount ?? 0m, currency),
+                        TimeGrain:        b.Properties.TimeGrain,
+                        OriginalCurrency: currency
+                    ));
+                }
+
+                _logger.LogInformation("Found {Count} budget(s) for subscription {SubId}.",
+                    list.Value.Count, subId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to fetch budgets for subscription {SubId}.", subId);
+            }
+        }
+
+        _cache.Set(KeyBudgets, results, ttl);
+        return results;
     }
 
     // ── internal fetch pipeline ──────────────────────────────────────────────

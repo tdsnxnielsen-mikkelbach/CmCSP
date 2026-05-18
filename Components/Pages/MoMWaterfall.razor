@@ -159,7 +159,8 @@
                 }
             }
         },
-        DataLabels = new DataLabels { Enabled = false }
+        DataLabels = new DataLabels { Enabled = false },
+        Yaxis = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
     };
 
     private readonly ApexChartOptions<SubMomPoint> _subMomOpts = new()
@@ -181,7 +182,8 @@
                 }
             }
         },
-        DataLabels = new DataLabels { Enabled = false }
+        DataLabels = new DataLabels { Enabled = false },
+        Xaxis = new XAxis { Labels = new XAxisLabels { Formatter = "function(val) { return val != null ? parseFloat(val).toFixed(2) : ''; }" } }
     };
 
     protected override void OnInitialized()

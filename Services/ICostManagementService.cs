@@ -15,4 +15,11 @@ public interface ICostManagementService
 
     /// <summary>Removes all cached results so the next call re-fetches from the API.</summary>
     void InvalidateCache();
+
+    /// <summary>
+    /// Returns budgets defined at the subscription scope for all configured subscriptions.
+    /// Only subscriptions that have at least one budget are included in the result.
+    /// Amounts are normalised to the configured TargetCurrency.
+    /// </summary>
+    Task<List<SubscriptionBudget>> GetSubscriptionBudgetsAsync(CancellationToken ct = default);
 }

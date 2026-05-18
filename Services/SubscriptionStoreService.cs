@@ -34,7 +34,9 @@ public sealed class SubscriptionStoreService
     {
         _options   = options;
         _logger    = logger;
-        _storePath = Path.Combine(env.ContentRootPath, "Data", "subscriptions.json");
+        // ContentRootPath (/app) is root-owned in the .NET SDK container image;
+        // use the OS temp directory (/tmp on Linux) which is always writable.
+        _storePath = Path.Combine(Path.GetTempPath(), "cmcsp-data", "subscriptions.json");
 
         // Snapshot the IDs that came from config so we can mark them as non-removable
         _configIds = new HashSet<string>(options.SubscriptionIds, StringComparer.OrdinalIgnoreCase);

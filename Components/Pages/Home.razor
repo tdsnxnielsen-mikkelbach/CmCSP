@@ -214,15 +214,17 @@
 
     private readonly ApexChartOptions<DailyPoint> _twoLineOpts = new()
     {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
+        Chart  = new Chart { Toolbar = new Toolbar { Show = false } },
         Stroke = new Stroke { Curve = Curve.Smooth, Width = [2, 2] },
-        Xaxis = new XAxis { Type = XAxisType.Numeric }
+        Xaxis  = new XAxis { Type = XAxisType.Numeric },
+        Yaxis  = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
     };
 
     private readonly ApexChartOptions<MonthlyPoint> _barOpts = new()
     {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
-        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { BorderRadius = 4 } }
+        Chart       = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { BorderRadius = 4 } },
+        Yaxis       = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
     };
 
     private readonly ApexChartOptions<ServicePoint> _hbarOpts = new()
@@ -270,10 +272,12 @@
         var filtered = _data.Where(r => r.Date >= start && r.Date <= end).ToList();
 
         _totalCost    = filtered.Sum(r => r.NormalizedCost);
-        _costMtd      = filtered.Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month)
-                                .Sum(r => r.NormalizedCost);
-        _costYtd      = filtered.Where(r => r.Date.Year == today.Year)
-                                .Sum(r => r.NormalizedCost);
+        // MTD and YTD are always relative to today — do NOT use the range-filtered set
+        // so they remain correct even when the date picker spans multiple years.
+        _costMtd      = _data.Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month)
+                             .Sum(r => r.NormalizedCost);
+        _costYtd      = _data.Where(r => r.Date.Year == today.Year)
+                             .Sum(r => r.NormalizedCost);
         var distinctDays = filtered.Select(r => r.Date.Date).Distinct().Count();
         _avgDailyCost = distinctDays > 0 ? _totalCost / distinctDays : 0m;
 

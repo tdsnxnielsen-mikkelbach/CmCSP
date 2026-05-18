@@ -1,6 +1,11 @@
 using CmCSP.Components;
 using CmCSP.Models;
 using CmCSP.Services;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Identity.Web;
 using MudBlazor.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -11,6 +16,33 @@ builder.Services.AddRazorComponents()
 
 // ── MudBlazor ───────────────────────────────────────────────────────────────
 builder.Services.AddMudServices();
+
+// ── Authentication (Entra OIDC) ──────────────────────────────────────────────
+// Reuses AzureCostManagement:TenantId / ClientId / ClientSecret from the same
+// Entra app registration already used for the Cost Management API – no second
+// config section or set of credentials needed.
+builder.Services.AddMicrosoftIdentityWebAppAuthentication(
+    builder.Configuration, configSectionName: CostManagementOptions.SectionName);
+// Force pure authorization code flow – avoids needing "ID tokens" implicit grant
+// enabled on the app registration (response_type=code only, no id_token fragment).
+builder.Services.Configure<OpenIdConnectOptions>(OpenIdConnectDefaults.AuthenticationScheme, options =>
+{
+    options.ResponseType = "code";
+});
+builder.Services.AddAuthorization();
+
+// ── Forwarded headers (Azure Container Apps TLS termination) ─────────────────
+// Ensures OIDC redirect URIs use https:// when the app runs behind the
+// Container Apps ingress (which terminates TLS and forwards X-Forwarded-Proto).
+builder.Services.Configure<ForwardedHeadersOptions>(opts =>
+{
+    opts.ForwardedHeaders = ForwardedHeaders.XForwardedFor
+                          | ForwardedHeaders.XForwardedProto
+                          | ForwardedHeaders.XForwardedHost;
+    // Container Apps NLB uses a range of private IPs – trust any proxy.
+    opts.KnownIPNetworks.Clear();
+    opts.KnownProxies.Clear();
+});
 
 // ── Caching ─────────────────────────────────────────────────────────────────
 // IMemoryCache is always registered (used as the in-process layer inside AzureStorageCacheService).
@@ -91,9 +123,28 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
+app.UseForwardedHeaders();
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseAntiforgery();
+
+// ── Login / logout endpoints ──────────────────────────────────────────────────
+// These are plain HTTP endpoints so the OIDC challenge can be issued outside
+// the Blazor SignalR circuit (where HTTP responses are not available).
+app.MapGet("/login", async (HttpContext ctx, string? redirectUri) =>
+    await ctx.ChallengeAsync(OpenIdConnectDefaults.AuthenticationScheme,
+        new AuthenticationProperties { RedirectUri = redirectUri ?? "/" }))
+    .AllowAnonymous();
+
+app.MapGet("/logout", async (HttpContext ctx) =>
+{
+    await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+    await ctx.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme,
+        new AuthenticationProperties { RedirectUri = "/" });
+}).RequireAuthorization();
+
 app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();

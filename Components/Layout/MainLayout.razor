@@ -1,4 +1,7 @@
 ﻿@inherits LayoutComponentBase
+@inject ICostManagementService CostService
+@inject DashboardStateService State
+@inject IJSRuntime JS
 
 <MudThemeProvider @ref="_themeProvider" @bind-IsDarkMode="_isDark" />
 <MudPopoverProvider />
@@ -13,6 +16,19 @@
                        OnClick="ToggleDrawer" />
         <MudText Typo="Typo.h6" Class="ml-3 fw-bold">CSP Cost Dashboard</MudText>
         <MudSpacer />
+        <AuthorizeView>
+            <Authorized>
+                <MudText Typo="Typo.body2" Color="Color.Inherit" Class="mr-1 d-none d-sm-flex">
+                    @(context.User.FindFirst("name")?.Value ?? context.User.Identity?.Name)
+                </MudText>
+                <MudTooltip Text="Sign out">
+                    <MudIconButton Icon="@Icons.Material.Filled.Logout"
+                                   Color="Color.Inherit"
+                                   Href="/logout"
+                                   aria-label="Sign out" />
+                </MudTooltip>
+            </Authorized>
+        </AuthorizeView>
         <MudIconButton Icon="@(_isDark ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
                        Color="Color.Inherit"
                        OnClick="ToggleTheme"
@@ -28,6 +44,33 @@
 
     <MudMainContent>
         <MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="py-4">
+
+            @* ── Global date-range filter ─────────────────────────────────── *@
+            <MudPaper Class="pa-3 mb-4 d-flex align-center flex-wrap gap-3" Elevation="1">
+                <MudIcon Icon="@Icons.Material.Outlined.DateRange" Color="Color.Primary" Class="flex-none" />
+                <MudText Typo="Typo.subtitle2" Class="flex-none">Date Range</MudText>
+                <MudDateRangePicker DateRange="_dateRange"
+                                    DateRangeChanged="OnDateRangeChanged"
+                                    Variant="Variant.Outlined"
+                                    Margin="Margin.Dense"
+                                    DateFormat="dd MMM yyyy"
+                                    AutoClose="true"
+                                    PickerVariant="PickerVariant.Dialog"
+                                    Style="min-width:240px; max-width:340px" />
+                <MudTooltip Text="Fit to available data range">
+                    <MudIconButton Icon="@Icons.Material.Filled.FitScreen"
+                                   Size="Size.Small"
+                                   OnClick="FitToDataRange"
+                                   aria-label="Fit to available data range" />
+                </MudTooltip>
+                @if (_dataMin.HasValue)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="flex-none">
+                        Available: @_dataMin.Value.ToString("d MMM yyyy") – @_dataMax!.Value.ToString("d MMM yyyy")
+                    </MudText>
+                }
+            </MudPaper>
+
             <LoadingStatus />
             @Body
         </MudContainer>
@@ -37,8 +80,64 @@
 @code {
     private bool _drawerOpen = true;
     private bool _isDark;
+    private bool _prevDark;
     private MudThemeProvider _themeProvider = default!;
+
+    private DateRange _dateRange = new(
+        new DateTime(DateTime.Now.Year - 1, 1, 1),
+        DateTime.Now);
+
+    private DateTime? _dataMin;
+    private DateTime? _dataMax;
 
     private void ToggleDrawer() => _drawerOpen = !_drawerOpen;
     private void ToggleTheme() => _isDark = !_isDark;
+
+    private void OnDateRangeChanged(DateRange range)
+    {
+        _dateRange = range;
+        State.SetDateRange(range);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _prevDark = _isDark;
+            // Sets window.Apex.theme so charts created on navigation use the right mode.
+            // querySelectorAll will find no charts yet on first render – that is fine.
+            await JS.InvokeVoidAsync("updateApexChartsTheme", _isDark);
+            await FitToDataRange();
+            return;
+        }
+
+        // Fires when MudBlazor restores dark preference from localStorage, or when
+        // the user clicks the toggle button.
+        if (_isDark != _prevDark)
+        {
+            _prevDark = _isDark;
+            await JS.InvokeVoidAsync("updateApexChartsTheme", _isDark);
+        }
+    }
+
+    private async Task FitToDataRange()
+    {
+        try
+        {
+            var data = await CostService.GetMainCostDataAsync();
+            if (data.Count == 0) return;
+
+            _dataMin = data.Min(r => r.Date);
+            _dataMax = data.Max(r => r.Date);
+
+            var range = new DateRange(_dataMin.Value, _dataMax.Value);
+            _dateRange = range;
+            State.SetDateRange(range);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch
+        {
+            // Non-critical – leave the default range if data isn't available yet
+        }
+    }
 }

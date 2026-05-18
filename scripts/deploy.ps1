@@ -51,10 +51,18 @@ param (
     # ── Export options ────────────────────────────────────────────────────────
     [switch]$DeployExports,               # pass to also deploy the cost-export schedule
     [string]$ExportName       = 'cmcsp-daily-export',
+    [int]$HistoricalMonths    = 0,        # backfill N prior calendar months of export data
 
     # ── Misc ──────────────────────────────────────────────────────────────────
     [switch]$WhatIf,
-    [hashtable]$Tags          = @{ 'app' = 'cmcsp'; 'managed-by' = 'deploy.ps1' }
+    [hashtable]$Tags          = @{
+        'project'      = 'cmcsp'
+        'application'  = 'csp-cost-dashboard'
+        'environment'  = 'production'
+        'managed-by'   = 'bicep'
+        'owner'        = 'platform-engineering'
+        'cost-center'  = 'cloud-ops'
+    }
 )
 
 Set-StrictMode -Version Latest
@@ -289,6 +297,9 @@ $storageOut = Invoke-AzDeploymentAsync -Rg $AppRg -Name 'main' -TemplateArgs @(
 )
 
 $storageUri = $storageOut.properties.outputs.storageAccountUri.value
+if (-not $storageUri) {
+    Write-Error "main.bicep deployment succeeded but 'storageAccountUri' output is empty. Cannot continue without a storage URI."
+}
 Write-Host "  Storage Account URI: $storageUri"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -543,11 +554,56 @@ if ($DeployExports) {
         ) | Out-Null
     }
 
+    # ── Optional: backfill historical months ─────────────────────────────────
+    if ($HistoricalMonths -gt 0) {
+        Write-Host ""
+        Write-Host "  Backfilling $HistoricalMonths prior calendar month(s) of cost data..." -ForegroundColor Cyan
+        $today  = (Get-Date).Date
+        $farFuture = '2099-12-31T00:00:00Z'
+
+        for ($m = 1; $m -le $HistoricalMonths; $m++) {
+            $monthStart  = [datetime]::new($today.Year, $today.Month, 1).AddMonths(-$m)
+            $monthEnd    = $monthStart.AddMonths(1).AddDays(-1)
+            $historyName = "$ExportName-hist-$($monthStart.ToString('yyyy-MM'))"
+
+            Write-Host "  [$m/$HistoricalMonths] $($monthStart.ToString('yyyy-MM')) → deploying $historyName ..."
+
+            Invoke-AzCli @(
+                'deployment', 'sub', 'create',
+                '--location', $Location,
+                '--template-file', "$BicepRoot\export-sub.bicep",
+                '--only-show-errors',
+                '--parameters',
+                    "exportName=$historyName",
+                    "storageAccountResourceId=$storageId",
+                    'containerName=cost-exports',
+                    'rootFolderPath=exports',
+                    "location=$Location",
+                    'timeframe=Custom',
+                    "timePeriodFrom=$($monthStart.ToString('yyyy-MM-dd'))",
+                    "timePeriodTo=$($monthEnd.ToString('yyyy-MM-dd'))",
+                    'scheduleStatus=Inactive',
+                    "recurrenceFrom=$farFuture"
+            ) | Out-Null
+
+            # Trigger the one-time export immediately.
+            $scope = "/subscriptions/$primarySub"
+            az rest --method POST `
+                --uri "https://management.azure.com$scope/providers/Microsoft.CostManagement/exports/$historyName/run?api-version=2025-03-01" `
+                --only-show-errors | Out-Null
+
+            Write-Host "    Triggered." -ForegroundColor Green
+        }
+    }
+
     # Switch back to whichever subscription the user had active
     Invoke-AzCli @('account', 'set', '--subscription', $account.sub) | Out-Null
 } else {
     Write-Host ""
     Write-Host "  Skipping export schedule deployment (pass -DeployExports to enable)." -ForegroundColor Yellow
+    if ($HistoricalMonths -gt 0) {
+        Write-Host "  Note: -HistoricalMonths requires -DeployExports to also be set." -ForegroundColor Yellow
+    }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1,4 +1,7 @@
-﻿<MudNavMenu>
+﻿@inject ICostManagementService CostService
+@inject DashboardStateService State
+
+<MudNavMenu>
     <MudNavLink Href="/"
                 Match="NavLinkMatch.All"
                 Icon="@Icons.Material.Filled.Dashboard">
@@ -34,5 +37,26 @@
                 Icon="@Icons.Material.Filled.Equalizer">
         MoM Waterfall
     </MudNavLink>
+
+    <MudDivider Class="my-2" />
+
+    <MudNavLink Icon="@(_refreshing ? Icons.Material.Filled.HourglassEmpty : Icons.Material.Filled.Refresh)"
+                Disabled="_refreshing"
+                @onclick="RefreshAsync">
+        @(_refreshing ? "Refreshing…" : "Refresh Data")
+    </MudNavLink>
 </MudNavMenu>
+
+@code {
+    private bool _refreshing;
+
+    private async Task RefreshAsync()
+    {
+        _refreshing = true;
+        CostService.InvalidateCache();
+        State.SetDateRange(State.SelectedRange); // fires OnStateChanged → all pages re-fetch
+        await Task.Yield();
+        _refreshing = false;
+    }
+}
 

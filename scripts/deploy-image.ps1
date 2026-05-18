@@ -52,6 +52,11 @@ param (
     # Also tag the pushed image as 'latest'
     [switch]$PushLatest,
 
+    # Optionally re-set the identity env vars alongside the image update.
+    # Useful when the app registration (TenantId / ClientId) has changed.
+    [string]$TenantId = '',
+    [string]$ClientId = '',
+
     # Dry-run: print commands without executing
     [switch]$WhatIf
 )
@@ -284,13 +289,21 @@ Invoke-AzCli @(
 ) | Out-Null
 
 Write-Host "  Setting image on '$AppName' in '$AppRg'..."
-Invoke-AzCli @(
+$updateArgs = @(
     'containerapp', 'update',
     '--name', $AppName,
     '--resource-group', $AppRg,
     '--image', $pinnedImage,
     '--only-show-errors'
-) | Out-Null
+)
+if ($TenantId -or $ClientId) {
+    $idEnvPairs = @()
+    if ($TenantId) { $idEnvPairs += "AzureCostManagement__TenantId=$TenantId" }
+    if ($ClientId) { $idEnvPairs += "AzureCostManagement__ClientId=$ClientId" }
+    $updateArgs += @('--set-env-vars') + $idEnvPairs
+    Write-Host "  Also updating identity env vars (TenantId/ClientId)..."
+}
+Invoke-AzCli $updateArgs | Out-Null
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 7 – Wait for new revision to be active
