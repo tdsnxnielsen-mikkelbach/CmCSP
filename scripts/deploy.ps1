@@ -462,10 +462,22 @@ $subIdsEnv = ($SubscriptionIds | ForEach-Object { $i = 0 } {
     $i; "AzureCostManagement__SubscriptionIds__$i=$_"; $i++
 }) | Where-Object { $_ -is [string] }
 
-# Core env vars (non-secret)
+# Wire the ClientSecret Key Vault reference as a Container App secret first,
+# so it can be consumed as secretref in the env vars below.
+Write-Host "  Adding Key Vault secret reference 'client-secret'..."
+Invoke-AzCli @(
+    'containerapp', 'secret', 'set',
+    '--name', $AppName,
+    '--resource-group', $AppRg,
+    '--secrets', "client-secret=keyvaultref:${keyVaultUri}secrets/CmCSP--ClientSecret,identityref:system",
+    '--only-show-errors'
+) | Out-Null
+
+# Core env vars (non-secret); ClientSecret exposed via secretRef
 $envPairs = @(
     "AzureCostManagement__TenantId=$TenantId"
     "AzureCostManagement__ClientId=$ClientId"
+    "AzureCostManagement__ClientSecret=secretref:client-secret"
     "AzureCostManagement__ExportBlob__Enabled=true"
     "AzureCostManagement__ExportBlob__StorageAccountUri=$storageUri"
     "AzureCostManagement__ExportBlob__ContainerName=cost-exports"

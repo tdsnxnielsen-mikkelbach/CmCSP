@@ -124,10 +124,14 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ] : []
       secrets: [
-        // Secrets are referenced by name in env vars below.
-        // Actual values are stored in Key Vault and injected at deploy time
-        // using the keyvaultref pattern, OR you can set them directly here
-        // for non-sensitive values.
+        // ClientSecret is stored in Key Vault and fetched at runtime via the
+        // Container App's SystemAssigned managed identity (kvSecretsRole below).
+        // The Key Vault secret is created by deploy.ps1 Phase 5 before this is used.
+        {
+          name: 'client-secret'
+          keyVaultUrl: '${kv.properties.vaultUri}secrets/CmCSP--ClientSecret'
+          identity: 'system'
+        }
       ]
     }
     template: {
@@ -154,14 +158,18 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: 'http://+:8080'
             }
             // ── Cost Management API (Query mode) ────────────────────────────
-            // Set these or use Key Vault references below.
+            // TenantId and ClientId are plain strings; ClientSecret comes from Key Vault.
             {
               name: 'AzureCostManagement__TenantId'
-              value: '' // set via Key Vault secret or az containerapp update
+              value: '' // set via az containerapp update (deploy.ps1 Phase 6)
             }
             {
               name: 'AzureCostManagement__ClientId'
-              value: '' // set via Key Vault secret or az containerapp update
+              value: '' // set via az containerapp update (deploy.ps1 Phase 6)
+            }
+            {
+              name: 'AzureCostManagement__ClientSecret'
+              secretRef: 'client-secret'
             }
             // ── Blob Export mode ────────────────────────────────────────────
             {
