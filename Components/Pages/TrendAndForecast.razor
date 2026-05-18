@@ -1,5 +1,4 @@
 @page "/trend"
-@rendermode InteractiveServer
 @inject ICostManagementService CostService
 @inject DashboardStateService State
 @inject CostManagementOptions Options
@@ -284,3 +283,4 @@
 
     public void Dispose() => State.OnStateChanged -= RefreshData;
 }
+

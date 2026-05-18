@@ -108,7 +108,8 @@ function Invoke-AzDeploymentAsync {
         [string[]] $TemplateArgs,
         [int]      $StartMaxAttempts  = 6,
         [int]      $StartRetrySeconds = 30,
-        [int]      $PollSeconds       = 15
+        [int]      $PollSeconds       = 15,
+        [int]      $TimeoutSeconds    = 1800
     )
     if ($WhatIf) {
         Write-Host "[WhatIf] az deployment group create -g $Rg -n $Name --no-wait ..." -ForegroundColor Yellow
@@ -136,16 +137,33 @@ function Invoke-AzDeploymentAsync {
         }
     }
 
-    $start = Get-Date
+    $start     = Get-Date
+    $deadline  = $start.AddSeconds($TimeoutSeconds)
+    $pollRetry = 0
     do {
         Start-Sleep -Seconds $PollSeconds
         $dep     = az deployment group show -g $Rg -n $Name -o json 2>$null | ConvertFrom-Json
         $state   = $dep.properties.provisioningState
         $elapsed = [int]((Get-Date) - $start).TotalSeconds
-        switch ($state) {
-            'Running'  { Write-Host "  [${elapsed}s]  still provisioning..." -ForegroundColor Yellow }
-            'Failed'   { Write-Error "Deployment '$Name' failed after ${elapsed}s: $($dep.properties.error | ConvertTo-Json -Compress)" }
-            'Canceled' { Write-Error "Deployment '$Name' was canceled after ${elapsed}s." }
+
+        if ($state -eq 'Running') {
+            Write-Host "  [${elapsed}s]  still provisioning..." -ForegroundColor Yellow
+            if ((Get-Date) -ge $deadline) {
+                Write-Error "Deployment '$Name' timed out after ${TimeoutSeconds}s (still Running). Cancel it in the portal or run: az deployment group cancel -g $Rg -n $Name"
+            }
+        } elseif ($state -eq 'Failed') {
+            $errCode = $dep.properties.error.details[0].code
+            if ($errCode -eq 'ContainerAppOperationInProgress' -and $pollRetry -lt $StartMaxAttempts) {
+                $pollRetry++
+                Write-Host "  Container App busy – re-launching deployment in ${StartRetrySeconds}s (poll-retry $pollRetry/$StartMaxAttempts)..." -ForegroundColor Yellow
+                Start-Sleep -Seconds $StartRetrySeconds
+                Invoke-AzCli $launchArgs | Out-Null
+                $state = 'Running'   # keep the loop going
+            } else {
+                Write-Error "Deployment '$Name' failed after ${elapsed}s: $($dep.properties.error | ConvertTo-Json -Compress)"
+            }
+        } elseif ($state -eq 'Canceled') {
+            Write-Error "Deployment '$Name' was canceled after ${elapsed}s."
         }
     } while ($state -eq 'Running')
 
@@ -279,6 +297,16 @@ Write-Host "  Storage Account URI: $storageUri"
 
 Write-Step "Phase 3 – App infrastructure (app.bicep)"
 
+# If the Container App already exists from a previous run, wait for any in-progress
+# operation to settle before launching the deployment – otherwise it will immediately
+# fail with ContainerAppOperationInProgress.
+$existingCaState = az containerapp show -n $AppName -g $AppRg `
+    --query 'properties.provisioningState' -o tsv 2>$null
+if ($existingCaState -and $existingCaState -notin @('Succeeded', 'Failed', 'Canceled')) {
+    Write-Host "  Container App '$AppName' is currently '$existingCaState' – waiting before deploying..."
+    Wait-ContainerAppReady -Name $AppName -Rg $AppRg
+}
+
 Write-Host "  Starting deployment (ACR, Key Vault, Container Apps env, Container App)..."
 $appOut = Invoke-AzDeploymentAsync -Rg $AppRg -Name 'app' -TemplateArgs @(
     '--template-file', "$BicepRoot\app.bicep",
@@ -312,43 +340,49 @@ Write-Step "Phase 4 – Role assignments (app MI → storage + ACR)"
 $storageId = "/subscriptions/$($account.sub)/resourceGroups/$AppRg/providers/Microsoft.Storage/storageAccounts/$StorageAccount"
 $acrId     = "/subscriptions/$($account.sub)/resourceGroups/$AppRg/providers/Microsoft.ContainerRegistry/registries/$AcrName"
 
-$roleMap = @{
-    'Storage Blob Data Reader'       = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
-    'Storage Table Data Contributor' = '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
-    'AcrPull'                        = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+# AcrPull is checked here as a safety net; app.bicep manages it with a stable GUID.
+# Storage roles (Blob Reader, Table Contributor) are intentionally NOT created via CLI –
+# main.bicep owns them with deterministic guid() names.  Creating them here would
+# generate random GUIDs that conflict with Bicep on re-runs.
+$acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+$existingAcrPull = az role assignment list `
+    --assignee $containerAppMiId `
+    --role $acrPullRoleId `
+    --scope $acrId `
+    --query '[].id' -o tsv 2>$null
+if ($existingAcrPull) {
+    Write-Host "  'AcrPull' already assigned – skipping"
+} else {
+    Write-Host "  Assigning 'AcrPull' to app MI"
+    Invoke-AzCli @(
+        'role', 'assignment', 'create',
+        '--assignee-object-id', $containerAppMiId,
+        '--assignee-principal-type', 'ServicePrincipal',
+        '--role', $acrPullRoleId,
+        '--scope', $acrId,
+        '--only-show-errors'
+    ) | Out-Null
 }
 
-$roleScopeMap = @{
-    'Storage Blob Data Reader'       = $storageId
-    'Storage Table Data Contributor' = $storageId
-    'AcrPull'                        = $acrId
-}
-
-foreach ($roleName in $roleMap.Keys) {
-    $roleId = $roleMap[$roleName]
-    $scope  = $roleScopeMap[$roleName]
-    # Check if already assigned (idempotent)
-    $existing = az role assignment list `
-        --assignee $containerAppMiId `
-        --role $roleId `
-        --scope $scope `
+# Remove any storage role assignments that were previously created via CLI with
+# random GUIDs. main.bicep will re-create them with stable deterministic GUIDs,
+# which is idempotent on every subsequent run (Incremental mode sees same name).
+$storageRoleIds = @(
+    '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'  # Storage Blob Data Reader
+    '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'  # Storage Table Data Contributor
+)
+foreach ($rId in $storageRoleIds) {
+    $toDelete = az role assignment list `
+        --assignee $containerAppMiId --role $rId --scope $storageId `
         --query '[].id' -o tsv 2>$null
-    if ($existing) {
-        Write-Host "  '$roleName' already assigned – skipping"
-    } else {
-        Write-Host "  Assigning '$roleName' to app MI"
-        Invoke-AzCli @(
-            'role', 'assignment', 'create',
-            '--assignee-object-id', $containerAppMiId,
-            '--assignee-principal-type', 'ServicePrincipal',
-            '--role', $roleId,
-            '--scope', $scope,
-            '--only-show-errors'
-        ) | Out-Null
+    foreach ($raId in ($toDelete -split "`n" | Where-Object { $_ })) {
+        Write-Host "  Removing stale storage role assignment (Bicep will re-create with stable GUID): $raId"
+        Invoke-AzCli @('role', 'assignment', 'delete', '--ids', $raId, '--only-show-errors') | Out-Null
     }
 }
 
-# Update main.bicep to embed the app MI principal ID (so future re-runs include it)
+# Deploy main.bicep with the app MI principal ID so Bicep creates the storage
+# role assignments with deterministic GUIDs – idempotent on re-runs.
 Write-Host "  Updating storage with app MI principal ID..."
 Invoke-AzCli @(
     'deployment', 'group', 'create',

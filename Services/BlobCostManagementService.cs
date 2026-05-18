@@ -65,17 +65,20 @@ public sealed class BlobCostManagementService : ICostManagementService
     private readonly CostManagementOptions               _options;
     private readonly DataLoadingStateService             _loadingState;
     private readonly ILogger<BlobCostManagementService>  _logger;
+    private readonly CostManagementService?              _apiService;
 
     public BlobCostManagementService(
         AzureStorageCacheService             cache,
         CostManagementOptions                options,
         DataLoadingStateService              loadingState,
-        ILogger<BlobCostManagementService>   logger)
+        ILogger<BlobCostManagementService>   logger,
+        CostManagementService?               apiService = null)
     {
         _cache        = cache;
         _options      = options;
         _loadingState = loadingState;
         _logger       = logger;
+        _apiService   = apiService;
     }
 
     // ── Public interface ───────────────────────────────────────────────────────
@@ -188,6 +191,17 @@ public sealed class BlobCostManagementService : ICostManagementService
                     "No relevant export blobs found under prefix '{Prefix}' in container '{Container}'. " +
                     "Ensure the export schedule has run at least once.",
                     opts.BlobPrefix, opts.ContainerName);
+
+                if (_apiService is not null)
+                {
+                    _logger.LogInformation(
+                        "No export blobs available – falling back to Cost Management Query API.");
+                    // Run sequentially to respect the per-subscription rate limit (5 req/min).
+                    await _apiService.GetMainCostDataAsync(ct);
+                    await _apiService.GetRgCostDataAsync(ct);
+                    await _apiService.GetTagCostDataAsync(ct);
+                    return; // cache is now populated by the API service
+                }
             }
 
             foreach (var blob in relevant)

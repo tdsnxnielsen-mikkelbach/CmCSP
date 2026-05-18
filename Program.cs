@@ -61,6 +61,9 @@ builder.Services.AddSingleton<DataLoadingStateService>();
 // which reads pre-built export CSVs from Azure Blob Storage — no Query API rate limits.
 if (costOptions.ExportBlob.Enabled)
 {
+    // Register the concrete API service so BlobCostManagementService can use it
+    // as a fallback when no export blobs exist yet (e.g. before the first daily export runs).
+    builder.Services.AddSingleton<CostManagementService>();
     builder.Services.AddSingleton<ICostManagementService, BlobCostManagementService>();
     builder.Services.AddHostedService<CacheWarmupService>();
     // AzureTokenService is still registered for potential fallback and future use,

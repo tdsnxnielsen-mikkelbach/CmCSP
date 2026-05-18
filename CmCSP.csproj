@@ -8,7 +8,7 @@
     <UserSecretsId>bb9e6b00-7c45-4ffd-91d6-98b1177930b1</UserSecretsId>
 
     <!-- dotnet publish /t:PublishContainer defaults -->
-    <ContainerImageName>cmcsp</ContainerImageName>
+    <ContainerRepository>cmcsp</ContainerRepository>
     <ContainerBaseImage>mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled</ContainerBaseImage>
     <ContainerPort>8080</ContainerPort>
   </PropertyGroup>

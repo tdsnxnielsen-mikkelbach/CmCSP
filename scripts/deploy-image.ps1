@@ -70,7 +70,7 @@ function Write-Step([string]$msg) {
     Write-Host "─────────────────────────────────────────────────────" -ForegroundColor Cyan
 }
 
-function Invoke-Cmd([string]$exe, [string[]]$argList) {
+function Invoke-Cmd([string]$exe, [string[]]$argList, [switch]$StreamOutput) {
     Write-Host "  > $exe $($argList -join ' ')" -ForegroundColor DarkGray
     if ($WhatIf) {
         Write-Host "  [WhatIf] skipped" -ForegroundColor Yellow
@@ -83,10 +83,15 @@ function Invoke-Cmd([string]$exe, [string[]]$argList) {
             Write-Host $_.ToString() -ForegroundColor DarkGray
         } elseif ($_ -notmatch '^\s*[\\/|\-]\s') {
             $stdoutLines.Add([string]$_)
+            if ($StreamOutput) { Write-Host "  $_" }
         }
     }
 
     if ($LASTEXITCODE -ne 0) {
+        # Print captured stdout so the actual error is visible
+        if (-not $StreamOutput -and $stdoutLines.Count -gt 0) {
+            $stdoutLines | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+        }
         Write-Error "${exe} failed (exit $LASTEXITCODE) — see output above"
     }
     return $stdoutLines -join "`n"
@@ -143,10 +148,19 @@ Write-Host "  Image: $fullImage"
 # Step 2 – ACR login (feeds credentials into the .NET SDK's credential store)
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step "Step 2 – ACR login"
+Write-Step "Step 2 – ACR token"
 
-Invoke-AzCli @('acr', 'login', '--name', $AcrName, '--only-show-errors') | Out-Null
-Write-Host "  Logged in to $acrLoginServer"
+# --expose-token returns a short-lived bearer token without touching the Docker
+# daemon. The token is passed directly to dotnet publish as MSBuild properties.
+$tokenJson = Invoke-AzCli @('acr', 'login', '--name', $AcrName, '--expose-token', '--output', 'json', '--only-show-errors')
+if (-not $WhatIf) {
+    $acrToken    = ($tokenJson | ConvertFrom-Json).accessToken
+    $acrPassword = $acrToken
+    if (-not $acrPassword) {
+        Write-Error "Failed to obtain ACR token for '$AcrName'. Ensure you are logged in: az login"
+    }
+}
+Write-Host "  ACR token acquired for $acrLoginServer"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 3 – dotnet publish /t:PublishContainer  (build + push in one step)
@@ -171,16 +185,55 @@ if ($SkipBuild) {
     if ($PushLatest) { $containerTags += 'latest' }
     $tagsArg = $containerTags -join ';'
 
-    Invoke-Cmd 'dotnet' @(
-        'publish', $ProjectPath,
-        '--configuration', 'Release',
-        '--os', 'linux',
-        '--arch', 'x64',
-        '/t:PublishContainer',
-        "-p:ContainerRegistry=$acrLoginServer",
-        "-p:ContainerRepository=$Repository",
-        "-p:ContainerImageTags=$tagsArg"
-    ) | Out-Null
+    # The .NET SDK reads Docker's credsStore config and calls docker-credential-desktop,
+    # ignoring MSBuild env-var credentials when a credsStore is configured globally.
+    # Per-registry entries in the 'auths' section take precedence over credsStore,
+    # so we temporarily inject the ACR token there and restore on exit.
+    $dockerConfigPath = Join-Path $env:USERPROFILE '.docker' 'config.json'
+    $dockerConfigDir  = Split-Path $dockerConfigPath -Parent
+    if (-not (Test-Path $dockerConfigDir)) {
+        New-Item -ItemType Directory -Path $dockerConfigDir | Out-Null
+    }
+    $originalDockerConfig = if (Test-Path $dockerConfigPath) { Get-Content $dockerConfigPath -Raw } else { $null }
+    $dockerConfig = if ($originalDockerConfig) { $originalDockerConfig | ConvertFrom-Json } else { [PSCustomObject]@{} }
+
+    # Docker's lookup order: credHelpers (per-registry) → credsStore (global) → auths (inline).
+    # credsStore beats auths, so we must remove it temporarily; auths then wins.
+    $dockerConfig.PSObject.Properties.Remove('credsStore')
+
+    $authValue = [Convert]::ToBase64String(
+        [Text.Encoding]::ASCII.GetBytes("00000000-0000-0000-0000-000000000000:$acrPassword"))
+    if (-not $dockerConfig.PSObject.Properties['auths']) {
+        $dockerConfig | Add-Member -MemberType NoteProperty -Name 'auths' -Value ([PSCustomObject]@{})
+    }
+    $dockerConfig.auths | Add-Member -MemberType NoteProperty -Name $acrLoginServer `
+        -Value ([PSCustomObject]@{ auth = $authValue }) -Force
+
+    if (-not $WhatIf) { $dockerConfig | ConvertTo-Json -Depth 10 | Set-Content $dockerConfigPath }
+    Write-Host "  Credentials injected into Docker config for $acrLoginServer (credsStore suspended)"
+
+    try {
+        Invoke-Cmd 'dotnet' @(
+            'publish', $ProjectPath,
+            '--configuration', 'Release',
+            '--os', 'linux',
+            '--arch', 'x64',
+            '/t:PublishContainer',
+            "-p:ContainerRegistry=$acrLoginServer",
+            "-p:ContainerRepository=$Repository",
+            "-p:ContainerImageTags=$tagsArg"
+        ) -StreamOutput
+    } finally {
+        # Restore Docker config exactly as it was
+        if (-not $WhatIf) {
+            if ($null -ne $originalDockerConfig) {
+                Set-Content -Path $dockerConfigPath -Value $originalDockerConfig
+            } else {
+                Remove-Item -Path $dockerConfigPath -ErrorAction SilentlyContinue
+            }
+        }
+        Write-Host "  Docker config restored."
+    }
 
     Write-Host "  Published and pushed: $fullImage" -ForegroundColor Green
     if ($PushLatest) { Write-Host "  Also pushed: $acrLoginServer/$Repository`:latest" -ForegroundColor Green }
@@ -220,8 +273,17 @@ Write-Host "  Pinned: $pinnedImage"
 
 Write-Step "Step 5 – Update Container App"
 
-Write-Host "  Setting image on '$AppName' in '$AppRg'..."
+Write-Host "  Configuring ACR registry auth on '$AppName'..."
+Invoke-AzCli @(
+    'containerapp', 'registry', 'set',
+    '--name', $AppName,
+    '--resource-group', $AppRg,
+    '--server', $acrLoginServer,
+    '--identity', 'system',
+    '--only-show-errors'
+) | Out-Null
 
+Write-Host "  Setting image on '$AppName' in '$AppRg'..."
 Invoke-AzCli @(
     'containerapp', 'update',
     '--name', $AppName,

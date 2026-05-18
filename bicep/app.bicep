@@ -114,12 +114,15 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         transport: 'http'
         allowInsecure: false
       }
-      registries: [
+      // Only configure ACR registry auth when the image is actually from this ACR.
+      // On the initial deploy (MCR placeholder), leave registries empty so Azure
+      // does not attempt to validate ACR access before the AcrPull role is assigned.
+      registries: contains(containerImage, acr.properties.loginServer) ? [
         {
           server: acr.properties.loginServer
           identity: 'system'   // pull image using the SystemAssigned identity
         }
-      ]
+      ] : []
       secrets: [
         // Secrets are referenced by name in env vars below.
         // Actual values are stored in Key Vault and injected at deploy time
