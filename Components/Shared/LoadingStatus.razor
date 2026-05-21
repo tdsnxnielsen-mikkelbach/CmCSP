@@ -75,6 +75,7 @@
 @code {
     private bool _visible;
     private bool _autoDismissPending;
+    private bool _disposed;
     private readonly CancellationTokenSource _cts = new();
 
     protected override void OnInitialized()
@@ -89,6 +90,7 @@
         // OnChanged is raised from a background thread; marshal to the circuit thread.
         InvokeAsync(async () =>
         {
+            if (_disposed) return;
             StateHasChanged();
 
             if (LoadingState.IsAllDone && !_autoDismissPending)
@@ -108,6 +110,7 @@
 
     public void Dispose()
     {
+        _disposed = true;
         LoadingState.OnChanged -= HandleStateChange;
         _cts.Cancel();
         _cts.Dispose();

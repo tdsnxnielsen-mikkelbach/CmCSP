@@ -2,7 +2,7 @@
 
 A **Blazor Server** web application that replaces a Power BI report with a live, interactive cost dashboard for Cloud Solution Provider (CSP) scenarios. It queries the **Azure Cost Management REST API** directly across multiple subscriptions, normalises costs to a configurable target currency, and caches results to respect API rate limits.
 
-The dashboard mirrors the seven pages from the [TD SYNNEX tds_cc reference report](https://github.com/tdsnxnielsen-mikkelbach/tds_cc), implemented with **MudBlazor** for the UI shell and **Blazor-ApexCharts** for charts.
+The dashboard mirrors the seven pages from the [TD SYNNEX tds_cc reference report](https://github.com/tdsnxnielsen-mikkelbach/tds_cc) and adds an eighth page for **Azure Advisor Overview** (health scores for all five Advisor categories plus detailed Cost recommendations), implemented with **MudBlazor** for the UI shell and **Blazor-ApexCharts** for charts.
 
 ---
 
@@ -22,8 +22,9 @@ The dashboard mirrors the seven pages from the [TD SYNNEX tds_cc reference repor
 12. [Blob Exports (Production)](#blob-exports-production)
 13. [Currency Normalisation](#currency-normalisation)
 14. [Dashboard Pages](#dashboard-pages)
-15. [Service Registration](#service-registration)
-16. [Deployment Notes](#deployment-notes)
+15. [Advisor Overview](#advisor-overview)
+16. [Service Registration](#service-registration)
+17. [Deployment Notes](#deployment-notes)
 
 ---
 
@@ -81,8 +82,10 @@ CmCSP/
 ├── Models/
 │   ├── CostManagementOptions.cs          ← strongly-typed config section
 │   ├── CostRow.cs                        ← one normalised cost record
-│   ├── CostApiResponse.cs               ← Azure Cost Management + Consumption Budget API response shapes
-│   └── SubscriptionBudget.cs            ← per-subscription budget record (from Consumption Budgets API)
+│   ├── CostApiResponse.cs               ← Azure Cost Management + Consumption Budget + Advisor API response shapes
+│   ├── SubscriptionBudget.cs            ← per-subscription budget record (from Consumption Budgets API)
+│   ├── AdvisorRecommendation.cs         ← one Advisor Cost recommendation (normalised to TargetCurrency)
+│   └── AdvisorCategoryScore.cs          ← one Advisor category health score per subscription
 ├── Services/
 │   ├── AzureTokenService.cs              ← MSAL (ClientSecret) or DefaultAzureCredential fallback
 │   ├── ICostManagementService.cs
@@ -99,8 +102,8 @@ CmCSP/
 │   ├── _Imports.razor                    ← global Razor usings + type aliases
 │   ├── Routes.razor
 │   ├── Layout/
-│   │   ├── MainLayout.razor              ← MudLayout, AppBar, Drawer, dark mode, global date-range picker
-│   │   ├── NavMenu.razor                 ← 7 MudNavLinks
+│   │   ├── MainLayout.razor              ← MudLayout, AppBar, Drawer, dark mode, global date-range picker, subscription chip
+│   │   ├── NavMenu.razor                 ← 8 MudNavLinks + Refresh Data button
 │   │   └── ReconnectModal.razor
 │   ├── Pages/
 │   │   ├── _Imports.razor                ← applies [Authorize] to every page in this folder
@@ -111,6 +114,7 @@ CmCSP/
 │   │   ├── TagChargeback.razor           ← Page 5: Tag Chargeback
 │   │   ├── TrendAndForecast.razor        ← Page 6: Trend & Forecast
 │   │   ├── MoMWaterfall.razor            ← Page 7: MoM Waterfall
+│   │   ├── Advisor.razor                 ← Page 8: Advisor Overview (scores + Cost recommendations)
 │   │   ├── Error.razor
 │   │   └── NotFound.razor
 │   └── Shared/
@@ -447,8 +451,12 @@ flowchart LR
 | `cm_main` | SubscriptionName + MeterCategory | Cost Overview, Budgets, Subscriptions, Trend, MoM |
 | `cm_rg` | SubscriptionName + ResourceGroupName | Resource Group Breakdown |
 | `cm_tag` | SubscriptionName + TagKey | Tag Chargeback |
+| `cm_advisor` | Advisor Cost recommendations per subscription | Advisor Overview |
+| `cm_advisor_scores` | Advisor category health scores per subscription | Advisor Overview |
+| `cm_sub_names` | Subscription display names resolved from `/subscriptions/{id}` | Advisor Overview (charts/tables), subscription chip |
+| `cm_budgets` | Per-subscription budgets from Consumption API | Budgets |
 
-Calling `CostManagementService.InvalidateCache()` clears all three keys, forcing a fresh API fetch on the next request.
+Calling `CostManagementService.InvalidateCache()` clears all keys, forcing a fresh API fetch on the next request.
 
 ---
 
@@ -519,7 +527,7 @@ HTTP 400 indicates a malformed or out-of-range query — retrying will not help.
 |---|---|---|
 | Cache TTL (development) | 5 minutes | `appsettings.Development.json` |
 | Cache TTL (production) | 60 minutes | `appsettings.json` |
-| Cache keys | `cm_main`, `cm_rg`, `cm_tag`, `cm_budgets` | `CostManagementService` constants |
+| Cache keys | `cm_main`, `cm_rg`, `cm_tag`, `cm_budgets`, `cm_advisor`, `cm_advisor_scores`, `cm_sub_names` | `CostManagementService` constants |
 | Max retries per request | 4 | `CostManagementService.MaxRetries` |
 | Default rate-limit wait | 60 seconds | `CostManagementService.DefaultRetryDelay` |
 | Exponential back-off base | 2^attempt seconds | Non-429 transient errors |
@@ -757,6 +765,8 @@ Budget data is cached under `cm_budgets` with the same TTL as other datasets. `I
 
 > **CSP API limitation:** For CSP cross-tenant subscriptions, the `TagKey` dimension from the Cost Management Query API may return empty results even when resources are tagged, because tag metadata ingestion into the billing pipeline is less reliable in CSP scenarios than in EA/MCA. Blob exports are the reliable source for tag data — the `tags` CSV column is sourced directly from Azure Resource Manager metadata at export time and will correctly reflect all tagged resources once exports have run.
 
+> **API mode notice:** When `ExportBlob:Enabled = false` (direct API mode), the Tag Chargeback page shows an informational banner explaining that tag data is only available in blob export mode and directing to `bicep/export-sub.bicep`. The four KPI cards and charts are hidden until blob exports are configured and have run at least once.
+
 ---
 
 ### Page 6 – Trend & Forecast (`/trend`)
@@ -789,10 +799,63 @@ Budget data is cached under `cm_budgets` with the same TTL as other datasets. `I
 
 ---
 
+## Advisor Overview
+
+### Page 8 – Advisor Overview (`/advisor`)
+
+The page has two sections:
+
+#### Section 1 – Advisor Health Scores
+
+Fetches **all five Advisor category scores** for every configured subscription via `GET /subscriptions/{id}/providers/Microsoft.Advisor/advisorScore?api-version=2023-01-01` and displays them as colour-coded KPI cards (averaged across subscriptions).
+
+| Category | API key | Colour coding |
+|---|---|---|
+| Cost | `cost` | ≥ 80 % green · 60–79 % amber · < 60 % red |
+| Security | `security` | same |
+| Reliability | `reliability` | same |
+| Operational Excellence | `operationalExcellence` | same |
+| Performance | `performance` | same |
+
+A score of ~100 % (no open recommendations) is shown as **✓ No open recommendations**. Scores are cached under `cm_advisor_scores`.
+
+An info callout beneath the cards explains why only Cost recommendations are detailed: Security and Reliability scores are provided for situational awareness, but the authoritative tools for acting on them are **Microsoft Defender for Cloud** and **Azure Monitor** respectively.
+
+#### Section 2 – Cost Recommendations
+
+Fetches **Azure Advisor Cost recommendations** for all configured subscriptions from the Advisor REST API (`GET /subscriptions/{id}/providers/Microsoft.Advisor/recommendations?$filter=Category eq 'Cost'`). Only the Cost category is requested — Security, Reliability, Performance, and OperationalExcellence recommendations are excluded to keep the dashboard focused on financial impact.
+
+| Visual | Type | Data source |
+|---|---|---|
+| Total Potential Annual Savings | KPI card (green) | Sum of `NormalizedAnnualSavings` across all recommendations |
+| High Impact | KPI card (red) | Count + aggregate saving for High impact recommendations |
+| Medium Impact | KPI card (amber) | Count + aggregate saving for Medium impact recommendations |
+| Low Impact | KPI card | Count + aggregate saving for Low impact recommendations |
+| Potential Savings by Subscription | Horizontal bar ApexChart | `cm_advisor` grouped by `SubscriptionName` |
+| Top Resource Types by Saving Opportunity | Horizontal bar ApexChart | `cm_advisor` grouped by `ImpactedField` (top 10) |
+| All Cost Recommendations | MudDataGrid (filterable + sortable) | Subscription, Resource, Resource Type, Impact, Problem, Annual Saving |
+
+**Date filter:** Advisor data is point-in-time (not time-series) — the global date-range picker does not filter this page. The page subscribes to `OnStateChanged` only to participate in the **Refresh Data** flow (which invalidates both `cm_advisor` and `cm_advisor_scores`).
+
+**No-blobs behaviour:** Advisor data is always fetched via the REST API regardless of `ExportBlob:Enabled`. When running in blob mode, `BlobCostManagementService` delegates both `GetAdvisorRecommendationsAsync` and `GetAdvisorScoresAsync` directly to the underlying `CostManagementService`.
+
+### Required permissions
+
+Both the score and recommendation APIs require the **Reader** role on each subscription (in addition to the existing `Cost Management Reader`). See [docs/azure-roles.md](docs/azure-roles.md) for the full role assignment details.
+
+### Subscription display names
+
+Neither the score nor the recommendation API returns a subscription display name. `CostManagementService` resolves the name by calling `GET /subscriptions/{id}?api-version=2022-12-01` once per subscription during the cold-cache fetch. This call is not rate-limited. The resolved name is stored in `AdvisorRecommendation.SubscriptionName` / `AdvisorCategoryScore.SubscriptionName` and used in charts and tables.
+
+---
+
 ## Service Registration
 
 > **Global date-range filter**  
 > `MainLayout.razor` renders a `MudDateRangePicker` at the top of every page. On first render it auto-detects the available date range by fetching `cm_main` (a near-instant cache hit after warmup) and calls `DashboardStateService.SetDateRange(min, max)`. A “Fit to data” button repeats this at any time. All pages read `DashboardStateService.SelectedRange` to filter their charts and tables, so changing the picker instantly updates every visible page.
+
+> **Subscription chip**  
+> `MainLayout.razor` also renders a **"N subscription(s) ▾"** chip next to the date-range picker. Clicking it expands an inline table listing each subscription's display name and ID. Names are resolved lazily on first expand via `GetSubscriptionDisplayNamesAsync()` and cached under `cm_sub_names`. The count comes from `CostManagementOptions.SubscriptionIds.Count` and is always visible even before names are loaded.
 
 ```mermaid
 graph LR
@@ -943,6 +1006,8 @@ The `app.bicep` template already includes this wiring and the `Key Vault Secrets
 |---|---|
 | `MudBlazor` | UI component library (layout, cards, data grids, navigation, date pickers) |
 | `Blazor-ApexCharts` | Interactive charts (line, bar, donut, radial bar) |
+| `Microsoft.Identity.Web` | Entra ID OIDC authentication middleware – handles browser login, cookie encryption, and token validation |
 | `Microsoft.Identity.Client` | MSAL – OAuth2 client-credentials token acquisition with built-in cache |
 | `Azure.Storage.Blobs` | Read cost export CSV files from Azure Blob Storage (blob mode) |
-| `Azure.Identity` | `DefaultAzureCredential` – managed identity / az login for blob authentication |
+| `Azure.Data.Tables` | Azure Table Storage client – used by `AzureStorageCacheService` to persist small cache payloads across Container App replicas |
+| `Azure.Identity` | `DefaultAzureCredential` – managed identity / az login for blob and table authentication |

@@ -1,0 +1,489 @@
+@page "/advisor"
+@inject ICostManagementService CostService
+@inject DashboardStateService State
+@inject CostManagementOptions Options
+@implements IDisposable
+
+<PageTitle>Advisor Overview – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Advisor Overview</MudText>
+
+@* ── Category health scores ─────────────────────────────────────────────────── *@
+@if (!_loading && (_scores.Count > 0 || _error is null))
+{
+    <MudText Typo="Typo.subtitle1" Class="mb-2 fw-bold">Advisor Health Scores</MudText>
+    <MudGrid Spacing="3" Class="mb-2">
+        @foreach (var cat in _categoryOrder)
+        {
+            var score = _avgScores.TryGetValue(cat.Key, out var s) ? s : null;
+            var noIssues = score.HasValue && score.Value >= 99.9;
+            var noData   = score is null;
+            <MudItem xs="12" sm="6" md="@(12 / _categoryOrder.Count)">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@cat.Label</MudText>
+                    @if (noData)
+                    {
+                        <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Default">—</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">no data</MudText>
+                    }
+                    else if (noIssues)
+                    {
+                        <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Success">✓</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Success">No open recommendations</MudText>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="@ScoreColor(score!.Value)">
+                            @score!.Value.ToString("F0")%
+                        </MudText>
+                        <MudText Typo="Typo.caption" Color="@ScoreColor(score!.Value)">
+                            @ScoreLabel(score!.Value)
+                        </MudText>
+                    }
+                </MudPaper>
+            </MudItem>
+        }
+    </MudGrid>
+
+    @* Scope note ────────────────────────────────────────────────────────────── *@
+    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-4" Icon="@Icons.Material.Outlined.Info">
+        Scores are averaged across @(_scores.Select(s => s.SubscriptionId).Distinct().Count()) subscription(s).
+        Detailed recommendations below are limited to the <strong>Cost</strong> category — the only one with direct financial impact
+        that belongs in a cost dashboard. <strong>Security</strong> and <strong>Reliability</strong> scores are shown here for
+        situational awareness only; act on them in
+        <a href="https://portal.azure.com/#view/Microsoft_Azure_Security/SecurityMenuBlade/~/0" target="_blank" rel="noopener">Microsoft Defender for Cloud</a>
+        and <a href="https://portal.azure.com/#view/Microsoft_Azure_Monitoring/AzureMonitoringBrowseBlade/~/overview" target="_blank" rel="noopener">Azure Monitor</a>
+        respectively.
+    </MudAlert>
+}
+
+@* ── Cost recommendations ───────────────────────────────────────────────────── *@
+<MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Cost Recommendations</MudText>
+
+@if (!_loading && _recs.Count == 0 && _error is null)
+{
+    <MudAlert Severity="Severity.Success">
+        No open Cost recommendations — all resources appear right-sized.
+        If you expect recommendations, confirm the <strong>Reader</strong> role is assigned to the app registration
+        on each subscription. New resources may take up to 24 hours to appear in Advisor.
+    </MudAlert>
+}
+else if (_recs.Count > 0)
+{
+    @* ── KPI cards ─────────────────────────────────────────────────────────── *@
+    <MudGrid Spacing="3" Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Total Potential Annual Savings</MudText>
+                <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Success">@Fmt(_totalSavings)</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@_recs.Count recommendation(s)</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">High Impact</MudText>
+                <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Error">@_highCount</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@Fmt(_highSavings) potential saving</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Medium Impact</MudText>
+                <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Warning">@_mediumCount</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@Fmt(_mediumSavings) potential saving</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Low Impact</MudText>
+                <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_lowCount</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@Fmt(_lowSavings) potential saving</MudText>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    @* ── Charts ───────────────────────────────────────────────────────────── *@
+    <MudGrid Spacing="3" Class="mb-4">
+        <MudItem xs="12" md="6">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Potential Savings by Subscription</MudText>
+                <ApexChart TItem="SubPoint" Options="_hbarOpts">
+                    <ApexPointSeries TItem="SubPoint"
+                                     Items="_bySub"
+                                     Name="Annual Saving"
+                                     XValue="@(e => e.Name)"
+                                     YValue="@(e => (decimal?)e.Saving)"
+                                     SeriesType="SeriesType.Bar" />
+                </ApexChart>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="6">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top Resource Types by Saving Opportunity</MudText>
+                <ApexChart TItem="TypePoint" Options="_hbarOpts2">
+                    <ApexPointSeries TItem="TypePoint"
+                                     Items="_byType"
+                                     Name="Annual Saving"
+                                     XValue="@(e => e.Name)"
+                                     YValue="@(e => (decimal?)e.Saving)"
+                                     SeriesType="SeriesType.Bar" />
+                </ApexChart>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    @* ── Recommendations table ────────────────────────────────────────────── *@
+    <MudPaper Class="pa-4" Elevation="2">
+        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">All Cost Recommendations</MudText>
+        <MudDataGrid T="AdvisorRecommendation"
+                     Items="_recs"
+                     Filterable="true"
+                     FilterMode="DataGridFilterMode.ColumnFilterRow"
+                     SortMode="SortMode.Multiple"
+                     Striped="true"
+                     Dense="true"
+                     Hover="true">
+            <Columns>
+                <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" Sortable="true" />
+                <PropertyColumn Property="r => r.ImpactedValue" Title="Resource" Sortable="true" />
+                <TemplateColumn Title="Resource Type" Sortable="true" SortBy="r => r.ImpactedField">
+                    <CellTemplate>
+                        <MudTooltip Text="@context.Item.ImpactedField">
+                            <MudText Typo="Typo.body2">@FormatResourceType(context.Item.ImpactedField)</MudText>
+                        </MudTooltip>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Impact" Sortable="true" SortBy="r => ImpactOrder(r.Impact)">
+                    <CellTemplate>
+                        <MudChip T="string"
+                                 Color="@ImpactColor(context.Item.Impact)"
+                                 Size="Size.Small"
+                                 Variant="Variant.Outlined">
+                            @context.Item.Impact
+                        </MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="r => r.Problem" Title="Problem" Sortable="false" />
+                <TemplateColumn Title="Annual Saving" Sortable="true" SortBy="r => r.NormalizedAnnualSavings">
+                    <CellTemplate>
+                        <MudText Typo="Typo.body2" Color="Color.Success" Class="fw-bold">
+                            @(context.Item.NormalizedAnnualSavings > 0
+                                ? Fmt(context.Item.NormalizedAnnualSavings)
+                                : "—")
+                        </MudText>
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+        </MudDataGrid>
+    </MudPaper>
+}
+
+@code {
+    private record SubPoint(string Name, decimal Saving);
+    private record TypePoint(string Name, decimal Saving);
+    private record CategoryMeta(string Key, string Label);
+
+    private static readonly List<CategoryMeta> _categoryOrder =
+    [
+        new("advisor",               "Overall"),
+        new("cost",                  "Cost"),
+        new("security",              "Security"),
+        new("reliability",           "Reliability"),
+        new("operationalExcellence", "Operational Excellence"),
+        new("performance",           "Performance"),
+    ];
+
+    private bool _loading = true;
+    private string? _error;
+
+    private List<AdvisorCategoryScore>  _scores = [];
+    private List<AdvisorRecommendation> _recs   = [];
+
+    // Average score per category across all subscriptions (null = no data returned)
+    private Dictionary<string, double?> _avgScores = new(StringComparer.OrdinalIgnoreCase);
+
+    private decimal _totalSavings;
+    private int _highCount;   private decimal _highSavings;
+    private int _mediumCount; private decimal _mediumSavings;
+    private int _lowCount;    private decimal _lowSavings;
+
+    private List<SubPoint>  _bySub  = [];
+    private List<TypePoint> _byType = [];
+
+    private readonly ApexChartOptions<SubPoint> _hbarOpts = new()
+    {
+        Chart       = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true } },
+        Xaxis       = new XAxis { Labels = new XAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(0) : ''; }" } }
+    };
+
+    private readonly ApexChartOptions<TypePoint> _hbarOpts2 = new()
+    {
+        Chart       = new Chart { Toolbar = new Toolbar { Show = false } },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true } },
+        Xaxis       = new XAxis { Labels = new XAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(0) : ''; }" } }
+    };
+
+    protected override void OnInitialized() =>
+        State.OnStateChanged += RefreshData;
+
+    protected override async Task OnInitializedAsync() =>
+        await LoadAsync();
+
+    private async void RefreshData()
+    {
+        await LoadAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            // Both calls are likely cache hits after the first load; run concurrently.
+            var scoresTask = CostService.GetAdvisorScoresAsync();
+            var recsTask   = CostService.GetAdvisorRecommendationsAsync();
+            _scores = await scoresTask;
+            _recs   = await recsTask;
+            Compute();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load Advisor data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Compute()
+    {
+        // Average score per category across all subscriptions that returned data.
+        _avgScores = _categoryOrder
+            .Select(c => c.Key)
+            .ToDictionary(
+                key => key,
+                key =>
+                {
+                    var vals = _scores
+                        .Where(s => s.Category.Equals(key, StringComparison.OrdinalIgnoreCase)
+                                 && s.Score.HasValue)
+                        .Select(s => s.Score!.Value)
+                        .ToList();
+                    return vals.Count > 0 ? (double?)vals.Average() : null;
+                },
+                StringComparer.OrdinalIgnoreCase);
+
+        _totalSavings = _recs.Sum(r => r.NormalizedAnnualSavings);
+
+        var high   = _recs.Where(r => r.Impact.Equals("High",   StringComparison.OrdinalIgnoreCase)).ToList();
+        var medium = _recs.Where(r => r.Impact.Equals("Medium", StringComparison.OrdinalIgnoreCase)).ToList();
+        var low    = _recs.Where(r => r.Impact.Equals("Low",    StringComparison.OrdinalIgnoreCase)).ToList();
+
+        _highCount   = high.Count;   _highSavings   = high.Sum(r => r.NormalizedAnnualSavings);
+        _mediumCount = medium.Count; _mediumSavings = medium.Sum(r => r.NormalizedAnnualSavings);
+        _lowCount    = low.Count;    _lowSavings    = low.Sum(r => r.NormalizedAnnualSavings);
+
+        _bySub = _recs
+            .GroupBy(r => r.SubscriptionName)
+            .Select(g => new SubPoint(g.Key, Math.Round(g.Sum(r => r.NormalizedAnnualSavings), 0)))
+            .Where(p => p.Saving > 0)
+            .OrderByDescending(p => p.Saving)
+            .ToList();
+
+        _byType = _recs
+            .GroupBy(r => FormatResourceType(r.ImpactedField))
+            .Select(g => new TypePoint(g.Key, Math.Round(g.Sum(r => r.NormalizedAnnualSavings), 0)))
+            .Where(p => p.Saving > 0)
+            .OrderByDescending(p => p.Saving)
+            .Take(10)
+            .ToList();
+    }
+
+    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
+
+    private static string FormatResourceType(string impactedField)
+    {
+        if (string.IsNullOrWhiteSpace(impactedField)) return "(unknown)";
+        return impactedField.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase)
+            ? impactedField["Microsoft.".Length..]
+            : impactedField;
+    }
+
+    private static Color ScoreColor(double score) => score switch
+    {
+        >= 80 => Color.Success,
+        >= 60 => Color.Warning,
+        _     => Color.Error
+    };
+
+    private static string ScoreLabel(double score) => score switch
+    {
+        >= 80 => "Good",
+        >= 60 => "Needs attention",
+        _     => "Critical"
+    };
+
+    private static Color ImpactColor(string impact) => impact switch
+    {
+        { } s when s.Equals("High",   StringComparison.OrdinalIgnoreCase) => Color.Error,
+        { } s when s.Equals("Medium", StringComparison.OrdinalIgnoreCase) => Color.Warning,
+        _ => Color.Default
+    };
+
+    private static int ImpactOrder(string impact) => impact switch
+    {
+        { } s when s.Equals("High",   StringComparison.OrdinalIgnoreCase) => 0,
+        { } s when s.Equals("Medium", StringComparison.OrdinalIgnoreCase) => 1,
+        _ => 2
+    };
+
+    public void Dispose() => State.OnStateChanged -= RefreshData;
+}
+
+<PageTitle>Advisor Cost Savings – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Advisor Cost Savings</MudText>
+
+@if (!_loading && _recs.Count == 0 && _error is null)
+{
+    <MudAlert Severity="Severity.Info">
+        No Azure Advisor Cost recommendations found for the configured subscriptions.
+        This is expected when all resources are already right-sized, or when the
+        <strong>Reader</strong> role has not yet been assigned to the app registration on each subscription.
+        See <a href="https://learn.microsoft.com/azure/advisor/advisor-get-started" target="_blank" rel="noopener">Azure Advisor documentation</a> for details.
+    </MudAlert>
+}
+else if (_recs.Count > 0)
+{
+    @* ── KPI cards ─────────────────────────────────────────────────────────── *@
+    <MudGrid Spacing="3" Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Total Potential Annual Savings</MudText>
+                <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Success">@Fmt(_totalSavings)</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@_recs.Count recommendation(s)</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">High Impact</MudText>
+                <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Error">@_highCount</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@Fmt(_highSavings) potential saving</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Medium Impact</MudText>
+                <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Warning">@_mediumCount</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@Fmt(_mediumSavings) potential saving</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Low Impact</MudText>
+                <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_lowCount</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@Fmt(_lowSavings) potential saving</MudText>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    @* ── Charts ───────────────────────────────────────────────────────────── *@
+    <MudGrid Spacing="3" Class="mb-4">
+        @* Savings by subscription *@
+        <MudItem xs="12" md="6">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Potential Savings by Subscription</MudText>
+                <ApexChart TItem="SubPoint" Options="_hbarOpts">
+                    <ApexPointSeries TItem="SubPoint"
+                                     Items="_bySub"
+                                     Name="Annual Saving"
+                                     XValue="@(e => e.Name)"
+                                     YValue="@(e => (decimal?)e.Saving)"
+                                     SeriesType="SeriesType.Bar" />
+                </ApexChart>
+            </MudPaper>
+        </MudItem>
+
+        @* Savings by resource type *@
+        <MudItem xs="12" md="6">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top Resource Types by Saving Opportunity</MudText>
+                <ApexChart TItem="TypePoint" Options="_hbarOpts2">
+                    <ApexPointSeries TItem="TypePoint"
+                                     Items="_byType"
+                                     Name="Annual Saving"
+                                     XValue="@(e => e.Name)"
+                                     YValue="@(e => (decimal?)e.Saving)"
+                                     SeriesType="SeriesType.Bar" />
+                </ApexChart>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    @* ── Recommendations table ────────────────────────────────────────────── *@
+    <MudPaper Class="pa-4" Elevation="2">
+        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">All Cost Recommendations</MudText>
+        <MudDataGrid T="AdvisorRecommendation"
+                     Items="_recs"
+                     Filterable="true"
+                     FilterMode="DataGridFilterMode.ColumnFilterRow"
+                     SortMode="SortMode.Multiple"
+                     Striped="true"
+                     Dense="true"
+                     Hover="true">
+            <Columns>
+                <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" Sortable="true" />
+                <PropertyColumn Property="r => r.ImpactedValue" Title="Resource" Sortable="true" />
+                <TemplateColumn Title="Resource Type" Sortable="true" SortBy="r => r.ImpactedField">
+                    <CellTemplate>
+                        <MudTooltip Text="@context.Item.ImpactedField">
+                            <MudText Typo="Typo.body2">@FormatResourceType(context.Item.ImpactedField)</MudText>
+                        </MudTooltip>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Impact" Sortable="true" SortBy="r => ImpactOrder(r.Impact)">
+                    <CellTemplate>
+                        <MudChip T="string"
+                                 Color="@ImpactColor(context.Item.Impact)"
+                                 Size="Size.Small"
+                                 Variant="Variant.Outlined">
+                            @context.Item.Impact
+                        </MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="r => r.Problem" Title="Problem" Sortable="false" />
+                <TemplateColumn Title="Annual Saving" Sortable="true" SortBy="r => r.NormalizedAnnualSavings">
+                    <CellTemplate>
+                        <MudText Typo="Typo.body2" Color="Color.Success" Class="fw-bold">
+                            @(context.Item.NormalizedAnnualSavings > 0
+                                ? Fmt(context.Item.NormalizedAnnualSavings)
+                                : "—")
+                        </MudText>
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+        </MudDataGrid>
+    </MudPaper>
+}

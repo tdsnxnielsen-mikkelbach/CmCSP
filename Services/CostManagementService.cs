@@ -50,9 +50,14 @@ public sealed class CostManagementService : ICostManagementService
     private const string KeyRg      = "cm_rg";
     private const string KeyTag     = "cm_tag";
     private const string KeyBudgets = "cm_budgets";
+    private const string KeyAdvisor       = "cm_advisor";
+    private const string KeyAdvisorScores = "cm_advisor_scores";
+    private const string KeySubNames      = "cm_sub_names";
 
-    // Budget endpoint uses a stable GA API version separate from the query endpoint.
-    private const string BudgetsApiVersion = "2023-11-01";
+    // Stable GA API versions for endpoints other than the Cost Management query endpoint.
+    private const string BudgetsApiVersion      = "2023-11-01";
+    private const string AdvisorApiVersion      = "2023-01-01";
+    private const string SubscriptionsApiVersion = "2022-12-01";
 
     // ── per-subscription rate-limit gate ────────────────────────────────────
     // Tracks the last time a real API request was dispatched for each sub.
@@ -98,8 +103,16 @@ public sealed class CostManagementService : ICostManagementService
     public Task<List<CostRow>> GetRgCostDataAsync(CancellationToken ct = default) =>
         GetOrFetchAsync(KeyRg, QueryType.ByResourceGroup, ct);
 
-    public Task<List<CostRow>> GetTagCostDataAsync(CancellationToken ct = default) =>
-        GetOrFetchAsync(KeyTag, QueryType.ByTag, ct);
+    public Task<List<CostRow>> GetTagCostDataAsync(CancellationToken ct = default)
+    {
+        // The Cost Management Query API does not support the TagKey grouping dimension
+        // for CSP / indirect subscriptions (returns 400 Bad Request).
+        // Tag data is only available through scheduled blob exports (ExportBlob.Enabled = true).
+        _loadingState.Update(KeyTag, LoadPhase.Ready, "export-only");
+        _logger.LogDebug(
+            "Tag Chargeback data skipped in API mode. Enable ExportBlob to access tag-based cost data.");
+        return Task.FromResult<List<CostRow>>([]);
+    }
 
     public void InvalidateCache()
     {
@@ -107,6 +120,9 @@ public sealed class CostManagementService : ICostManagementService
         _cache.Remove(KeyRg);
         _cache.Remove(KeyTag);
         _cache.Remove(KeyBudgets);
+        _cache.Remove(KeyAdvisor);
+        _cache.Remove(KeyAdvisorScores);
+        _cache.Remove(KeySubNames);
         // Reset phases so the loading banner re-appears on the next fetch.
         _loadingState.Update(KeyMain, LoadPhase.Idle);
         _loadingState.Update(KeyRg,   LoadPhase.Idle);
@@ -178,6 +194,285 @@ public sealed class CostManagementService : ICostManagementService
 
         _cache.Set(KeyBudgets, results, ttl);
         return results;
+    }
+
+    public async Task<List<AdvisorRecommendation>> GetAdvisorRecommendationsAsync(CancellationToken ct = default)
+    {
+        var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
+        if (_cache.TryGetValue<List<AdvisorRecommendation>>(KeyAdvisor, ttl, out var cached) && cached is not null)
+        {
+            _logger.LogDebug("Cache hit for {Key}.", KeyAdvisor);
+            return cached;
+        }
+
+        _logger.LogInformation("Fetching Advisor Cost recommendations for {Count} subscription(s) in parallel.",
+            _options.SubscriptionIds.Count);
+
+        using var client = _httpFactory.CreateClient("AzureMgmt");
+        var token = await _tokenService.GetAccessTokenAsync(ct);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var tasks = _options.SubscriptionIds
+            .Select(subId => FetchAdvisorRecsForSubAsync(client, subId, ct));
+        var perSub = await Task.WhenAll(tasks);
+        var results = perSub.SelectMany(r => r).ToList();
+
+        _cache.Set(KeyAdvisor, results, ttl);
+        return results;
+    }
+
+    private async Task<List<AdvisorRecommendation>> FetchAdvisorRecsForSubAsync(
+        HttpClient client, string subId, CancellationToken ct)
+    {
+        var subResults = new List<AdvisorRecommendation>();
+        try
+        {
+            var subName = await GetSubscriptionDisplayNameAsync(client, subId, ct);
+
+            var url = $"https://management.azure.com/subscriptions/{subId}" +
+                      $"/providers/Microsoft.Advisor/recommendations" +
+                      $"?$filter=Category eq 'Cost'&api-version={AdvisorApiVersion}";
+
+            while (!string.IsNullOrEmpty(url))
+            {
+                var response = await client.GetAsync(url, ct);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync(ct);
+                    _logger.LogWarning(
+                        "Advisor API returned {Status} for subscription {SubId} – skipping. Body: {Body}",
+                        (int)response.StatusCode, subId, body);
+                    break;
+                }
+
+                var list = await response.Content
+                    .ReadFromJsonAsync<AdvisorListResponse>(JsonOpts, ct);
+
+                if (list?.Value is not null)
+                {
+                    foreach (var rec in list.Value)
+                    {
+                        if (rec.Properties is null) continue;
+
+                        var ext      = rec.Properties.ExtendedProperties;
+                        var rawSaving = ext is not null && ext.TryGetValue("annualSavingsAmount", out var s)
+                            ? decimal.TryParse(s, System.Globalization.NumberStyles.Any,
+                                               System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : 0m
+                            : 0m;
+                        var currency = ext is not null && ext.TryGetValue("savingsCurrency", out var c) ? c : string.Empty;
+
+                        subResults.Add(new AdvisorRecommendation
+                        {
+                            SubscriptionId          = subId,
+                            SubscriptionName        = subName,
+                            Impact                  = rec.Properties.Impact        ?? string.Empty,
+                            ImpactedField           = rec.Properties.ImpactedField  ?? string.Empty,
+                            ImpactedValue           = rec.Properties.ImpactedValue  ?? string.Empty,
+                            Problem                 = rec.Properties.ShortDescription?.Problem  ?? string.Empty,
+                            Solution                = rec.Properties.ShortDescription?.Solution ?? string.Empty,
+                            AnnualSavingsAmount     = rawSaving,
+                            SavingsCurrency         = currency,
+                            NormalizedAnnualSavings = NormaliseCurrency(rawSaving, currency),
+                            ResourceId              = rec.Properties.ResourceMetadata?.ResourceId ?? string.Empty
+                        });
+                    }
+                }
+
+                url = list?.NextLink ?? string.Empty;
+            }
+
+            _logger.LogInformation(
+                "Fetched {Count} Advisor Cost recommendation(s) for subscription {SubId}.",
+                subResults.Count, subId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to fetch Advisor recommendations for subscription {SubId}.", subId);
+        }
+        return subResults;
+    }
+
+    /// <summary>
+    /// Calls GET /subscriptions/{id} to resolve the human-readable display name.
+    /// Falls back to the raw subscription ID if the call fails.
+    /// </summary>
+    private async Task<string> GetSubscriptionDisplayNameAsync(
+        HttpClient client, string subscriptionId, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"https://management.azure.com/subscriptions/{subscriptionId}" +
+                      $"?api-version={SubscriptionsApiVersion}";
+            var response = await client.GetAsync(url, ct);
+            if (!response.IsSuccessStatusCode) return subscriptionId;
+            var info = await response.Content
+                .ReadFromJsonAsync<SubscriptionInfoResponse>(JsonOpts, ct);
+            return string.IsNullOrWhiteSpace(info?.DisplayName) ? subscriptionId : info.DisplayName;
+        }
+        catch
+        {
+            return subscriptionId;
+        }
+    }
+
+    public async Task<Dictionary<string, string>> GetSubscriptionDisplayNamesAsync(CancellationToken ct = default)
+    {
+        var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
+        if (_cache.TryGetValue<Dictionary<string, string>>(KeySubNames, ttl, out var cached) && cached is not null)
+            return cached;
+
+        using var client = _httpFactory.CreateClient("AzureMgmt");
+        var token = await _tokenService.GetAccessTokenAsync(ct);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var tasks = _options.SubscriptionIds.Select(async subId =>
+        {
+            var name = await GetSubscriptionDisplayNameAsync(client, subId, ct);
+            return (subId, name);
+        });
+        var pairs = await Task.WhenAll(tasks);
+        var result = pairs.ToDictionary(p => p.subId, p => p.name, StringComparer.OrdinalIgnoreCase);
+
+        _cache.Set(KeySubNames, result, ttl);
+        return result;
+    }
+
+    public async Task<List<AdvisorCategoryScore>> GetAdvisorScoresAsync(CancellationToken ct = default)
+    {
+        var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
+        if (_cache.TryGetValue<List<AdvisorCategoryScore>>(KeyAdvisorScores, ttl, out var cached) && cached is not null)
+        {
+            _logger.LogDebug("Cache hit for {Key}.", KeyAdvisorScores);
+            return cached;
+        }
+
+        _logger.LogInformation("Fetching Advisor scores for {Count} subscription(s) in parallel.",
+            _options.SubscriptionIds.Count);
+
+        using var client = _httpFactory.CreateClient("AzureMgmt");
+        var token = await _tokenService.GetAccessTokenAsync(ct);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var tasks = _options.SubscriptionIds
+            .Select(subId => FetchAdvisorScoresForSubAsync(client, subId, ct));
+        var perSub = await Task.WhenAll(tasks);
+        var results = perSub.SelectMany(r => r).ToList();
+
+        if (results.Count == 0)
+            _logger.LogWarning(
+                "Advisor Score API returned no data for any subscription. " +
+                "Verify the app registration has the Reader role on each subscription " +
+                "and that Azure Advisor is enabled. Check for earlier warnings per subscription.");
+
+        _cache.Set(KeyAdvisorScores, results, ttl);
+        return results;
+    }
+
+    // Known top-level Advisor category names as returned by the API (PascalCase).
+    // GUID entries are individual controls — we skip those.
+    private static readonly Dictionary<string, string> AdvisorCategoryNormMap =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Advisor"]                = "advisor",              // overall aggregate
+            ["Cost"]                   = "cost",
+            ["Security"]               = "security",
+            ["HighAvailability"]       = "reliability",          // portal label: "Reliability"
+            ["Reliability"]            = "reliability",
+            ["OperationalExcellence"]  = "operationalExcellence",
+            ["Performance"]            = "performance",
+        };
+
+    private async Task<List<AdvisorCategoryScore>> FetchAdvisorScoresForSubAsync(
+        HttpClient client, string subId, CancellationToken ct)
+    {
+        var subResults = new List<AdvisorCategoryScore>();
+        try
+        {
+            var subName = await GetSubscriptionDisplayNameAsync(client, subId, ct);
+
+            var url = $"https://management.azure.com/subscriptions/{subId}" +
+                      $"/providers/Microsoft.Advisor/advisorScore?api-version={AdvisorApiVersion}";
+
+            var response = await client.GetAsync(url, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync(ct);
+                _logger.LogWarning(
+                    "Advisor Score API returned {Status} for subscription {SubId} – skipping. " +
+                    "Ensure the Reader role is assigned to the app registration. Body: {Body}",
+                    (int)response.StatusCode, subId, body);
+                return subResults;
+            }
+
+            var rawJson = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogDebug("Advisor Score raw response for {SubId}: {Json}", subId, rawJson);
+
+            using var doc = JsonDocument.Parse(rawJson);
+
+            if (!doc.RootElement.TryGetProperty("value", out var valueArray)
+                || valueArray.ValueKind != JsonValueKind.Array)
+            {
+                _logger.LogWarning(
+                    "Advisor Score API response for {SubId} has no 'value' array.", subId);
+                return subResults;
+            }
+
+            foreach (var item in valueArray.EnumerateArray())
+            {
+                if (!item.TryGetProperty("name", out var nameProp)) continue;
+                var rawCategory = nameProp.GetString();
+                if (string.IsNullOrEmpty(rawCategory)) continue;
+
+                // Skip GUID-named individual controls — only keep top-level categories.
+                if (!AdvisorCategoryNormMap.TryGetValue(rawCategory, out var normalizedCategory))
+                    continue;
+
+                double? score = null;
+                double  consumptionUnits = 0d;
+
+                if (item.TryGetProperty("properties", out var props)
+                    && props.ValueKind == JsonValueKind.Object)
+                {
+                    // Try "lastRefreshedScore" first (always present), then "score" as fallback.
+                    foreach (var scoreKey in new[] { "lastRefreshedScore", "score" })
+                    {
+                        if (!props.TryGetProperty(scoreKey, out var scoreObj)
+                            || scoreObj.ValueKind != JsonValueKind.Object) continue;
+
+                        // The score value is in a property named "score" (not "current").
+                        if (scoreObj.TryGetProperty("score", out var cur)
+                            && cur.ValueKind == JsonValueKind.Number)
+                        {
+                            score = cur.GetDouble();
+                            if (scoreObj.TryGetProperty("consumptionUnits", out var cu)
+                                && cu.ValueKind == JsonValueKind.Number)
+                                consumptionUnits = cu.GetDouble();
+                            break;
+                        }
+                    }
+                }
+
+                subResults.Add(new AdvisorCategoryScore
+                {
+                    SubscriptionId   = subId,
+                    SubscriptionName = subName,
+                    Category         = normalizedCategory,
+                    Score            = score,
+                    ConsumptionUnits = consumptionUnits
+                });
+            }
+
+            _logger.LogInformation(
+                "Fetched Advisor scores for subscription {SubId} ({Count} categories: {Categories}).",
+                subId, subResults.Count,
+                string.Join(", ", subResults.Select(s => $"{s.Category}={s.Score:F0}")));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to fetch Advisor scores for subscription {SubId}.", subId);
+        }
+        return subResults;
     }
 
     // ── internal fetch pipeline ──────────────────────────────────────────────
@@ -345,10 +640,22 @@ public sealed class CostManagementService : ICostManagementService
                     continue;
                 }
 
-                // 400 Bad Request = malformed query body – retrying won't help, log and throw immediately.
+                // 400 Bad Request = malformed query body – retrying won't help.
                 if ((int)response.StatusCode == 400)
                 {
                     var errorBody = await response.Content.ReadAsStringAsync(ct);
+
+                    // CSP / indirect subscriptions do not support 'TagKey' as a grouping dimension.
+                    // Return empty gracefully rather than throwing; the other subscriptions still contribute data.
+                    if (errorBody.Contains("TagKey", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogWarning(
+                            "Subscription {SubId}: 'TagKey' grouping is not supported (likely a CSP or indirect " +
+                            "subscription). Tag Chargeback data will be unavailable for this subscription.",
+                            subscriptionId);
+                        return ([], null);
+                    }
+
                     _logger.LogError(
                         "API returned 400 Bad Request for subscription {SubId} ({Type}).\nURL: {Url}\nResponse body: {Body}",
                         subscriptionId, type, url, errorBody);

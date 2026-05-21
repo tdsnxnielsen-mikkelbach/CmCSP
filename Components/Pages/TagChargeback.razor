@@ -17,6 +17,17 @@
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Tag Chargeback</MudText>
 
+@if (!_loading && !Options.ExportBlob.Enabled)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4" Icon="@Icons.Material.Outlined.Info">
+        Tag Chargeback data is <strong>not available via the Cost Management Query API</strong>.
+        Azure does not expose tag-key grouping through the Query API endpoint — tags are only included
+        in scheduled <strong>Cost Management Exports</strong> written to blob storage.
+        Enable <code>AzureCostManagement:ExportBlob:Enabled = true</code> and deploy the export
+        infrastructure (<code>bicep/export-sub.bicep</code>) to populate this page.
+    </MudAlert>
+}
+
 <MudGrid Spacing="3" Class="mb-4">
     <MudItem xs="12" sm="6" md="4">
         <MudPaper Class="pa-4" Elevation="2">

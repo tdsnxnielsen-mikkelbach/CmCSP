@@ -197,7 +197,9 @@ You can also add these manually in **Azure Portal → App registrations → {app
 
 ---
 
-## Step 4 – Assign Cost Management Reader to the app registration
+## Step 4 – Assign roles to the app registration
+
+### 4a – Cost Management Reader (required for all modes)
 
 Run once for every customer subscription you want to include in the dashboard:
 
@@ -211,6 +213,23 @@ az role assignment create \
 For billing-account level access (Partner Center Billing Admin required):
 - Go to **Partner Center → Billing → Billing account → Access control (IAM)**
 - Add **Billing Account Reader** for the service principal.
+
+### 4b – Reader (required for the Advisor Cost Savings page)
+
+The Advisor recommendations API requires the **Reader** role, which is broader than `Cost Management Reader`.
+Run once for every subscription you added in Step 4a:
+
+```bash
+az role assignment create \
+  --assignee "$APP_ID" \
+  --role "Reader" \
+  --scope "/subscriptions/<customer-subscription-id>"
+```
+
+> **Note:** `Reader` grants `*/read` across all resource types. For CSP resellers this is applied to
+> customer subscriptions via the same cross-tenant Entra app credentials. Inform customers that
+> the service principal will be able to read (but not modify) any resource in their subscription.
+> If the Advisor page is not required, this role assignment can be omitted.
 
 ---
 
@@ -526,14 +545,20 @@ If the loading banner shows **✗ fetch failed**, check:
 For each additional customer subscription:
 
 1. **Enable cost visibility** in Partner Center (Step 2).
-2. **Assign Cost Management Reader** to the Entra App SP (Step 4):
+2. **Assign Cost Management Reader** to the Entra App SP (Step 4a):
    ```bash
    az role assignment create --assignee "$APP_ID" \
      --role "Cost Management Reader" \
      --scope "/subscriptions/<new-subscription-id>"
    ```
-3. **Deploy a subscription-scope export** (Step 7a) into the new subscription.
-4. **Add the subscription ID** — choose one of these methods:
+3. **Assign Reader** to the Entra App SP (Step 4b — required for the Advisor page):
+   ```bash
+   az role assignment create --assignee "$APP_ID" \
+     --role "Reader" \
+     --scope "/subscriptions/<new-subscription-id>"
+   ```
+4. **Deploy a subscription-scope export** (Step 7a) into the new subscription.
+5. **Add the subscription ID** — choose one of these methods:
 
    **Option A – Dashboard UI (no restart required)**
    Open the app, go to the **Home** page, expand **Manage Subscriptions**, and paste or
@@ -622,3 +647,6 @@ For each additional customer subscription:
 | Currency not normalised correctly in blob mode | CSP export uses `billingCurrency` column instead of `billingCurrencyCode` | Handled automatically — parser checks `billingcurrencycode`, `currency`, `billingcurrency` in order |
 | MTD / YTD figures are inflated (e.g. ~11× expected) | Azure `MonthToDate` exports are cumulative — a new blob is written each day containing all data from day 1; the old code summed across all blobs, counting early days many times | Fixed in `BlobCostManagementService` (merge-with-replacement across blobs). Deploy the latest image; then click **Refresh Data** in the nav sidebar (or restart the revision) to clear the cached inflated values |
 | Need to force-refresh data without waiting 60 min | In-memory cache hasn't expired | Click **Refresh Data** in the nav sidebar — it invalidates the cache and triggers an immediate re-fetch on all open pages |
+| Advisor page shows "no recommendations found" | Reader role not yet assigned, or no actionable recommendations exist | Assign **Reader** to the Entra App SP on each subscription (Step 4b); allow 5 min for role propagation. New subscriptions may have no Advisor data for up to 24 h |
+| Advisor page shows 403 error | Entra App SP missing Reader role | Confirm Step 4b — `Cost Management Reader` alone does not cover the Advisor API |
+| Advisor savings are shown in wrong currency | Exchange rate for subscription billing currency not configured | Add the missing currency code and rate to `ExchangeRates` in `appsettings.json` |

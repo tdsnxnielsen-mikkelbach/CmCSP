@@ -98,6 +98,9 @@ public sealed class BlobCostManagementService : ICostManagementService
         _cache.Remove(KeyMain);
         _cache.Remove(KeyRg);
         _cache.Remove(KeyTag);
+        _cache.Remove("cm_advisor");
+        _cache.Remove("cm_advisor_scores");
+        _cache.Remove("cm_sub_names");
         _loadingState.Update(KeyMain, LoadPhase.Idle);
         _loadingState.Update(KeyRg,   LoadPhase.Idle);
         _loadingState.Update(KeyTag,  LoadPhase.Idle);
@@ -108,6 +111,21 @@ public sealed class BlobCostManagementService : ICostManagementService
         _apiService is not null
             ? _apiService.GetSubscriptionBudgetsAsync(ct)
             : Task.FromResult(new List<SubscriptionBudget>());
+
+    public Task<List<AdvisorRecommendation>> GetAdvisorRecommendationsAsync(CancellationToken ct = default) =>
+        _apiService is not null
+            ? _apiService.GetAdvisorRecommendationsAsync(ct)
+            : Task.FromResult(new List<AdvisorRecommendation>());
+
+    public Task<List<AdvisorCategoryScore>> GetAdvisorScoresAsync(CancellationToken ct = default) =>
+        _apiService is not null
+            ? _apiService.GetAdvisorScoresAsync(ct)
+            : Task.FromResult(new List<AdvisorCategoryScore>());
+
+    public Task<Dictionary<string, string>> GetSubscriptionDisplayNamesAsync(CancellationToken ct = default) =>
+        _apiService is not null
+            ? _apiService.GetSubscriptionDisplayNamesAsync(ct)
+            : Task.FromResult(new Dictionary<string, string>());
 
     // ── Internal ───────────────────────────────────────────────────────────────
 

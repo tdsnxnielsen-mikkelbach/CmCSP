@@ -14,7 +14,7 @@ CmCSP uses three separate Azure identities, each with the minimum permissions ne
 
 | Identity | Type | Purpose |
 |---|---|---|
-| **Entra App SP** | Service Principal (app registration) | Call the Cost Management Query API |
+| **Entra App SP** | Service Principal (app registration) | Call the Cost Management Query API and Azure Advisor API |
 | **Export MI** | SystemAssigned MI on the export resource | Write daily CSVs to Blob Storage |
 | **Container App MI** | SystemAssigned MI on the Container App | Read blobs/tables + pull from ACR + read Key Vault secrets |
 
@@ -183,11 +183,41 @@ az role assignment create \
 
 ---
 
-## 4 – Summary table
+## 4 – Azure Advisor Recommendations (Entra App SP)
+
+The Advisor Cost Savings page (`/advisor`) fetches recommendations from the Azure Advisor REST API.
+This requires the **Reader** role on each subscription — the existing `Cost Management Reader` role
+does **not** cover the `Microsoft.Advisor/recommendations/read` action.
+
+| Role | Role ID | Scope | Why |
+|---|---|---|---|
+| **Reader** | `acdd72a7-3385-48ef-bd42-f606fba81ae7` | Each target subscription | Grants `*/read`, which includes `Microsoft.Advisor/recommendations/read` |
+
+> **Scope note:** `Reader` is a broader grant than `Cost Management Reader` — it provides read
+> access to all resource types in the subscription. Consider informing customers before assigning
+> it to the service principal.
+
+```bash
+az role assignment create \
+  --assignee "<app-client-id>" \
+  --role "Reader" \
+  --scope "/subscriptions/<subscription-id>"
+```
+
+Repeat for every subscription in `SubscriptionIds`.
+
+If the Advisor page shows an empty state with no recommendations, confirm that:
+1. The **Reader** role assignment has propagated (allow up to 5 minutes).
+2. The subscription has resources that Advisor has analysed (new subscriptions may show no recommendations for up to 24 hours).
+
+---
+
+## 5 – Summary table
 
 | Identity | Role | Scope | Assigned by |
 |---|---|---|---|
 | Entra App SP | Cost Management Reader | Each subscription | `az role assignment create` |
+| Entra App SP | Reader | Each subscription | `az role assignment create` (Advisor page) |
 | Entra App SP | Billing Account Reader | Billing account | Partner Center / Billing API |
 | *(CSP admin)* | IndirectCostEnabled | Customer subscription | Partner Center UI |
 | Export resource MI | Storage Blob Data Contributor | Export storage account | `bicep/main.bicep` |

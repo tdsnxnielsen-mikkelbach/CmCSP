@@ -1,6 +1,7 @@
 ﻿@inherits LayoutComponentBase
 @inject ICostManagementService CostService
 @inject DashboardStateService State
+@inject CostManagementOptions Options
 @inject IJSRuntime JS
 
 <MudThemeProvider @ref="_themeProvider" @bind-IsDarkMode="_isDark" />
@@ -69,7 +70,44 @@
                         Available: @_dataMin.Value.ToString("d MMM yyyy") – @_dataMax!.Value.ToString("d MMM yyyy")
                     </MudText>
                 }
+                <MudDivider Vertical="true" FlexItem="true" Class="d-none d-sm-flex mx-1" />
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Text"
+                           StartIcon="@Icons.Material.Outlined.ManageAccounts"
+                           EndIcon="@(_showSubs ? Icons.Material.Filled.KeyboardArrowUp : Icons.Material.Filled.KeyboardArrowDown)"
+                           OnClick="ToggleSubsAsync"
+                           Class="flex-none text-lowercase">
+                    @Options.SubscriptionIds.Count subscription(s)
+                </MudButton>
             </MudPaper>
+
+            @if (_showSubs)
+            {
+                <MudPaper Class="pa-3 mb-4" Elevation="1">
+                    <MudText Typo="Typo.caption" Class="fw-bold d-block mb-2" Color="Color.Secondary">
+                        Configured Subscriptions (@Options.SubscriptionIds.Count)
+                    </MudText>
+                    @if (_subNamesLoading)
+                    {
+                        <MudProgressLinear Indeterminate Color="Color.Primary" />
+                    }
+                    else
+                    {
+                        <MudSimpleTable Dense="true" Elevation="0">
+                            <tbody>
+                                @foreach (var id in Options.SubscriptionIds)
+                                {
+                                    var displayName = _subNames.TryGetValue(id, out var n) ? n : id;
+                                    <tr>
+                                        <td><MudText Typo="Typo.body2">@displayName</MudText></td>
+                                        <td><MudText Typo="Typo.caption" Color="Color.Secondary">@id</MudText></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </MudSimpleTable>
+                    }
+                </MudPaper>
+            }
 
             <LoadingStatus />
             @Body
@@ -83,6 +121,10 @@
     private bool _prevDark;
     private MudThemeProvider _themeProvider = default!;
 
+    private bool _showSubs = false;
+    private bool _subNamesLoading = false;
+    private Dictionary<string, string> _subNames = [];
+
     private DateRange _dateRange = new(
         new DateTime(DateTime.Now.Year - 1, 1, 1),
         DateTime.Now);
@@ -92,6 +134,28 @@
 
     private void ToggleDrawer() => _drawerOpen = !_drawerOpen;
     private void ToggleTheme() => _isDark = !_isDark;
+
+    private async Task ToggleSubsAsync()
+    {
+        _showSubs = !_showSubs;
+        if (_showSubs && _subNames.Count == 0)
+        {
+            _subNamesLoading = true;
+            StateHasChanged();
+            try
+            {
+                _subNames = await CostService.GetSubscriptionDisplayNamesAsync();
+            }
+            catch
+            {
+                // Best-effort; falls back to showing raw IDs from Options
+            }
+            finally
+            {
+                _subNamesLoading = false;
+            }
+        }
+    }
 
     private void OnDateRangeChanged(DateRange range)
     {
