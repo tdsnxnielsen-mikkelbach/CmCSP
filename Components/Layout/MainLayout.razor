@@ -119,6 +119,7 @@
 </MudLayout>
 
 @code {
+    private const string ThemeStorageKey = "cmcsp-theme";
     private bool _drawerOpen = true;
     private bool _isDark;
     private bool _prevDark;
@@ -199,11 +200,21 @@
     {
         if (firstRender)
         {
+            var storedTheme = await GetStoredThemeAsync();
+            if (storedTheme.HasValue)
+            {
+                _isDark = storedTheme.Value;
+            }
+
             _prevDark = _isDark;
-            // Sets window.Apex.theme so charts created on navigation use the right mode.
-            // querySelectorAll will find no charts yet on first render – that is fine.
-            await JS.InvokeVoidAsync("updateApexChartsTheme", _isDark);
+            await ApplyThemeToChartsAsync(_isDark);
+            await PersistThemeAsync(_isDark);
             await FitToDataRange();
+
+            if (storedTheme.HasValue)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
             return;
         }
 
@@ -212,7 +223,54 @@
         if (_isDark != _prevDark)
         {
             _prevDark = _isDark;
-            await JS.InvokeVoidAsync("updateApexChartsTheme", _isDark);
+            await ApplyThemeToChartsAsync(_isDark);
+            await PersistThemeAsync(_isDark);
+        }
+    }
+
+    private async Task<bool?> GetStoredThemeAsync()
+    {
+        try
+        {
+            var stored = await JS.InvokeAsync<string?>("getThemePreference", ThemeStorageKey);
+            return stored switch
+            {
+                "dark" => true,
+                "light" => false,
+                _ => null
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Unable to read theme preference from local storage.");
+            return null;
+        }
+    }
+
+    private async Task PersistThemeAsync(bool isDark)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("setThemePreference", ThemeStorageKey, isDark);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Unable to persist theme preference to local storage.");
+        }
+    }
+
+    private async Task ApplyThemeToChartsAsync(bool isDark)
+    {
+        try
+        {
+            // Sets window.Apex.theme so charts created on navigation use the right mode.
+            // querySelectorAll will find no charts yet on first render - that is fine.
+            await JS.InvokeVoidAsync("updateApexChartsTheme", isDark);
+        }
+        catch (Exception ex)
+        {
+            // Theme updates should never break data loading or page rendering.
+            Logger.LogDebug(ex, "Unable to apply ApexCharts theme update.");
         }
     }
 

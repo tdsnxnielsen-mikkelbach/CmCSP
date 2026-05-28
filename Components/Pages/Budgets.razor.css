@@ -1,0 +1,13 @@
+.budgets-kpi-card {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    height: 160px;
+}
+
+.budgets-kpi-value {
+    align-self: end;
+}
+
+.budgets-kpi-footer {
+    min-height: 20px;
+}

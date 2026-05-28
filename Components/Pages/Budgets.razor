@@ -32,39 +32,41 @@ else if (_budgets.Count > 0)
     @* ── KPI cards ─────────────────────────────────────────────────────────── *@
     <MudGrid Spacing="3" Class="mb-4">
         <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4" Elevation="2">
+            <MudPaper Class="pa-4 h-100 budgets-kpi-card" Elevation="2">
                 <MudText Typo="Typo.caption" Color="Color.Secondary">Total Budget</MudText>
-                <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_totalBudget)</MudText>
-                <MudText Typo="Typo.caption" Color="Color.Secondary">@_budgets.Count budget(s)</MudText>
+                <MudText Typo="Typo.h5" Class="mt-1 fw-bold budgets-kpi-value">@Fmt(_totalBudget)</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="budgets-kpi-footer">@_budgets.Count budget(s)</MudText>
             </MudPaper>
         </MudItem>
         <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4" Elevation="2">
+            <MudPaper Class="pa-4 h-100 budgets-kpi-card" Elevation="2">
                 <MudText Typo="Typo.caption" Color="Color.Secondary">Current Period Spend</MudText>
-                <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_totalCurrentSpend)</MudText>
+                <MudText Typo="Typo.h5" Class="mt-1 fw-bold budgets-kpi-value">@Fmt(_totalCurrentSpend)</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Transparent" Class="budgets-kpi-footer">@("\u00A0")</MudText>
             </MudPaper>
         </MudItem>
         <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4" Elevation="2">
+            <MudPaper Class="pa-4 h-100 budgets-kpi-card" Elevation="2">
                 <MudText Typo="Typo.caption" Color="Color.Secondary">Budget Variance</MudText>
                 <MudText Typo="Typo.h5"
-                         Class="mt-1 fw-bold"
+                         Class="mt-1 fw-bold budgets-kpi-value"
                          Color="@(_variance > 0 ? Color.Error : Color.Success)">
                     @Fmt(_variance)
                 </MudText>
-                <MudText Typo="Typo.caption" Color="@(_variance > 0 ? Color.Error : Color.Success)">
+                <MudText Typo="Typo.caption" Color="@(_variance > 0 ? Color.Error : Color.Success)" Class="budgets-kpi-footer">
                     @(_variance > 0 ? "over budget" : "under budget")
                 </MudText>
             </MudPaper>
         </MudItem>
         <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4" Elevation="2">
+            <MudPaper Class="pa-4 h-100 budgets-kpi-card" Elevation="2">
                 <MudText Typo="Typo.caption" Color="Color.Secondary">Budget Variance %</MudText>
                 <MudText Typo="Typo.h5"
-                         Class="mt-1 fw-bold"
+                         Class="mt-1 fw-bold budgets-kpi-value"
                          Color="@(_variancePct > 0 ? Color.Error : Color.Success)">
                     @_variancePct.ToString("F1")%
                 </MudText>
+                <MudText Typo="Typo.caption" Color="Color.Transparent" Class="budgets-kpi-footer">@("\u00A0")</MudText>
             </MudPaper>
         </MudItem>
     </MudGrid>
