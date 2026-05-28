@@ -36,6 +36,7 @@ param (
     [Parameter(Mandatory)][string]$AcrName,
     [Parameter(Mandatory)][string]$AppName,
     [Parameter(Mandatory)][string]$AppRg,
+    [string]$AppSubscriptionId = '',
 
     # Override the image tag. Defaults to <yyyyMMdd>-<git-short-sha>
     [string]$Tag = '',
@@ -106,6 +107,54 @@ function Invoke-AzCli([string[]]$azArgs) {
     return Invoke-Cmd 'az' $azArgs
 }
 
+function Resolve-AppSubscriptionId() {
+    if ($AppSubscriptionId) {
+        return $AppSubscriptionId
+    }
+
+    function Try-ResolveAppInSubscription([string]$SubscriptionId) {
+        $probeArgs = @(
+            'resource', 'show',
+            '--resource-group', $AppRg,
+            '--name', $AppName,
+            '--resource-type', 'Microsoft.App/containerApps',
+            '--query', 'id',
+            '-o', 'tsv',
+            '--only-show-errors',
+            '--subscription', $SubscriptionId
+        )
+
+        Write-Host "  > az $($probeArgs -join ' ')" -ForegroundColor DarkGray
+        if ($WhatIf) {
+            Write-Host "  [WhatIf] skipped" -ForegroundColor Yellow
+            return $null
+        }
+
+        $probe = & az @probeArgs 2>$null
+        if ($LASTEXITCODE -eq 0 -and $probe) {
+            return ($probe -join "`n").Trim()
+        }
+
+        return $null
+    }
+
+    $currentSubscriptionId = (Invoke-AzCli @('account', 'show', '--query', 'id', '-o', 'tsv', '--only-show-errors')).Trim()
+    $currentProbe = Try-ResolveAppInSubscription $currentSubscriptionId
+    if ($currentProbe) {
+        return $currentSubscriptionId
+    }
+
+    $subscriptionIds = (Invoke-AzCli @('account', 'list', '--query', '[].id', '-o', 'tsv', '--only-show-errors')) -split "`r?`n"
+    foreach ($candidateSubscriptionId in ($subscriptionIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $candidateProbe = Try-ResolveAppInSubscription $candidateSubscriptionId
+        if ($candidateProbe) {
+            return $candidateSubscriptionId
+        }
+    }
+
+    Write-Error "Unable to locate Container App '$AppName' in resource group '$AppRg' across accessible subscriptions. Pass -AppSubscriptionId explicitly."
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Defaults
 # ─────────────────────────────────────────────────────────────────────────────
@@ -124,6 +173,9 @@ if (-not $ProjectPath) {
     $ProjectPath = $found.FullName
 }
 Write-Host "  Project: $ProjectPath"
+
+$resolvedAppSubscriptionId = Resolve-AppSubscriptionId
+Write-Host "  App subscription: $resolvedAppSubscriptionId"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1 – Determine tag
@@ -283,6 +335,7 @@ Invoke-AzCli @(
     'containerapp', 'registry', 'set',
     '--name', $AppName,
     '--resource-group', $AppRg,
+    '--subscription', $resolvedAppSubscriptionId,
     '--server', $acrLoginServer,
     '--identity', 'system',
     '--only-show-errors'
@@ -293,6 +346,7 @@ $updateArgs = @(
     'containerapp', 'update',
     '--name', $AppName,
     '--resource-group', $AppRg,
+    '--subscription', $resolvedAppSubscriptionId,
     '--image', $pinnedImage,
     '--only-show-errors'
 )
@@ -322,6 +376,7 @@ while ($elapsed -lt $maxWait) {
     $revJson = az containerapp revision list `
         --name $AppName `
         --resource-group $AppRg `
+        --subscription $resolvedAppSubscriptionId `
         --query '[?properties.active == `true`] | [-1].{name:name, image:properties.template.containers[0].image, traffic:properties.trafficWeight}' `
         -o json 2>$null | ConvertFrom-Json
 
@@ -343,7 +398,7 @@ if ($activeRevision) {
 } elseif (-not $WhatIf) {
     Write-Host ""
     Write-Host "  Timed out waiting – check revision status manually:" -ForegroundColor Yellow
-    Write-Host "    az containerapp revision list -n $AppName -g $AppRg -o table" -ForegroundColor Yellow
+    Write-Host "    az containerapp revision list -n $AppName -g $AppRg --subscription $resolvedAppSubscriptionId -o table" -ForegroundColor Yellow
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -356,6 +411,7 @@ $fqdn = Invoke-AzCli @(
     'containerapp', 'show',
     '--name', $AppName,
     '--resource-group', $AppRg,
+    '--subscription', $resolvedAppSubscriptionId,
     '--query', 'properties.configuration.ingress.fqdn',
     '-o', 'tsv',
     '--only-show-errors'

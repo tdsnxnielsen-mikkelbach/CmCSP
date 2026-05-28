@@ -2,6 +2,7 @@
 @inject ICostManagementService CostService
 @inject DashboardStateService State
 @inject CostManagementOptions Options
+@inject SubscriptionStoreService SubStore
 @implements IDisposable
 
 <PageTitle>Tag Chargeback – CSP Dashboard</PageTitle>
@@ -16,6 +17,7 @@
 }
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Tag Chargeback</MudText>
+<SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
 
 @if (!_loading && !Options.ExportBlob.Enabled)
 {
@@ -49,18 +51,38 @@
     </MudItem>
 </MudGrid>
 
+<MudPaper Class="pa-4 mb-4" Elevation="2">
+    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Subscription Coverage</MudText>
+    <MudDataGrid T="SubCoverage"
+                 Items="_subCoverage"
+                 Dense
+                 SortMode="SortMode.Single">
+        <Columns>
+            <PropertyColumn Property="s => s.SubscriptionName" Title="Subscription" />
+            <PropertyColumn Property="s => s.SubscriptionId" Title="Subscription ID" />
+            <PropertyColumn Property="s => s.TotalCost" Title="Total Cost" Format="N0" />
+            <PropertyColumn Property="s => s.TaggedCost" Title="Tagged Cost" Format="N0" />
+            <PropertyColumn Property="s => s.UntaggedCost" Title="Untagged Cost" Format="N0" />
+        </Columns>
+    </MudDataGrid>
+</MudPaper>
+
 <MudGrid Spacing="3">
     @* Cost distribution – horizontal bar instead of treemap (treemap not in SeriesType) *@
     <MudItem xs="12" md="8">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Cost Distribution by Tag</MudText>
-            <ApexChart TItem="TagPoint" Options="_treemapOpts">
-                <ApexPointSeries TItem="TagPoint"
-                                 Items="_tagData"
-                                 Name="Cost"
-                                 XValue="@(e => e.Tag)"
-                                 YValue="@(e => (decimal?)e.Cost)"
-                                 SeriesType="SeriesType.Bar" />
+            <ApexChart TItem="TagSeriesPoint" Options="_treemapOpts">
+                @foreach (var subId in _seriesSubIds)
+                {
+                    var capturedSubId = subId;
+                    <ApexPointSeries TItem="TagSeriesPoint"
+                                     Items="_tagSeriesData.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
+                                     Name="@GetSubName(capturedSubId)"
+                                     XValue="@(e => e.Tag)"
+                                     YValue="@(e => (decimal?)e.Cost)"
+                                     SeriesType="SeriesType.Bar" />
+                }
             </ApexChart>
         </MudPaper>
     </MudItem>
@@ -69,13 +91,17 @@
     <MudItem xs="12" md="4">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Tag Cost Ranked</MudText>
-            <ApexChart TItem="TagPoint" Options="_hbarOpts">
-                <ApexPointSeries TItem="TagPoint"
-                                 Items="_tagData"
-                                 Name="Cost"
-                                 XValue="@(e => e.Tag)"
-                                 YValue="@(e => (decimal?)e.Cost)"
-                                 SeriesType="SeriesType.Bar" />
+            <ApexChart TItem="TagSeriesPoint" Options="_hbarOpts">
+                @foreach (var subId in _seriesSubIds)
+                {
+                    var capturedSubId = subId;
+                    <ApexPointSeries TItem="TagSeriesPoint"
+                                     Items="_tagSeriesData.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
+                                     Name="@GetSubName(capturedSubId)"
+                                     XValue="@(e => e.Tag)"
+                                     YValue="@(e => (decimal?)e.Cost)"
+                                     SeriesType="SeriesType.Bar" />
+                }
             </ApexChart>
         </MudPaper>
     </MudItem>
@@ -106,15 +132,22 @@
 
 @code {
     private record TagPoint(string Tag, decimal Cost, decimal SharePct);
+    private record TagSeriesPoint(string Tag, string SubscriptionId, decimal Cost);
+    private record SubCoverage(string SubscriptionId, string SubscriptionName, decimal TotalCost, decimal TaggedCost, decimal UntaggedCost);
 
     private bool _loading = true;
     private string? _error;
 
     private decimal _taggedCost;
     private decimal _untaggedCost;
+    private int _withDataSubCount;
     private List<TagPoint> _tagData = [];
+    private List<TagSeriesPoint> _tagSeriesData = [];
+    private List<SubCoverage> _subCoverage = [];
+    private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
+    private List<string> _seriesSubIds = [];
 
-    private readonly ApexChartOptions<TagPoint> _treemapOpts = new()
+    private readonly ApexChartOptions<TagSeriesPoint> _treemapOpts = new()
     {
         Chart = new Chart { Toolbar = new Toolbar { Show = false }, Height = 380 },
         PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = false, BorderRadius = 3 } },
@@ -122,7 +155,7 @@
         Yaxis = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
     };
 
-    private readonly ApexChartOptions<TagPoint> _hbarOpts = new()
+    private readonly ApexChartOptions<TagSeriesPoint> _hbarOpts = new()
     {
         Chart = new Chart { Toolbar = new Toolbar { Show = false } },
         PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } },
@@ -148,7 +181,10 @@
         _error   = null;
         try
         {
-            var data  = await CostService.GetTagCostDataAsync();
+            var dataTask = CostService.GetTagCostDataAsync();
+            var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
+            var data  = await dataTask;
+            _subNames = await nameTask;
             var start = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
             var end   = State.SelectedRange.End   ?? DateTime.Now;
 
@@ -170,6 +206,38 @@
                 })
                 .OrderByDescending(t => t.Cost)
                 .ToList();
+
+            _seriesSubIds = SubStore.AllIds
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(GetSubName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var topTags = _tagData.Select(t => t.Tag).ToList();
+            var tagBySub = tagged
+                .GroupBy(r => new { r.Tag, r.SubscriptionId })
+                .ToDictionary(g => (Tag: g.Key.Tag, SubId: g.Key.SubscriptionId), g => g.Sum(r => r.NormalizedCost));
+
+            _tagSeriesData = _seriesSubIds
+                .SelectMany(subId => topTags.Select(tag => new TagSeriesPoint(
+                    tag,
+                    subId,
+                    tagBySub.TryGetValue((tag, subId), out var cost) ? cost : 0m)))
+                .ToList();
+
+            _subCoverage = SubStore.AllIds
+                .Select(id =>
+                {
+                    var rows = filtered.Where(r => r.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase)).ToList();
+                    var subTotal = rows.Sum(r => r.NormalizedCost);
+                    var subTagged = rows.Where(r => !string.IsNullOrWhiteSpace(r.Tag)).Sum(r => r.NormalizedCost);
+                    var subUntagged = rows.Where(r => string.IsNullOrWhiteSpace(r.Tag)).Sum(r => r.NormalizedCost);
+                    var name = _subNames.TryGetValue(id, out var n) ? n : id;
+                    return new SubCoverage(id, name, subTotal, subTagged, subUntagged);
+                })
+                .OrderByDescending(s => s.TotalCost)
+                .ToList();
+
+            _withDataSubCount = _subCoverage.Count(s => s.TotalCost > 0);
         }
         catch (Exception ex)
         {
@@ -182,6 +250,9 @@
     }
 
     private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
+
+    private string GetSubName(string subscriptionId) =>
+        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
 
     public void Dispose() => State.OnStateChanged -= RefreshData;
 }

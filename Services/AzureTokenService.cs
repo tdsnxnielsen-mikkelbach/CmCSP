@@ -23,6 +23,13 @@ public sealed class AzureTokenService
     private readonly IConfidentialClientApplication? _app;
     private readonly TokenCredential?                _credential;
 
+    /// <summary>
+    /// <c>true</c> when using MSAL client-credentials (Entra App SP);
+    /// <c>false</c> when falling back to DefaultAzureCredential (Managed Identity / az login).
+    /// Export provisioning requires the SP path — call this before attempting provisioning.
+    /// </summary>
+    public bool UsingServicePrincipal => _app is not null;
+
     public AzureTokenService(CostManagementOptions options)
     {
         if (!string.IsNullOrEmpty(options.ClientSecret))

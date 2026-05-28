@@ -2,6 +2,7 @@
 @inject ICostManagementService CostService
 @inject DashboardStateService State
 @inject CostManagementOptions Options
+@inject SubscriptionStoreService SubStore
 @implements IDisposable
 
 <PageTitle>MoM Waterfall – CSP Dashboard</PageTitle>
@@ -16,6 +17,7 @@
 }
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Month-over-Month Waterfall</MudText>
+<SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
 
 @* ── Global date-range slicer ─────────────────────────────────────────────── *@
 <MudPaper Class="pa-4 mb-4" Elevation="2">
@@ -71,12 +73,16 @@
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Month-over-Month Cost Change</MudText>
             <ApexChart TItem="MomPoint" Options="_momBarOpts">
-                <ApexPointSeries TItem="MomPoint"
-                                 Items="_momData"
-                                 Name="MoM Change"
-                                 XValue="@(e => e.Label)"
-                                 YValue="@(e => (decimal?)e.Change)"
-                                 SeriesType="SeriesType.Bar" />
+                @foreach (var subId in _seriesSubIds)
+                {
+                    var capturedSubId = subId;
+                    <ApexPointSeries TItem="MomPoint"
+                                     Items="_momData.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
+                                     Name="@GetSubName(capturedSubId)"
+                                     XValue="@(e => e.Label)"
+                                     YValue="@(e => (decimal?)e.Change)"
+                                     SeriesType="SeriesType.Bar" />
+                }
             </ApexChart>
         </MudPaper>
     </MudItem>
@@ -86,12 +92,16 @@
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">MoM Change by Subscription (latest two months)</MudText>
             <ApexChart TItem="SubMomPoint" Options="_subMomOpts">
-                <ApexPointSeries TItem="SubMomPoint"
-                                 Items="_subMomData"
-                                 Name="MoM Change"
-                                 XValue="@(e => e.SubName)"
-                                 YValue="@(e => (decimal?)e.Change)"
-                                 SeriesType="SeriesType.Bar" />
+                @foreach (var subId in _seriesSubIds)
+                {
+                    var capturedSubId = subId;
+                    <ApexPointSeries TItem="SubMomPoint"
+                                     Items="_subMomData.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
+                                     Name="@GetSubName(capturedSubId)"
+                                     XValue="@(e => e.SubName)"
+                                     YValue="@(e => (decimal?)e.Change)"
+                                     SeriesType="SeriesType.Bar" />
+                }
             </ApexChart>
         </MudPaper>
     </MudItem>
@@ -122,8 +132,8 @@
 </MudGrid>
 
 @code {
-    private record MomPoint(string Label, decimal Change);
-    private record SubMomPoint(string SubName, decimal Change);
+    private record MomPoint(string Label, string SubscriptionId, decimal Change);
+    private record SubMomPoint(string SubscriptionId, string SubName, decimal Change);
     private record MonthSummaryRow(string Label, decimal Total, decimal Change, decimal ChangePct);
 
     private bool _loading = true;
@@ -136,6 +146,9 @@
     private decimal _momPct;
     private decimal _yoyPct;
     private decimal _currentMonthCost;
+    private int _withDataSubCount;
+    private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
+    private List<string> _seriesSubIds = [];
 
     private List<MomPoint> _momData = [];
     private List<SubMomPoint> _subMomData = [];
@@ -215,11 +228,22 @@
         _error   = null;
         try
         {
-            var data  = await CostService.GetMainCostDataAsync();
+            var dataTask = CostService.GetMainCostDataAsync();
+            var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
+            var data  = await dataTask;
+            _subNames = await nameTask;
             var today = DateTime.UtcNow;
+            _seriesSubIds = SubStore.AllIds
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(GetSubName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var rangeStart = _selectedRange.Start ?? today.AddYears(-1);
+            var rangeEnd   = _selectedRange.End   ?? today;
+            var rangeFiltered = data.Where(r => r.Date >= rangeStart && r.Date <= rangeEnd).ToList();
 
             // Monthly totals (all data, for rolling MoM)
-            var monthlyTotals = data
+            var monthlyTotals = rangeFiltered
                 .GroupBy(r => new { r.Date.Year, r.Date.Month })
                 .Select(g => (
                     Year:  g.Key.Year,
@@ -229,12 +253,28 @@
                 .OrderBy(x => x.Date)
                 .ToList();
 
-            // Build MoM change series
-            _momData = monthlyTotals
-                .Skip(1)
-                .Select((x, i) => new MomPoint(
-                    x.Date.ToString("MMM yy"),
-                    x.Cost - monthlyTotals[i].Cost))
+            _withDataSubCount = rangeFiltered
+                .Where(r => !string.IsNullOrWhiteSpace(r.SubscriptionId))
+                .Select(r => r.SubscriptionId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+
+            var monthStarts = monthlyTotals.Select(x => x.Date).ToList();
+            var monthlyBySub = rangeFiltered
+                .GroupBy(r => new { r.SubscriptionId, r.Date.Year, r.Date.Month })
+                .ToDictionary(
+                    g => (SubId: g.Key.SubscriptionId, MonthStart: new DateTime(g.Key.Year, g.Key.Month, 1)),
+                    g => g.Sum(r => r.NormalizedCost));
+
+            // Build per-subscription MoM change series with zero-filled months.
+            _momData = _seriesSubIds
+                .SelectMany(subId => monthStarts.Skip(1).Select((monthStart, i) =>
+                {
+                    var priorStart = monthStarts[i];
+                    var current = monthlyBySub.TryGetValue((subId, monthStart), out var currentCost) ? currentCost : 0m;
+                    var prior = monthlyBySub.TryGetValue((subId, priorStart), out var priorCost) ? priorCost : 0m;
+                    return new MomPoint(monthStart.ToString("MMM yy"), subId, current - prior);
+                }))
                 .ToList();
 
             // Monthly summary table
@@ -276,14 +316,22 @@
             var priorYear  = today.Month == 1 ? today.Year - 1 : today.Year;
             var priorMonth2 = today.Month == 1 ? 12 : today.Month - 1;
 
-            _subMomData = data
+            var subMomActual = rangeFiltered
                 .Where(r => (r.Date.Year == today.Year && r.Date.Month == today.Month) ||
                              (r.Date.Year == priorYear && r.Date.Month == priorMonth2))
-                .GroupBy(r => r.SubscriptionName)
+                .GroupBy(r => r.SubscriptionId)
                 .Select(g => new SubMomPoint(
-                    string.IsNullOrWhiteSpace(g.Key) ? "(unknown)" : g.Key,
+                    g.Key,
+                    GetSubName(g.Key),
                     g.Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month).Sum(r => r.NormalizedCost)
                     - g.Where(r => !(r.Date.Year == today.Year && r.Date.Month == today.Month)).Sum(r => r.NormalizedCost)))
+                .ToDictionary(x => x.SubscriptionId, x => x.Change, StringComparer.OrdinalIgnoreCase);
+
+            _subMomData = _seriesSubIds
+                .Select(id => new SubMomPoint(
+                    id,
+                    GetSubName(id),
+                    subMomActual.TryGetValue(id, out var change) ? change : 0m))
                 .OrderBy(x => x.Change)
                 .ToList();
         }
@@ -298,6 +346,9 @@
     }
 
     private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
+
+    private string GetSubName(string subscriptionId) =>
+        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
 
     public void Dispose() => State.OnStateChanged -= RefreshData;
 }

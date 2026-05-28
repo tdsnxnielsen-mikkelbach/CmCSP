@@ -1,4 +1,4 @@
-# Azure Role Assignments for CmCSP
+﻿# Azure Role Assignments for CmCSP
 
 This document describes every Azure RBAC role required to run CmCSP, covering all three
 functional areas: **Query API access**, **Cost Export setup**, and **Application infrastructure**.
@@ -18,22 +18,24 @@ CmCSP uses three separate Azure identities, each with the minimum permissions ne
 | **Export MI** | SystemAssigned MI on the export resource | Write daily CSVs to Blob Storage |
 | **Container App MI** | SystemAssigned MI on the Container App | Read blobs/tables + pull from ACR + read Key Vault secrets |
 
+Operational note: runtime subscription add/remove actions are logged with a shared correlation ID across `Home`, `SubscriptionStoreService`, `MainLayout`, and `ExportProvisioningService` log lines. This traceability feature does not require any additional role assignments beyond those listed below.
+
 ---
 
 ## 1 – Entra App Service Principal (Query API mode)
 
-Used when `AzureCostManagement:ExportBlob:Enabled = false`.
+Used when `AzureCostManagement:ExportBlob:Enabled = false`, and also needed in blob-export mode for automated export provisioning (`ExportProvisioningService`).
 
 ### Subscription scope
 
 | Role | Role ID | Scope | Why |
 |---|---|---|---|
-| **Cost Management Reader** | `72fafed3-fadc-4a7f-a4e1-0c1b7dc0dc57` | Each target subscription | Read cost data via the Query API |
+| **Cost Management Contributor** | `1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40` | Each target subscription | Read cost data via the Query API **and** auto-create exports when subscriptions are added via the UI |
 
 ```bash
 az role assignment create \
   --assignee "<app-client-id>" \
-  --role "Cost Management Reader" \
+  --role "Cost Management Contributor" \
   --scope "/subscriptions/<subscription-id>"
 ```
 
@@ -127,7 +129,7 @@ SAS=$(az storage container generate-sas \
 
 ## 3 – Container App Managed Identity (Application infrastructure)
 
-The Container App runs with a **SystemAssigned managed identity**. It needs four roles:
+The Container App runs with a **SystemAssigned managed identity**. It needs the following roles:
 
 ### 3a – Read cost export blobs and write/read the app cache
 
@@ -160,24 +162,37 @@ az role assignment create --assignee "$APP_MI" \
 
 Created automatically by `bicep/app.bicep`.
 
-### 3c – Read secrets from Key Vault
+### 3c – Persist user-added subscriptions in Key Vault
 
 | Role | Role ID | Scope | Why |
 |---|---|---|---|
-| **Key Vault Secrets User** | `4633458b-17de-408a-b874-0445c86b69e6` | Key Vault | Read `ClientSecret`, connection strings, and other runtime secrets |
+| **Key Vault Secrets User** | `4633458b-17de-408a-b874-0445c86b69e6` | Key Vault | Read `ClientSecret` and other runtime secrets at startup |
+| **Key Vault Secrets Officer** | `b86a8fe4-44ce-4948-aee5-eccb2c155cd7` | Key Vault | Write the `CmCSP--UserSubscriptionIds` secret when subscriptions are added or removed via the UI |
 
-Created automatically by `bicep/app.bicep`.
+Both are created automatically by `bicep/app.bicep`.
 
-### 3d – (Optional) Call the Cost Management Query API
+### 3d – Grant Storage Blob Data Contributor to export MIs (blob mode only)
+
+| Role | Role ID | Scope | Why |
+|---|---|---|---|
+| **User Access Administrator** | `18d7d88d-d35e-4fb5-a5c3-7773c20a72d9` | Export storage account | Allows `ExportProvisioningService` to assign `Storage Blob Data Contributor` to the export resource MI for each new subscription added via the UI |
+
+Created automatically by `bicep/main.bicep` when `appManagedIdentityPrincipalId` is provided.
+
+`ash
+az role assignment create --assignee "$APP_MI" \
+  --role "User Access Administrator" --scope "$STORAGE_ID"
+`\n
+### 3e – (Optional) Call the Cost Management Query API
 
 If running in Query API mode (`ExportBlob:Enabled = false`) and you want to use managed
-identity instead of a client secret, assign **Cost Management Reader** to the Container App MI
+identity instead of a client secret, assign **Cost Management Contributor** to the Container App MI
 on each target subscription instead of (or in addition to) the Entra App SP.
 
 ```bash
 az role assignment create \
   --assignee "$APP_MI" \
-  --role "Cost Management Reader" \
+  --role "Cost Management Contributor" \
   --scope "/subscriptions/<subscription-id>"
 ```
 
@@ -216,7 +231,7 @@ If the Advisor page shows an empty state with no recommendations, confirm that:
 
 | Identity | Role | Scope | Assigned by |
 |---|---|---|---|
-| Entra App SP | Cost Management Reader | Each subscription | `az role assignment create` |
+| Entra App SP | Cost Management Contributor | Each subscription | `az role assignment create` |
 | Entra App SP | Reader | Each subscription | `az role assignment create` (Advisor page) |
 | Entra App SP | Billing Account Reader | Billing account | Partner Center / Billing API |
 | *(CSP admin)* | IndirectCostEnabled | Customer subscription | Partner Center UI |
@@ -225,7 +240,9 @@ If the Advisor page shows an empty state with no recommendations, confirm that:
 | Container App MI | Storage Table Data Contributor | Export storage account | `bicep/main.bicep` |
 | Container App MI | AcrPull | Container Registry | `bicep/app.bicep` |
 | Container App MI | Key Vault Secrets User | Key Vault | `bicep/app.bicep` |
-| Container App MI | Cost Management Reader | Each subscription | Manual (Query API mode only) |
+| Container App MI | Key Vault Secrets Officer | Key Vault | `bicep/app.bicep` |
+| Container App MI | User Access Administrator | Export storage account | `bicep/main.bicep` (blob mode) |
+| Container App MI | Cost Management Contributor | Each subscription | Manual (Query API mode only) |
 | Deployer | Cost Management Contributor | Subscription | Pre-requisite |
 | Deployer | Contributor | Resource groups | Pre-requisite |
 
@@ -239,13 +256,13 @@ This is the development / out-of-the-box mode. A service principal (Entra app re
 
 | Scope | Role | Role ID | Who needs it |
 |---|---|---|---|
-| Each target subscription | **Cost Management Reader** | `72fafed3-fadc-4a7f-a4e1-0c1b7dc0dc57` | The Entra app service principal |
+| Each target subscription | **Cost Management Contributor** | `1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40` | The Entra app service principal |
 
 ### How to assign in the Azure Portal
 
 1. Open **Azure Portal → Subscriptions → {subscription name}**
 2. Click **Access control (IAM) → Add → Add role assignment**
-3. Role: **Cost Management Reader**
+3. Role: **Cost Management Contributor**
 4. Members: select **User, group, or service principal** → search for your app registration name
 5. Save. Repeat for every subscription in `SubscriptionIds`.
 
@@ -255,7 +272,7 @@ This is the development / out-of-the-box mode. A service principal (Entra app re
 # Run once per subscription
 az role assignment create \
   --assignee "<application-client-id>" \
-  --role "Cost Management Reader" \
+  --role "Cost Management Contributor" \
   --scope "/subscriptions/<subscription-id>"
 ```
 
@@ -388,7 +405,7 @@ The billing scope export (`bicep/export-billing.bicep`) targets a CSP Billing Ac
 
 | Identity | Role | Scope | Required for |
 |---|---|---|---|
-| Entra App SP | Cost Management Reader | Per subscription | Query API mode |
+| Entra App SP | Cost Management Contributor | Per subscription | Query API mode + automated export provisioning |
 | Export managed identity | Storage Blob Data Contributor | Storage account | Writing export files (blob mode) |
 | App Service MI / developer | Storage Blob Data Reader | Storage account | Reading export files (blob mode) |
 | *(CSP Partner Center admin)* | Indirect cost visibility | Customer subscription | Either mode — unlocks CSP billing data |
@@ -401,7 +418,7 @@ The recommended production setup eliminates the Entra App client secret entirely
 
 ```
 App Service (SystemAssigned MI)
-  ├── Cost Management Reader    → each subscription   [for Query API fallback]
+  ├── Cost Management Contributor → each subscription   [for Query API + export provisioning]
   └── Storage Blob Data Reader  → storage account     [for Blob Export mode]
 
 Export resource (SystemAssigned MI)

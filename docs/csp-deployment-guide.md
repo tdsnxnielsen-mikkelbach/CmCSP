@@ -1,4 +1,4 @@
-# CmCSP – CSP Deployment Guide (from scratch)
+﻿# CmCSP – CSP Deployment Guide (from scratch)
 
 This guide walks a **Cloud Solution Provider (CSP)** through deploying CmCSP to Azure Container Apps
 from a clean starting point. Follow the steps in order.
@@ -113,6 +113,8 @@ forced to pull the new image even if the tag name did not change.
 
 Both scripts support `-WhatIf` to print all commands without executing them.
 
+After a new image is deployed, the app performs a one-time export reconciliation pass at startup for all active subscriptions when `AzureCostManagement:ExportBlob:Enabled=true`. If a subscription already has a compatible Cost Management export targeting the configured storage account, the app reuses it. If not, it creates the canonical `cmcsp-daily-export`. Operators can also open the **Home** page and use **Re-provision Export** for any active subscription to retry that flow manually.
+
 > The manual steps below explain **what the scripts do under the hood** and remain useful
 > for troubleshooting or for environments where PowerShell is not available.
 
@@ -199,14 +201,15 @@ You can also add these manually in **Azure Portal → App registrations → {app
 
 ## Step 4 – Assign roles to the app registration
 
-### 4a – Cost Management Reader (required for all modes)
+### 4a – Cost Management Contributor (required for all modes)
 
-Run once for every customer subscription you want to include in the dashboard:
+Run once for every customer subscription you want to include in the dashboard.
+`Cost Management Contributor` is a superset of `Cost Management Reader` — it covers the Query API and additionally allows the app to automatically create the daily export when a subscription is added via the UI.
 
 ```bash
 az role assignment create \
   --assignee "$APP_ID" \
-  --role "Cost Management Reader" \
+  --role "Cost Management Contributor" \
   --scope "/subscriptions/<customer-subscription-id>"
 ```
 
@@ -397,9 +400,16 @@ az role assignment create --assignee "$APP_MI" \
 az role assignment create --assignee "$APP_MI" \
   --role "Storage Table Data Contributor" --scope "$STORAGE_ID"
 
-# (Optional) Cost Management Reader on each subscription — only needed for Query API mode
+# User Access Administrator scoped to the storage account
+# Required so ExportProvisioningService can automatically grant Storage Blob Data Contributor
+# to each new export resource MI when a subscription is added through the UI.
 az role assignment create --assignee "$APP_MI" \
-  --role "Cost Management Reader" \
+  --role "User Access Administrator" --scope "$STORAGE_ID"
+
+# (Optional) Cost Management Contributor on each subscription — only needed for Query API mode
+# when NOT using automated export provisioning through the UI.
+az role assignment create --assignee "$APP_MI" \
+  --role "Cost Management Contributor" \
   --scope "/subscriptions/<subscription-id>"
 ```
 
@@ -439,9 +449,10 @@ az keyvault secret set --vault-name "$KV_NAME" \
   --value "<customer-subscription-id-1>"
 ```
 
-> **Note:** The Container App is already granted **Key Vault Secrets User** by `app.bicep`.
-> Reference secrets using the `secretRef` pattern in the Container App environment variable
-> configuration, or inject them at deploy time (see Step 12).
+> **Note:** The Container App is granted **Key Vault Secrets User** and **Key Vault Secrets Officer** by `app.bicep`.
+> `Secrets User` allows reading the `ClientSecret` at runtime.
+> `Secrets Officer` allows `SubscriptionStoreService` to write the `CmCSP--UserSubscriptionIds` secret
+> whenever subscriptions are added or removed via the UI, so they survive container restarts and scale-out.
 
 ---
 
@@ -498,13 +509,15 @@ az containerapp update \
     "AzureCostManagement__ClientId=$APP_ID" \
     "AzureCostManagement__ExportBlob__Enabled=true" \
     "AzureCostManagement__ExportBlob__StorageAccountUri=$STORAGE_URI" \
+    "AzureCostManagement__ExportBlob__StorageAccountResourceId=$STORAGE_ID" \
     "AzureCostManagement__ExportBlob__ContainerName=cost-exports" \
     "AzureCostManagement__ExportBlob__BlobPrefix=exports" \
     "AzureCostManagement__AzureCache__Enabled=true" \
     "AzureCostManagement__AzureCache__StorageAccountUri=$STORAGE_URI" \
     "AzureCostManagement__AzureCache__TableName=cmcspcache" \
     "AzureCostManagement__AzureCache__CacheContainerName=cmcspcache" \
-    "AzureCostManagement__ApiDailyRefreshHourUtc=1"
+    "AzureCostManagement__ApiDailyRefreshHourUtc=1" \
+    "KeyVaultUri=$KV_URI"
 
 # 12b. Wire the ClientSecret from Key Vault as a Container App secret
 #      The Container App's Managed Identity must have Key Vault Secrets User (granted by app.bicep).
@@ -532,6 +545,7 @@ Open the URL in a browser. You should see:
 1. The **loading banner** appear (Cost by Service / Resource Groups / Tag Chargeback chips showing ⟳).
 2. The banner update to ✓ for each dataset as blobs are read and cached.
 3. Charts and KPI cards populate on the dashboard pages.
+4. A **subscription scope badge** on each analytics page showing `selected` vs `with data` subscriptions.
 
 If the loading banner shows **✗ fetch failed**, check:
 - Application logs: `az containerapp logs show -n cmcsp -g rg-cmcsp-app --follow`
@@ -545,30 +559,55 @@ If the loading banner shows **✗ fetch failed**, check:
 For each additional customer subscription:
 
 1. **Enable cost visibility** in Partner Center (Step 2).
-2. **Assign Cost Management Reader** to the Entra App SP (Step 4a):
+2. **Assign Cost Management Contributor** to the Entra App SP (enables both the Query API and automated export creation):
    ```bash
    az role assignment create --assignee "$APP_ID" \
-     --role "Cost Management Reader" \
+     --role "Cost Management Contributor" \
      --scope "/subscriptions/<new-subscription-id>"
    ```
-3. **Assign Reader** to the Entra App SP (Step 4b — required for the Advisor page):
+3. **Assign Reader** to the Entra App SP (required for the Advisor page):
    ```bash
    az role assignment create --assignee "$APP_ID" \
      --role "Reader" \
      --scope "/subscriptions/<new-subscription-id>"
    ```
-4. **Deploy a subscription-scope export** (Step 7a) into the new subscription.
-5. **Add the subscription ID** — choose one of these methods:
+4. **Add the subscription ID** via the **Dashboard UI (recommended)**:
+   Open the app, go to the **Home** page, expand **Manage Subscriptions**, and paste or type the GUID.
+   The subscription display name is resolved automatically and shown in the chip.
+   The ID is persisted to **Key Vault** (secret `CmCSP--UserSubscriptionIds`) so it survives container restarts.
 
-   **Option A – Dashboard UI (no restart required)**
-   Open the app, go to the **Home** page, expand **Manage Subscriptions**, and paste or
-   type the GUID. IDs are persisted to a JSON file in the container's temp directory and
-   merged at runtime. You can also upload a `.csv` or `.txt` file — any GUIDs found in
-   the file are extracted automatically.
+   When running in blob export mode (`ExportBlob:Enabled = true`), the app will **automatically**:
+   - Create the `cmcsp-daily-export` Cost Management export on the new subscription.
+   - Grant `Storage Blob Data Contributor` to the export's managed identity on the storage account.
 
-   > **Note:** The file is stored at `/tmp/cmcsp-data/subscriptions.json` in the container (the app runs as a non-root user and `/app` is root-owned). The data does not survive container restarts; use Option B or C to make IDs permanent.
+  The action is traced end-to-end with a single correlation ID across log lines from:
+  - `Home[...]`
+  - `SubscriptionStore[...]`
+  - `MainLayout[...]`
+  - `ExportProvisioning[...]`
 
-   **Option B – Re-run `deploy.ps1` with the updated list**
+     Example trace (same correlation ID across all steps):
+
+     ```text
+     2026-05-27T08:14:02.100Z info: CmCSP.Components.Pages.Home[0]
+       Home[9f9b4e8f2e8a4f58ac9cc2b8f70c5a7a]: invalidating cost cache and broadcasting refresh after subscription change (active count 2).
+     2026-05-27T08:14:02.121Z info: CmCSP.Services.SubscriptionStoreService[0]
+       SubscriptionStore[9f9b4e8f2e8a4f58ac9cc2b8f70c5a7a]: added 1 subscription(s). Active total now 2.
+     2026-05-27T08:14:02.145Z info: CmCSP.Components.Layout.MainLayout[0]
+       MainLayout[9f9b4e8f2e8a4f58ac9cc2b8f70c5a7a]: subscriptions changed (active count 2). Invalidating cost cache and broadcasting state refresh.
+     2026-05-27T08:14:02.502Z info: CmCSP.Services.ExportProvisioningService[0]
+       ExportProvisioning[9f9b4e8f2e8a4f58ac9cc2b8f70c5a7a]: provisioning cost export for subscription 11111111-2222-3333-4444-555555555555
+     2026-05-27T08:14:03.983Z info: CmCSP.Services.ExportProvisioningService[0]
+       ExportProvisioning[9f9b4e8f2e8a4f58ac9cc2b8f70c5a7a]: created/updated export 'cmcsp-daily-export' on 11111111-2222-3333-4444-555555555555; export MI principal: 66666666-7777-8888-9999-aaaaaaaaaaaa
+     2026-05-27T08:14:04.427Z info: CmCSP.Services.ExportProvisioningService[0]
+       ExportProvisioning[9f9b4e8f2e8a4f58ac9cc2b8f70c5a7a]: granted Storage Blob Data Contributor to export MI 66666666-7777-8888-9999-aaaaaaaaaaaa on /subscriptions/.../resourceGroups/rg-cmcsp-app/providers/Microsoft.Storage/storageAccounts/cmcspexportsabc123
+     ```
+
+   No CLI commands are needed for the export setup. The first export blob will appear the following day.
+
+   You can also import a `.csv` or `.txt` file — any GUIDs found are extracted automatically.
+
+   **Alternative – Re-run `deploy.ps1`** (makes the IDs permanent in config):
    ```powershell
    .\scripts\deploy.ps1 `
      -TenantId     "<tenant-id>" `
@@ -577,7 +616,7 @@ For each additional customer subscription:
      -SubscriptionIds "<sub-id-1>", "<sub-id-2>", "<new-sub-id>"
    ```
 
-   **Option C – Direct `az` command**
+   **Alternative – Direct `az` command**:
    ```bash
    az containerapp update -n cmcsp -g rg-cmcsp-app \
      --set-env-vars "AzureCostManagement__SubscriptionIds__1=<new-subscription-id>"
@@ -621,6 +660,12 @@ For each additional customer subscription:
 
 ## Troubleshooting
 
+For runtime subscription add/remove diagnostics, tail logs and filter on one correlation ID:
+
+```bash
+az containerapp logs show -n cmcsp -g rg-cmcsp-app --follow | grep -E "Home\[|SubscriptionStore\[|MainLayout\[|ExportProvisioning\["
+```
+
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | HTTP 400 `IndirectCostDisabled` | Cost visibility not enabled | Step 2 – Partner Center |
@@ -647,6 +692,7 @@ For each additional customer subscription:
 | Currency not normalised correctly in blob mode | CSP export uses `billingCurrency` column instead of `billingCurrencyCode` | Handled automatically — parser checks `billingcurrencycode`, `currency`, `billingcurrency` in order |
 | MTD / YTD figures are inflated (e.g. ~11× expected) | Azure `MonthToDate` exports are cumulative — a new blob is written each day containing all data from day 1; the old code summed across all blobs, counting early days many times | Fixed in `BlobCostManagementService` (merge-with-replacement across blobs). Deploy the latest image; then click **Refresh Data** in the nav sidebar (or restart the revision) to clear the cached inflated values |
 | Need to force-refresh data without waiting 60 min | In-memory cache hasn't expired | Click **Refresh Data** in the nav sidebar — it invalidates the cache and triggers an immediate re-fetch on all open pages |
-| Advisor page shows "no recommendations found" | Reader role not yet assigned, or no actionable recommendations exist | Assign **Reader** to the Entra App SP on each subscription (Step 4b); allow 5 min for role propagation. New subscriptions may have no Advisor data for up to 24 h |
-| Advisor page shows 403 error | Entra App SP missing Reader role | Confirm Step 4b — `Cost Management Reader` alone does not cover the Advisor API |
+| Subscription added in UI but export not created | Provisioning failed for that subscription | Use correlation-ID trace (`Home[...]`, `SubscriptionStore[...]`, `MainLayout[...]`, `ExportProvisioning[...]`) to find the failing step and HTTP error body |
+| Advisor page shows "no recommendations found" | Reader role not yet assigned, or no actionable recommendations exist | Assign **Reader** to the Entra App SP on each subscription (Step 4c); allow 5 min for role propagation. New subscriptions may have no Advisor data for up to 24 h |
+| Advisor page shows 403 error | Entra App SP missing Reader role | Confirm Step 4a — `Cost Management Contributor` supersedes Reader; does not cover the Advisor API |
 | Advisor savings are shown in wrong currency | Exchange rate for subscription billing currency not configured | Add the missing currency code and rate to `ExchangeRates` in `appsettings.json` |

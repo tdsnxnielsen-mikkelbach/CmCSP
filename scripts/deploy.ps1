@@ -352,9 +352,10 @@ $storageId = "/subscriptions/$($account.sub)/resourceGroups/$AppRg/providers/Mic
 $acrId     = "/subscriptions/$($account.sub)/resourceGroups/$AppRg/providers/Microsoft.ContainerRegistry/registries/$AcrName"
 
 # AcrPull is checked here as a safety net; app.bicep manages it with a stable GUID.
-# Storage roles (Blob Reader, Table Contributor) are intentionally NOT created via CLI –
-# main.bicep owns them with deterministic guid() names.  Creating them here would
-# generate random GUIDs that conflict with Bicep on re-runs.
+# Storage roles (Blob Reader, Table Contributor, and cache Blob Contributor) are
+# intentionally NOT created via CLI – main.bicep owns them with deterministic guid() names.
+# Creating them here would generate random GUIDs that conflict with Bicep on re-runs.
+# Note: the cache Blob Contributor role is scoped to the cache container, not the SA.
 $acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 $existingAcrPull = az role assignment list `
     --assignee $containerAppMiId `

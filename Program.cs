@@ -79,9 +79,15 @@ builder.Services.AddSingleton(costOptions);
 // any cost service starts up.
 builder.Services.AddSingleton<SubscriptionStoreService>();
 
-// ── Azure services ───────────────────────────────────────────────────────────
+// ── Azure services ─────────────────────────────────────────────
 // AzureTokenService is Singleton: MSAL manages its own internal token cache.
 builder.Services.AddSingleton<AzureTokenService>();
+
+// ExportProvisioningService automatically creates a daily Cost Management export and
+// grants its managed identity Storage Blob Data Contributor when a subscription is
+// added through the UI.  No-op when ExportBlob.Enabled = false or
+// StorageAccountResourceId is not configured.
+builder.Services.AddSingleton<ExportProvisioningService>();
 
 // DataLoadingStateService is Singleton: tracks per-dataset load phases so the
 // loading banner in the UI can react in real time without polling.
@@ -101,6 +107,7 @@ if (costOptions.ExportBlob.Enabled)
     // Daily refresh: call the Query API once per day so dashboards always show
     // up-to-date figures, independent of when the blob export last landed.
     builder.Services.AddHostedService<DailyApiRefreshService>();
+    builder.Services.AddHostedService<SubscriptionExportReconcileService>();
 }
 else
 {
@@ -113,6 +120,13 @@ else
 // DashboardStateService is Scoped: one instance per SignalR circuit so each
 // browser tab gets its own date-range filter.
 builder.Services.AddScoped<DashboardStateService>();
+
+// ── HTTPS / HSTS ─────────────────────────────────────────────────────────────
+builder.Services.AddHsts(opts =>
+{
+    opts.MaxAge = TimeSpan.FromDays(365);
+    opts.IncludeSubDomains = true;
+});
 
 // ── App pipeline ─────────────────────────────────────────────────────────────
 var app = builder.Build();

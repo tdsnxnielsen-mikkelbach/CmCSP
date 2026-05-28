@@ -50,6 +50,7 @@ public sealed class CostManagementService : ICostManagementService
     private const string KeyRg      = "cm_rg";
     private const string KeyTag     = "cm_tag";
     private const string KeyBudgets = "cm_budgets";
+    private const string KeyBudgetsSubs = "cm_budgets_subs";
     private const string KeyAdvisor       = "cm_advisor";
     private const string KeyAdvisorScores = "cm_advisor_scores";
     private const string KeySubNames      = "cm_sub_names";
@@ -120,6 +121,7 @@ public sealed class CostManagementService : ICostManagementService
         _cache.Remove(KeyRg);
         _cache.Remove(KeyTag);
         _cache.Remove(KeyBudgets);
+        _cache.Remove(KeyBudgetsSubs);
         _cache.Remove(KeyAdvisor);
         _cache.Remove(KeyAdvisorScores);
         _cache.Remove(KeySubNames);
@@ -132,11 +134,25 @@ public sealed class CostManagementService : ICostManagementService
 
     public async Task<List<SubscriptionBudget>> GetSubscriptionBudgetsAsync(CancellationToken ct = default)
     {
+        var distinctSubs = _options.SubscriptionIds
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var currentSubFingerprint = string.Join('|', distinctSubs);
+
         var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
         if (_cache.TryGetValue<List<SubscriptionBudget>>(KeyBudgets, ttl, out var cached) && cached is not null)
         {
-            _logger.LogDebug("Cache hit for {Key}.", KeyBudgets);
-            return cached;
+            if (_cache.TryGetValue<string>(KeyBudgetsSubs, ttl, out var cachedSubFingerprint)
+                && string.Equals(cachedSubFingerprint, currentSubFingerprint, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogDebug("Cache hit for {Key}.", KeyBudgets);
+                return cached;
+            }
+
+            _logger.LogInformation(
+                "Budget cache subscription set changed. Refreshing budgets (cached: {CachedSubs}, current: {CurrentSubs}).",
+                cachedSubFingerprint ?? "<none>", currentSubFingerprint);
         }
 
         _logger.LogInformation("Fetching subscription budgets for {Count} subscription(s).",
@@ -147,44 +163,56 @@ public sealed class CostManagementService : ICostManagementService
         var token = await _tokenService.GetAccessTokenAsync(ct);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        foreach (var subId in _options.SubscriptionIds)
+        foreach (var subId in distinctSubs)
         {
             try
             {
                 var url = $"https://management.azure.com/subscriptions/{subId}" +
                           $"/providers/Microsoft.Consumption/budgets?api-version={BudgetsApiVersion}";
 
-                var response = await client.GetAsync(url, ct);
-
-                if (!response.IsSuccessStatusCode)
+                var perSubCount = 0;
+                while (!string.IsNullOrWhiteSpace(url))
                 {
-                    _logger.LogWarning(
-                        "Budgets API returned {Status} for subscription {SubId} – skipping.",
-                        (int)response.StatusCode, subId);
-                    continue;
-                }
+                    var response = await client.GetAsync(url, ct);
 
-                var list = await response.Content
-                    .ReadFromJsonAsync<BudgetListResponse>(JsonOpts, ct);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        var body = await response.Content.ReadAsStringAsync(ct);
+                        _logger.LogWarning(
+                            "Budgets API returned {Status} for subscription {SubId} – skipping remaining pages. Body: {Body}",
+                            (int)response.StatusCode, subId, body);
+                        break;
+                    }
 
-                if (list?.Value is null || list.Value.Count == 0) continue;
+                    var list = await response.Content
+                        .ReadFromJsonAsync<BudgetListResponse>(JsonOpts, ct);
 
-                foreach (var b in list.Value)
-                {
-                    if (b.Properties is null) continue;
-                    var currency = b.Properties.CurrentSpend?.Unit ?? string.Empty;
-                    results.Add(new SubscriptionBudget(
-                        SubscriptionId:   subId,
-                        BudgetName:       b.Name,
-                        Amount:           NormaliseCurrency(b.Properties.Amount, currency),
-                        CurrentSpend:     NormaliseCurrency(b.Properties.CurrentSpend?.Amount ?? 0m, currency),
-                        TimeGrain:        b.Properties.TimeGrain,
-                        OriginalCurrency: currency
-                    ));
+                    if (list?.Value is null || list.Value.Count == 0)
+                    {
+                        url = list?.NextLink ?? string.Empty;
+                        continue;
+                    }
+
+                    foreach (var b in list.Value)
+                    {
+                        if (b.Properties is null) continue;
+                        var currency = b.Properties.CurrentSpend?.Unit ?? string.Empty;
+                        results.Add(new SubscriptionBudget(
+                            SubscriptionId:   subId,
+                            BudgetName:       b.Name,
+                            Amount:           NormaliseCurrency(b.Properties.Amount, currency),
+                            CurrentSpend:     NormaliseCurrency(b.Properties.CurrentSpend?.Amount ?? 0m, currency),
+                            TimeGrain:        b.Properties.TimeGrain,
+                            OriginalCurrency: currency
+                        ));
+                        perSubCount++;
+                    }
+
+                    url = list.NextLink ?? string.Empty;
                 }
 
                 _logger.LogInformation("Found {Count} budget(s) for subscription {SubId}.",
-                    list.Value.Count, subId);
+                    perSubCount, subId);
             }
             catch (Exception ex)
             {
@@ -193,6 +221,7 @@ public sealed class CostManagementService : ICostManagementService
         }
 
         _cache.Set(KeyBudgets, results, ttl);
+        _cache.Set(KeyBudgetsSubs, currentSubFingerprint, ttl);
         return results;
     }
 
@@ -320,7 +349,12 @@ public sealed class CostManagementService : ICostManagementService
     {
         var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
         if (_cache.TryGetValue<Dictionary<string, string>>(KeySubNames, ttl, out var cached) && cached is not null)
-            return cached;
+        {
+            // Bypass the cache if any current subscription IDs are missing from it
+            // (e.g. a subscription was added through the UI after the cache was populated).
+            if (_options.SubscriptionIds.All(id => cached.ContainsKey(id)))
+                return cached;
+        }
 
         using var client = _httpFactory.CreateClient("AzureMgmt");
         var token = await _tokenService.GetAccessTokenAsync(ct);
@@ -398,6 +432,21 @@ public sealed class CostManagementService : ICostManagementService
             if (!response.IsSuccessStatusCode)
             {
                 var body = await response.Content.ReadAsStringAsync(ct);
+
+                // Some subscriptions legitimately return 404 NotFound with
+                // "Advisor score data is not available" (for example when
+                // Advisor has not produced score data yet). Treat this as a
+                // no-data condition, not a permissions error.
+                if ((int)response.StatusCode == 404
+                    && body.Contains("Advisor score data is not available", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation(
+                        "Advisor Score API has no score data yet for subscription {SubId}. " +
+                        "Skipping this subscription. Body: {Body}",
+                        subId, body);
+                    return subResults;
+                }
+
                 _logger.LogWarning(
                     "Advisor Score API returned {Status} for subscription {SubId} – skipping. " +
                     "Ensure the Reader role is assigned to the app registration. Body: {Body}",

@@ -1,36 +1,44 @@
 using System.Text.Json;
+using Azure.Identity;
+using Azure.Security.KeyVault.Secrets;
 using CmCSP.Models;
 
 namespace CmCSP.Services;
 
 /// <summary>
-/// Persists user-added subscription IDs to Data/subscriptions.json and merges them
-/// into the live <see cref="CostManagementOptions.SubscriptionIds"/> list so that all
-/// cost services pick them up without a restart.
+/// Persists user-added subscription IDs to Key Vault (primary) and a local temp file
+/// (fallback/backup) and merges them into the live <see cref="CostManagementOptions.SubscriptionIds"/>
+/// list so that all cost services pick them up without a restart.
 ///
 /// Config-provided IDs (from appsettings / user-secrets / env vars) cannot be removed
 /// at runtime; they are only tracked so the UI can distinguish them.
 /// </summary>
 public sealed class SubscriptionStoreService
 {
+    private const string KvSecretName = "CmCSP--UserSubscriptionIds";
+
     private readonly CostManagementOptions _options;
     private readonly string _storePath;
     private readonly ILogger<SubscriptionStoreService> _logger;
+    private readonly SecretClient? _kvClient;
+    private readonly ExportProvisioningService? _provisioner;
 
     // IDs present in config at startup — not removable at runtime
     private readonly HashSet<string> _configIds;
 
-    // IDs added by the user via the UI — persisted to disk
+    // IDs added by the user via the UI — persisted to disk and Key Vault
     private readonly HashSet<string> _userIds = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly SemaphoreSlim _lock = new(1, 1);
 
-    public event Action? OnChanged;
+    public event Action<string>? OnChanged;
 
     public SubscriptionStoreService(
         CostManagementOptions options,
         IHostEnvironment env,
-        ILogger<SubscriptionStoreService> logger)
+        IConfiguration configuration,
+        ILogger<SubscriptionStoreService> logger,
+        ExportProvisioningService? provisioner = null)
     {
         _options   = options;
         _logger    = logger;
@@ -41,7 +49,17 @@ public sealed class SubscriptionStoreService
         // Snapshot the IDs that came from config so we can mark them as non-removable
         _configIds = new HashSet<string>(options.SubscriptionIds, StringComparer.OrdinalIgnoreCase);
 
+        var kvUri = configuration["KeyVaultUri"];
+        if (!string.IsNullOrWhiteSpace(kvUri))
+        {
+            _kvClient = new SecretClient(new Uri(kvUri), new DefaultAzureCredential());
+        }
+
+        _provisioner = provisioner;
+
+        // Load from disk first (fast, synchronous), then layer KV on top (KV wins on conflict).
         LoadFromDisk();
+        LoadFromKeyVault();
     }
 
     // ── Public read surfaces ─────────────────────────────────────────────────
@@ -61,15 +79,21 @@ public sealed class SubscriptionStoreService
     /// Adds one or more subscription IDs. Each entry is validated as a GUID.
     /// Returns the count of newly-added IDs and a list of any that failed validation.
     /// </summary>
-    public async Task<(int Added, List<string> Invalid)> AddAsync(IEnumerable<string> ids)
+    public async Task<(int Added, List<string> Invalid)> AddAsync(
+        IEnumerable<string> ids,
+        string? correlationId = null)
     {
+        correlationId ??= Guid.NewGuid().ToString("N");
+
+        int added          = 0;
+        var invalid        = new List<string>();
+        var newlyAdded     = new List<string>();
+        var inputList      = ids.ToList();
+
         await _lock.WaitAsync();
         try
         {
-            int added   = 0;
-            var invalid = new List<string>();
-
-            foreach (var raw in ids)
+            foreach (var raw in inputList)
             {
                 var trimmed = raw.Trim();
                 if (!Guid.TryParse(trimmed, out _))
@@ -82,6 +106,7 @@ public sealed class SubscriptionStoreService
                 if (_userIds.Add(normalized))
                 {
                     added++;
+                    newlyAdded.Add(normalized);
                     if (!_options.SubscriptionIds.Any(s => s.Equals(normalized, StringComparison.OrdinalIgnoreCase)))
                         _options.SubscriptionIds.Add(normalized);
                 }
@@ -91,26 +116,51 @@ public sealed class SubscriptionStoreService
             if (added > 0)
             {
                 await SaveAsync();
-                OnChanged?.Invoke();
+                _logger.LogInformation(
+                    "SubscriptionStore[{CorrelationId}]: added {Added} subscription(s). Active total now {Total}.",
+                    correlationId, added, _options.SubscriptionIds.Count);
+                OnChanged?.Invoke(correlationId);
             }
-
-            return (added, invalid);
+            else
+            {
+                _logger.LogInformation(
+                    "SubscriptionStore[{CorrelationId}]: no new subscriptions added (input entries: {InputCount}, invalid: {InvalidCount}).",
+                    correlationId, inputList.Count, invalid.Count);
+            }
         }
         finally
         {
             _lock.Release();
         }
+
+        // Fire-and-forget export provisioning — runs after the lock is released so
+        // the subscription is immediately active for Query API while the export is created.
+        if (_provisioner is not null)
+            foreach (var id in newlyAdded)
+                _ = Task.Run(async () =>
+                {
+                    try   { await _provisioner.ProvisionAsync(id, correlationId); }
+                    catch (Exception ex) { _logger.LogError(ex, "SubscriptionStore[{CorrelationId}]: export provisioning failed for {SubId}", correlationId, id); }
+                });
+
+        return (added, invalid);
     }
 
     /// <summary>
     /// Removes a user-added subscription ID. Config-provided IDs cannot be removed.
     /// </summary>
-    public async Task RemoveAsync(string id)
+    public async Task RemoveAsync(string id, string? correlationId = null)
     {
+        correlationId ??= Guid.NewGuid().ToString("N");
         var normalized = id.Trim().ToLowerInvariant();
 
         if (_configIds.Contains(normalized))
+        {
+            _logger.LogInformation(
+                "SubscriptionStore[{CorrelationId}]: skipped removing configured subscription {SubId} (non-removable at runtime).",
+                correlationId, normalized);
             return; // config IDs are not removable at runtime
+        }
 
         await _lock.WaitAsync();
         try
@@ -119,7 +169,16 @@ public sealed class SubscriptionStoreService
             {
                 _options.SubscriptionIds.RemoveAll(s => s.Equals(normalized, StringComparison.OrdinalIgnoreCase));
                 await SaveAsync();
-                OnChanged?.Invoke();
+                _logger.LogInformation(
+                    "SubscriptionStore[{CorrelationId}]: removed subscription {SubId}. Active total now {Total}.",
+                    correlationId, normalized, _options.SubscriptionIds.Count);
+                OnChanged?.Invoke(correlationId);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "SubscriptionStore[{CorrelationId}]: remove requested for {SubId} but it was not present in user-managed list.",
+                    correlationId, normalized);
             }
         }
         finally
@@ -164,20 +223,74 @@ public sealed class SubscriptionStoreService
 
     private async Task SaveAsync()
     {
+        var json = JsonSerializer.Serialize(
+            _userIds.OrderBy(x => x).ToList(),
+            new JsonSerializerOptions { WriteIndented = true });
+
+        // Primary: Key Vault (survives container restarts and scale-out)
+        if (_kvClient is not null)
+        {
+            try
+            {
+                await _kvClient.SetSecretAsync(KvSecretName, json);
+                _logger.LogDebug("Persisted {Count} subscription IDs to Key Vault", _userIds.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to persist subscription IDs to Key Vault secret '{Secret}'", KvSecretName);
+            }
+        }
+
+        // Backup: local temp file
         try
         {
             var dir = Path.GetDirectoryName(_storePath)!;
             Directory.CreateDirectory(dir);
-
-            var json = JsonSerializer.Serialize(
-                _userIds.OrderBy(x => x).ToList(),
-                new JsonSerializerOptions { WriteIndented = true });
-
             await File.WriteAllTextAsync(_storePath, json);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to persist subscription IDs to {Path}", _storePath);
+        }
+    }
+
+    // ── Key Vault load ────────────────────────────────────────────────────────
+
+    private void LoadFromKeyVault()
+    {
+        if (_kvClient is null)
+            return;
+
+        try
+        {
+            var response = _kvClient.GetSecret(KvSecretName);
+            var ids = JsonSerializer.Deserialize<List<string>>(response.Value.Value) ?? [];
+
+            int merged = 0;
+            foreach (var raw in ids)
+            {
+                var normalized = raw.Trim().ToLowerInvariant();
+                if (!Guid.TryParse(normalized, out _))
+                    continue;
+
+                if (_userIds.Add(normalized))
+                {
+                    merged++;
+                    if (!_options.SubscriptionIds.Any(s => s.Equals(normalized, StringComparison.OrdinalIgnoreCase)))
+                        _options.SubscriptionIds.Add(normalized);
+                }
+            }
+
+            _logger.LogInformation("Loaded {Count} subscription IDs from Key Vault ({Merged} new)", ids.Count, merged);
+        }
+        catch (Azure.RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Secret doesn't exist yet — first run or KV was reset; disk data (if any) will be saved on next mutation.
+            _logger.LogDebug("Key Vault secret '{Secret}' not found — starting from disk state", KvSecretName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not load subscription IDs from Key Vault — using disk state only");
         }
     }
 }

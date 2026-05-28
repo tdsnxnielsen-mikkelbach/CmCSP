@@ -2,6 +2,7 @@
 @inject ICostManagementService CostService
 @inject DashboardStateService State
 @inject CostManagementOptions Options
+@inject SubscriptionStoreService SubStore
 @implements IDisposable
 
 <PageTitle>Budgets – CSP Dashboard</PageTitle>
@@ -16,6 +17,7 @@
 }
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Budgets</MudText>
+<SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
 
 @if (!_loading && _budgets.Count == 0)
 {
@@ -128,6 +130,31 @@ else if (_budgets.Count > 0)
                 </ApexChart>
             </MudPaper>
         </MudItem>
+
+        <MudItem xs="12">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Budget Details by Subscription</MudText>
+                <MudDataGrid T="BudgetRow"
+                             Items="_budgetRows"
+                             Dense
+                             SortMode="SortMode.Single"
+                             Filterable
+                             FilterMode="DataGridFilterMode.ColumnFilterRow">
+                    <Columns>
+                        <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" />
+                        <PropertyColumn Property="r => r.SubscriptionId" Title="Subscription ID" />
+                        <PropertyColumn Property="r => r.BudgetName" Title="Budget" />
+                        <PropertyColumn Property="r => r.Amount" Title="Budget Amount" Format="N0" />
+                        <PropertyColumn Property="r => r.CurrentSpend" Title="Current Spend" Format="N0" />
+                        <TemplateColumn Title="Usage %">
+                            <CellTemplate>
+                                @context.Item.UsagePct.ToString("F1")%
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                </MudDataGrid>
+            </MudPaper>
+        </MudItem>
     </MudGrid>
 }
 
@@ -135,6 +162,13 @@ else if (_budgets.Count > 0)
     private record GaugePoint(string Label, decimal Pct);
     private record MonthBudgetPoint(string Label, decimal Actual, decimal Budget);
     private record SubBudgetPoint(string SubName, decimal Budget, decimal Spend);
+    private record BudgetRow(
+        string SubscriptionId,
+        string SubscriptionName,
+        string BudgetName,
+        decimal Amount,
+        decimal CurrentSpend,
+        decimal UsagePct);
 
     private bool _loading = true;
     private string? _error;
@@ -144,10 +178,12 @@ else if (_budgets.Count > 0)
     private decimal _totalCurrentSpend;
     private decimal _variance;
     private decimal _variancePct;
+    private int _withDataSubCount;
 
     private List<GaugePoint>      _gaugeData     = [];
     private List<SubBudgetPoint>  _subBudgetData = [];
     private List<MonthBudgetPoint> _monthlySpend = [];
+    private List<BudgetRow> _budgetRows = [];
 
     private readonly ApexChartOptions<GaugePoint> _gaugeOpts = new()
     {
@@ -204,11 +240,13 @@ else if (_budgets.Count > 0)
             // Start both requests concurrently – both are likely cache hits after first load.
             var costTask   = CostService.GetMainCostDataAsync();
             var budgetTask = CostService.GetSubscriptionBudgetsAsync();
+            var subNameTask = CostService.GetSubscriptionDisplayNamesAsync();
             var costData   = await costTask;
             var budgets    = await budgetTask;
+            var apiSubNames = await subNameTask;
 
             // Build subscription ID → display name lookup from cost rows.
-            var subNames = costData
+            var costSubNames = costData
                 .GroupBy(r => r.SubscriptionId)
                 .ToDictionary(g => g.Key, g => g.First().SubscriptionName,
                               StringComparer.OrdinalIgnoreCase);
@@ -243,13 +281,39 @@ else if (_budgets.Count > 0)
                 .GroupBy(b => b.SubscriptionId, StringComparer.OrdinalIgnoreCase)
                 .Select(g =>
                 {
-                    var name  = subNames.TryGetValue(g.Key, out var n) ? n
+                    var name  = apiSubNames.TryGetValue(g.Key, out var n) ? n
+                                : costSubNames.TryGetValue(g.Key, out var cn) ? cn
                                 : g.Key[..Math.Min(8, g.Key.Length)] + "\u2026";
                     var spend = mtdBySub.TryGetValue(g.Key, out var mtd) ? mtd : g.Sum(b => b.CurrentSpend);
                     return new SubBudgetPoint(name, g.Sum(b => b.Amount), spend);
                 })
                 .OrderByDescending(p => p.Budget)
                 .ToList();
+
+            _budgetRows = budgets
+                .Select(b =>
+                {
+                    var subName = apiSubNames.TryGetValue(b.SubscriptionId, out var n) ? n
+                        : costSubNames.TryGetValue(b.SubscriptionId, out var cn) ? cn
+                        : b.SubscriptionId;
+                    var spend = mtdBySub.TryGetValue(b.SubscriptionId, out var mtd) ? mtd : b.CurrentSpend;
+                    var usage = b.Amount > 0 ? spend / b.Amount * 100m : 0m;
+                    return new BudgetRow(
+                        b.SubscriptionId,
+                        subName,
+                        b.BudgetName,
+                        b.Amount,
+                        spend,
+                        usage);
+                })
+                .OrderByDescending(r => r.CurrentSpend)
+                .ToList();
+
+            _withDataSubCount = _budgetRows
+                .Where(r => r.CurrentSpend > 0 || r.Amount > 0)
+                .Select(r => r.SubscriptionId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
 
             // Historical monthly spend vs total budget line (last 6 months).
             _monthlySpend = costData

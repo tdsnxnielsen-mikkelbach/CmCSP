@@ -98,6 +98,8 @@ public sealed class BlobCostManagementService : ICostManagementService
         _cache.Remove(KeyMain);
         _cache.Remove(KeyRg);
         _cache.Remove(KeyTag);
+        _cache.Remove("cm_budgets");
+        _cache.Remove("cm_budgets_subs");
         _cache.Remove("cm_advisor");
         _cache.Remove("cm_advisor_scores");
         _cache.Remove("cm_sub_names");

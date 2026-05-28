@@ -82,6 +82,13 @@ public class CostManagementOptions
         /// Matches the rootFolderPath parameter in the Bicep files (default: "exports").
         /// </summary>
         public string BlobPrefix { get; set; } = "exports";
+
+        /// <summary>
+        /// ARM resource ID of the storage account, e.g.
+        /// /subscriptions/{subId}/resourceGroups/{rg}/providers/Microsoft.Storage/storageAccounts/{name}
+        /// Required for automated export provisioning (ExportProvisioningService).
+        /// </summary>
+        public string StorageAccountResourceId { get; set; } = string.Empty;
     }
 
     // ── Azure distributed cache (Table + Blob Storage) ────────────────────────

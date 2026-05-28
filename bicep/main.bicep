@@ -106,13 +106,28 @@ resource exportWriteRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
   }
 }
 
-// ── Roles: Container App MI → Blob Data Reader + Table Data Contributor ──────
+// ── Roles: Container App MI → Blob Data Reader + Blob Data Contributor (cache) + Table Data Contributor ──
 
+// Read access to all blobs (cost export CSVs + cache blob pointers).
 resource appBlobReadRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(appManagedIdentityPrincipalId)) {
   name: guid(sa.id, appManagedIdentityPrincipalId, storageBlobDataReaderRoleId)
   scope: sa
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataReaderRoleId)
+    principalId: appManagedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Write access scoped to the cache container only.
+// Required so AzureStorageCacheService can persist large cache payloads (> 60 KB) to blob storage,
+// ensuring the cache survives Container App restarts and redeploys.
+// The export container intentionally keeps read-only access (appBlobReadRole above).
+resource appCacheBlobWriteRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(appManagedIdentityPrincipalId)) {
+  name: guid(sa.id, appManagedIdentityPrincipalId, storageBlobDataContributorRoleId, 'cache')
+  scope: cacheContainer
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
     principalId: appManagedIdentityPrincipalId
     principalType: 'ServicePrincipal'
   }
@@ -128,11 +143,27 @@ resource appTableRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if 
   }
 }
 
+// ── Role: Container App MI → User Access Administrator (export provisioning) ───────
+// Scoped to this storage account only. Required so ExportProvisioningService can
+// dynamically grant Storage Blob Data Contributor to each new export resource MI.
+
+var userAccessAdminRoleId = '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9'
+
+resource appUserAccessAdminRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(appManagedIdentityPrincipalId)) {
+  name: guid(sa.id, appManagedIdentityPrincipalId, userAccessAdminRoleId)
+  scope: sa
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', userAccessAdminRoleId)
+    principalId: appManagedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // ── Outputs ──────────────────────────────────────────────────────────────────
 
 output storageAccountResourceId string = sa.id
 output storageAccountName string = sa.name
-output storageAccountUri string = 'https://${sa.name}.blob.core.windows.net'
+output storageAccountUri string = sa.properties.primaryEndpoints.blob
 output exportContainerName string = exportContainer.name
 output cacheContainerName string = cacheContainer.name
 output cacheTableName string = cacheTable.name

@@ -2,6 +2,7 @@
 @inject ICostManagementService CostService
 @inject DashboardStateService State
 @inject CostManagementOptions Options
+@inject SubscriptionStoreService SubStore
 @implements IDisposable
 
 <PageTitle>Resource Group Breakdown – CSP Dashboard</PageTitle>
@@ -16,6 +17,7 @@
 }
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Resource Group Breakdown</MudText>
+<SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
 
 <MudGrid Spacing="3" Class="mb-4">
     <MudItem xs="12" sm="4">
@@ -43,13 +45,17 @@
     <MudItem xs="12" md="7">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top 15 Resource Groups by Cost</MudText>
-            <ApexChart TItem="RgPoint" Options="_hbarOpts">
-                <ApexPointSeries TItem="RgPoint"
-                                 Items="_barData"
-                                 Name="Total Cost"
-                                 XValue="@(e => e.RgName)"
-                                 YValue="@(e => (decimal?)e.TotalCost)"
-                                 SeriesType="SeriesType.Bar" />
+            <ApexChart TItem="RgSeriesPoint" Options="_hbarOpts">
+                @foreach (var subId in _seriesSubIds)
+                {
+                    var capturedSubId = subId;
+                    <ApexPointSeries TItem="RgSeriesPoint"
+                                     Items="_chartData.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
+                                     Name="@GetSubName(capturedSubId)"
+                                     XValue="@(e => e.RgName)"
+                                     YValue="@(e => (decimal?)e.Cost)"
+                                     SeriesType="SeriesType.Bar" />
+                }
             </ApexChart>
         </MudPaper>
     </MudItem>
@@ -64,6 +70,7 @@
                          SortMode="SortMode.Single">
                 <Columns>
                     <PropertyColumn Property="r => r.RgName"       Title="Resource Group" />
+                    <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" />
                     <PropertyColumn Property="r => r.TotalCost"     Title="Total Cost"    Format="N0" />
                     <PropertyColumn Property="r => r.MtdCost"       Title="MTD"           Format="N0" />
                     <TemplateColumn Title="Share %">
@@ -78,7 +85,14 @@
 </MudGrid>
 
 @code {
-    private record RgPoint(string RgName, decimal TotalCost, decimal MtdCost, decimal SharePct, decimal AvgMonthly);
+    private record RgPoint(
+        string RgName,
+        string SubscriptionName,
+        decimal TotalCost,
+        decimal MtdCost,
+        decimal SharePct,
+        decimal AvgMonthly);
+    private record RgSeriesPoint(string RgName, string SubscriptionId, decimal Cost);
 
     private bool _loading = true;
     private string? _error;
@@ -86,9 +100,13 @@
     private decimal _totalCost;
     private decimal _avgMonthly;
     private int _totalRgCount;
+    private int _withDataSubCount;
     private List<RgPoint> _barData = [];
+    private List<RgSeriesPoint> _chartData = [];
+    private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
+    private List<string> _seriesSubIds = [];
 
-    private readonly ApexChartOptions<RgPoint> _hbarOpts = new()
+    private readonly ApexChartOptions<RgSeriesPoint> _hbarOpts = new()
     {
         Chart = new Chart { Toolbar = new Toolbar { Show = false }, Height = 420 },
         PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } },
@@ -113,17 +131,29 @@
         _error   = null;
         try
         {
-            var data  = await CostService.GetRgCostDataAsync();
+            var dataTask = CostService.GetRgCostDataAsync();
+            var subNameTask = CostService.GetSubscriptionDisplayNamesAsync();
+            var data  = await dataTask;
+            _subNames = await subNameTask;
             var start = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
             var end   = State.SelectedRange.End   ?? DateTime.Now;
             var today = DateTime.UtcNow;
 
             var filtered = data.Where(r => r.Date >= start && r.Date <= end).ToList();
             _totalCost   = filtered.Sum(r => r.NormalizedCost);
+            _withDataSubCount = filtered
+                .Where(r => !string.IsNullOrWhiteSpace(r.SubscriptionId))
+                .Select(r => r.SubscriptionId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+            _seriesSubIds = SubStore.AllIds
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(GetSubName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             var byRg = filtered
                 .GroupBy(r => string.IsNullOrWhiteSpace(r.ResourceGroupName)
-                    ? "(unassigned)" : r.ResourceGroupName.ToLowerInvariant())
+                    ? "(unassigned)" : r.ResourceGroupName)
                 .Select(g =>
                 {
                     var total        = g.Sum(r => r.NormalizedCost);
@@ -146,9 +176,25 @@
             var top15 = byRg.Take(15).ToList();
             _avgMonthly = top15.Count > 0 ? top15.Average(x => x.AvgMthly) : 0m;
 
+            var rgBySub = filtered
+                .GroupBy(r => new
+                {
+                    RgName = string.IsNullOrWhiteSpace(r.ResourceGroupName) ? "(unassigned)" : r.ResourceGroupName,
+                    r.SubscriptionId
+                })
+                .ToDictionary(g => (RgName: g.Key.RgName, SubId: g.Key.SubscriptionId), g => g.Sum(r => r.NormalizedCost));
+
+            _chartData = _seriesSubIds
+                .SelectMany(subId => top15.Select(rg => new RgSeriesPoint(
+                    rg.Name,
+                    subId,
+                    rgBySub.TryGetValue((rg.Name, subId), out var cost) ? cost : 0m)))
+                .ToList();
+
             _barData = top15
                 .Select(x => new RgPoint(
                     x.Name,
+                    GetTopSubForRg(filtered, x.Name),
                     x.Total,
                     x.Mtd,
                     _totalCost > 0 ? x.Total / _totalCost * 100m : 0m,
@@ -163,6 +209,20 @@
         {
             _loading = false;
         }
+    }
+
+    private string GetSubName(string subscriptionId) =>
+        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
+
+    private string GetTopSubForRg(List<CostRow> filtered, string rgName)
+    {
+        var best = filtered
+            .Where(r => (string.IsNullOrWhiteSpace(r.ResourceGroupName) ? "(unassigned)" : r.ResourceGroupName) == rgName)
+            .GroupBy(r => r.SubscriptionId)
+            .Select(g => new { Id = g.Key, Cost = g.Sum(r => r.NormalizedCost) })
+            .OrderByDescending(x => x.Cost)
+            .FirstOrDefault();
+        return best is null ? string.Empty : GetSubName(best.Id);
     }
 
     private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";

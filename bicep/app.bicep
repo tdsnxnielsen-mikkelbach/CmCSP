@@ -150,6 +150,10 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             // Secret values (ClientSecret, SubscriptionIds, ConnectionStrings)
             // should be stored in Key Vault and referenced here via secretRef.
             {
+              name: 'KeyVaultUri'
+              value: kv.properties.vaultUri
+            }
+            {
               name: 'ASPNETCORE_ENVIRONMENT'
               value: 'Production'
             }
@@ -187,8 +191,11 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'AzureCostManagement__ExportBlob__BlobPrefix'
               value: 'exports'
-            }
-            // ── Azure distributed cache ─────────────────────────────────────
+            }            
+            {
+              name: 'AzureCostManagement__ExportBlob__StorageAccountResourceId'
+              value: '' // set to the ARM resource ID of the export storage account
+            }            // ── Azure distributed cache ─────────────────────────────────────
             {
               name: 'AzureCostManagement__AzureCache__Enabled'
               value: 'true'
@@ -239,6 +246,21 @@ resource kvSecretsRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: kv
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
+    principalId: containerApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ── Role: Container App MI → Key Vault Secrets Officer (write secrets) ───────
+// Required so the app can persist user-added subscription IDs to Key Vault.
+
+var kvSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
+
+resource kvSecretsOfficerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(kv.id, containerApp.id, kvSecretsOfficerRoleId)
+  scope: kv
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsOfficerRoleId)
     principalId: containerApp.identity.principalId
     principalType: 'ServicePrincipal'
   }

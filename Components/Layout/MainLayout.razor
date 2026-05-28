@@ -2,7 +2,10 @@
 @inject ICostManagementService CostService
 @inject DashboardStateService State
 @inject CostManagementOptions Options
+@inject SubscriptionStoreService SubStore
+@inject ILogger<MainLayout> Logger
 @inject IJSRuntime JS
+@implements IDisposable
 
 <MudThemeProvider @ref="_themeProvider" @bind-IsDarkMode="_isDark" />
 <MudPopoverProvider />
@@ -77,7 +80,7 @@
                            EndIcon="@(_showSubs ? Icons.Material.Filled.KeyboardArrowUp : Icons.Material.Filled.KeyboardArrowDown)"
                            OnClick="ToggleSubsAsync"
                            Class="flex-none text-lowercase">
-                    @Options.SubscriptionIds.Count subscription(s)
+                    @SubStore.AllIds.Count subscription(s)
                 </MudButton>
             </MudPaper>
 
@@ -85,7 +88,7 @@
             {
                 <MudPaper Class="pa-3 mb-4" Elevation="1">
                     <MudText Typo="Typo.caption" Class="fw-bold d-block mb-2" Color="Color.Secondary">
-                        Configured Subscriptions (@Options.SubscriptionIds.Count)
+                        Configured Subscriptions (@SubStore.AllIds.Count)
                     </MudText>
                     @if (_subNamesLoading)
                     {
@@ -95,7 +98,7 @@
                     {
                         <MudSimpleTable Dense="true" Elevation="0">
                             <tbody>
-                                @foreach (var id in Options.SubscriptionIds)
+                                @foreach (var id in SubStore.AllIds)
                                 {
                                     var displayName = _subNames.TryGetValue(id, out var n) ? n : id;
                                     <tr>
@@ -132,28 +135,57 @@
     private DateTime? _dataMin;
     private DateTime? _dataMax;
 
+    protected override void OnInitialized()
+    {
+        SubStore.OnChanged += HandleSubscriptionsChanged;
+    }
+
     private void ToggleDrawer() => _drawerOpen = !_drawerOpen;
     private void ToggleTheme() => _isDark = !_isDark;
 
     private async Task ToggleSubsAsync()
     {
         _showSubs = !_showSubs;
-        if (_showSubs && _subNames.Count == 0)
+        if (_showSubs)
         {
-            _subNamesLoading = true;
+            await RefreshSubNamesAsync(force: true);
+        }
+    }
+
+    private void HandleSubscriptionsChanged(string correlationId)
+    {
+        _ = InvokeAsync(async () =>
+        {
+            Logger.LogInformation(
+                "MainLayout[{CorrelationId}]: subscriptions changed (active count {Count}). Invalidating cost cache and broadcasting state refresh.",
+                correlationId, SubStore.AllIds.Count);
+            CostService.InvalidateCache();
+            State.SetDateRange(State.SelectedRange);
+            if (_showSubs)
+                await RefreshSubNamesAsync(force: true);
             StateHasChanged();
-            try
-            {
-                _subNames = await CostService.GetSubscriptionDisplayNamesAsync();
-            }
-            catch
-            {
-                // Best-effort; falls back to showing raw IDs from Options
-            }
-            finally
-            {
-                _subNamesLoading = false;
-            }
+        });
+    }
+
+    private async Task RefreshSubNamesAsync(bool force = false)
+    {
+        var activeIds = SubStore.AllIds;
+        if (!force && _subNames.Count > 0 && activeIds.All(id => _subNames.ContainsKey(id)))
+            return;
+
+        _subNamesLoading = true;
+        StateHasChanged();
+        try
+        {
+            _subNames = await CostService.GetSubscriptionDisplayNamesAsync();
+        }
+        catch
+        {
+            // Best-effort; falls back to showing raw IDs from Options
+        }
+        finally
+        {
+            _subNamesLoading = false;
         }
     }
 
@@ -203,5 +235,10 @@
         {
             // Non-critical – leave the default range if data isn't available yet
         }
+    }
+
+    public void Dispose()
+    {
+        SubStore.OnChanged -= HandleSubscriptionsChanged;
     }
 }

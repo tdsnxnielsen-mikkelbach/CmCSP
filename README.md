@@ -4,6 +4,8 @@ A **Blazor Server** web application that replaces a Power BI report with a live,
 
 The dashboard mirrors the seven pages from the [TD SYNNEX tds_cc reference report](https://github.com/tdsnxnielsen-mikkelbach/tds_cc) and adds an eighth page for **Azure Advisor Overview** (health scores for all five Advisor categories plus detailed Cost recommendations), implemented with **MudBlazor** for the UI shell and **Blazor-ApexCharts** for charts.
 
+Subscriptions can be added and removed at runtime from the **Home** page, with automatic cache invalidation and cross-page refresh. In blob-export mode, the app also reconciles export provisioning on startup for all active subscriptions and exposes a manual **Re-provision Export** action on the Home page for operator recovery. Every analytics page now includes a compact **subscription scope badge** showing selected subscriptions vs subscriptions with data for the current view.
+
 ---
 
 ## Table of Contents
@@ -31,6 +33,7 @@ The dashboard mirrors the seven pages from the [TD SYNNEX tds_cc reference repor
 ## Architecture
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": true}}}%%
 graph TD
     Browser["Browser<br/>(SignalR circuit)"]
     Blazor["Blazor Server<br/>ASP.NET Core 10"]
@@ -95,7 +98,9 @@ CmCSP/
 │   ├── DataLoadingStateService.cs        ← tracks per-dataset load phase for the UI
 │   ├── CacheWarmupService.cs             ← background pre-warm on startup
 │   ├── DailyApiRefreshService.cs         ← calls Query API once per day for latest data
-│   ├── SubscriptionStoreService.cs       ← persists user-added subscription IDs at runtime
+│   ├── ExportProvisioningService.cs      ← reuses or creates subscription export + grants storage role
+│   ├── SubscriptionExportReconcileService.cs ← startup reconciliation for export provisioning on active subscriptions
+│   ├── SubscriptionStoreService.cs       ← persists user-added subscription IDs to Key Vault + disk
 │   └── DashboardStateService.cs         ← shared date-range slicer (Scoped)
 ├── Components/
 │   ├── App.razor                         ← HTML shell (MudBlazor + ApexCharts JS)
@@ -119,6 +124,7 @@ CmCSP/
 │   │   └── NotFound.razor
 │   └── Shared/
 │       ├── LoadingStatus.razor           ← data-load progress banner
+│       ├── SubscriptionScopeBadge.razor  ← selected vs with-data subscription scope indicator
 │       └── RedirectToLogin.razor         ← forces unauthenticated users to /login outside SignalR
 ├── bicep/
 │   ├── main.bicep                        ← export storage account + Table Storage + role assignments
@@ -140,10 +146,10 @@ CmCSP/
 | Requirement | Minimum version |
 |---|---|
 | .NET SDK | 10.0 |
-| Azure subscription(s) | With `Cost Management Reader` assigned to the service principal |
+| Azure subscription(s) | With `Cost Management Contributor` assigned to the service principal (enables export auto-provisioning; `Cost Management Reader` is sufficient for Query API–only mode) |
 | Microsoft Entra ID | App registration with a client secret |
 | *(Blob mode only)* Azure Storage account | Created by `bicep/main.bicep` |
-| *(Blob mode only)* Cost Management Export | Created by `bicep/export-sub.bicep` or `export-billing.bicep` |
+| *(Blob mode only)* Cost Management Export | Created or reused automatically by the app, reconciled on startup for active subscriptions, or created manually via `bicep/export-sub.bicep` |
 
 See [docs/azure-roles.md](docs/azure-roles.md) for the exact role assignments required for each mode.
 
@@ -265,10 +271,17 @@ All settings live under the `AzureCostManagement` section in `appsettings.json`.
 | `ExportBlob:ConnectionString` | string | — | Alternative to URI for local dev without `az login` |
 | `ExportBlob:ContainerName` | string | `cost-exports` | Blob container that receives the export files |
 | `ExportBlob:BlobPrefix` | string | `exports` | Root folder path inside the container |
+| `ExportBlob:StorageAccountResourceId` | string | — | ARM resource ID of the storage account (e.g. `/subscriptions/{id}/resourceGroups/{rg}/providers/Microsoft.Storage/storageAccounts/{name}`). Required for `ExportProvisioningService` to automatically grant the export managed identity write access when a subscription is added via the UI. |
 | `AzureCache:Enabled` | bool | `false` | `true` = persist cache in Azure Table + Blob Storage (multi-replica safe) |
 | `AzureCache:StorageAccountUri` | string | — | Base URI of the storage account used for the distributed cache |
 | `AzureCache:TableName` | string | `cmcspcache` | Azure Table used for small cache payloads (≤ 64 KB) |
 | `AzureCache:CacheContainerName` | string | `cmcspcache` | Blob container used for large cache payloads (> 64 KB) |
+
+The following key lives at the **root** of the configuration (not under `AzureCostManagement`):
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `KeyVaultUri` | string | — | URI of the Azure Key Vault (e.g. `https://<vault>.vault.azure.net/`). When set, `SubscriptionStoreService` persists user-added subscription IDs to Key Vault secret `CmCSP--UserSubscriptionIds`, ensuring they survive container restarts and scale-out. Requires the Container App MI to have **Key Vault Secrets Officer** on the vault. |
 
 Default exchange rates (override in `appsettings.json` or user-secrets):
 
@@ -458,6 +471,22 @@ flowchart LR
 
 Calling `CostManagementService.InvalidateCache()` clears all keys, forcing a fresh API fetch on the next request.
 
+### Runtime subscription updates and trace correlation
+
+When a subscription is added, imported, or removed in **Home → Manage Subscriptions**:
+
+1. `Home.razor` generates a single correlation ID for that user action.
+2. `SubscriptionStoreService` persists the new subscription set and raises `OnChanged(correlationId)`.
+3. `MainLayout.razor` receives the event, invalidates cache, and re-broadcasts `DashboardStateService` so open pages refresh.
+4. `ExportProvisioningService` (blob mode) receives the same correlation ID for export creation and storage-role assignment logs.
+
+This produces one end-to-end trace chain in log stream:
+
+- `Home[<correlationId>] ...`
+- `SubscriptionStore[<correlationId>] ...`
+- `MainLayout[<correlationId>] ...`
+- `ExportProvisioning[<correlationId>] ...`
+
 ---
 
 ## Caching & Rate Limiting
@@ -604,7 +633,7 @@ A **Refresh Data** button in the navigation sidebar calls `ICostManagementServic
      --template-file bicep/main.bicep \
      --parameters storageAccountName=cmcspcostexports
    ```
-2. Deploy the export schedule per subscription:
+2. Deploy the export schedule per subscription (or let the UI do it automatically — see below):
    ```bash
    az deployment sub create \
      --location swedencentral \
@@ -617,9 +646,22 @@ A **Refresh Data** button in the navigation sidebar calls `ICostManagementServic
 4. Grant the application identity `Storage Blob Data Reader` on the storage account.
 5. Set configuration (via user-secrets locally, environment variables in production):
    ```
-   AzureCostManagement:ExportBlob:Enabled          = true
-   AzureCostManagement:ExportBlob:StorageAccountUri = https://<account>.blob.core.windows.net
+   AzureCostManagement:ExportBlob:Enabled                = true
+   AzureCostManagement:ExportBlob:StorageAccountUri      = https://<account>.blob.core.windows.net
+   AzureCostManagement:ExportBlob:StorageAccountResourceId = /subscriptions/{id}/resourceGroups/{rg}/providers/Microsoft.Storage/storageAccounts/{name}
+   KeyVaultUri                                           = https://<vault>.vault.azure.net/
    ```
+
+### Automated export provisioning
+
+When `ExportBlob:Enabled = true` and `ExportBlob:StorageAccountResourceId` is configured, adding a subscription via the **Manage Subscriptions** panel on the Home page automatically:
+
+1. Creates a `cmcsp-daily-export` Cost Management export on the new subscription (using the Entra App SP — requires `Cost Management Contributor` on the subscription).
+2. Grants `Storage Blob Data Contributor` on the storage account to the export's managed identity (using the Container App MI — requires `User Access Administrator` on the storage account, granted by `bicep/main.bicep`).
+
+The provisioning runs in the background; the subscription is immediately active for Query API while the export is being set up. Errors are logged to the container's application log stream.
+
+The **subscription display name** (e.g. "Contoso Azure") is shown in the chip immediately after adding, with the GUID available as a tooltip.
 
 ### Configuration keys
 
@@ -630,6 +672,18 @@ A **Refresh Data** button in the navigation sidebar calls `ICostManagementServic
 | `ExportBlob:ConnectionString` | Alternative to URI; use user-secrets only |
 | `ExportBlob:ContainerName` | Blob container name (default: `cost-exports`) |
 | `ExportBlob:BlobPrefix` | Root folder path inside the container (default: `exports`) |
+| `ExportBlob:StorageAccountResourceId` | ARM resource ID of the storage account. Required for automated export provisioning (see below). |
+
+### Automated export provisioning
+
+When `ExportBlob:Enabled = true` and `ExportBlob:StorageAccountResourceId` is configured, adding a subscription via the **Manage Subscriptions** panel on the Home page automatically:
+
+1. Creates a `cmcsp-daily-export` Cost Management export on the new subscription (using the Entra App SP — requires `Cost Management Contributor` on the subscription).
+2. Grants `Storage Blob Data Contributor` on the storage account to the export’s managed identity (using the Container App MI — requires `User Access Administrator` on the storage account, granted by `bicep/main.bicep`).
+
+The provisioning runs in the background; the subscription is immediately active for Query API while the export is being set up. Errors are logged to the container’s application log stream.
+
+The **subscription display name** (e.g. “Contoso Azure”) is resolved via the ARM `/subscriptions/{id}` endpoint and shown in the chip immediately after adding, with the GUID available as a tooltip.
 
 ### CSP export column compatibility
 
@@ -686,6 +740,13 @@ flowchart LR
 ---
 
 ## Dashboard Pages
+
+All analytics pages display a shared **SubscriptionScopeBadge** just below the page title:
+
+- `selected`: active subscriptions currently configured in `SubscriptionStoreService`
+- `with data`: subscriptions that produced rows for the page's current dataset/filter
+
+This makes multi-subscription coverage explicit, including subscriptions that are selected but currently have zero cost for a view.
 
 ### Page 1 – Cost Overview (`/`)
 
@@ -855,7 +916,10 @@ Neither the score nor the recommendation API returns a subscription display name
 > `MainLayout.razor` renders a `MudDateRangePicker` at the top of every page. On first render it auto-detects the available date range by fetching `cm_main` (a near-instant cache hit after warmup) and calls `DashboardStateService.SetDateRange(min, max)`. A “Fit to data” button repeats this at any time. All pages read `DashboardStateService.SelectedRange` to filter their charts and tables, so changing the picker instantly updates every visible page.
 
 > **Subscription chip**  
-> `MainLayout.razor` also renders a **"N subscription(s) ▾"** chip next to the date-range picker. Clicking it expands an inline table listing each subscription's display name and ID. Names are resolved lazily on first expand via `GetSubscriptionDisplayNamesAsync()` and cached under `cm_sub_names`. The count comes from `CostManagementOptions.SubscriptionIds.Count` and is always visible even before names are loaded.
+> `MainLayout.razor` also renders a **"N subscription(s) ▾"** chip next to the date-range picker. Clicking it expands an inline table listing each subscription's display name and ID. Names are resolved lazily on first expand via `GetSubscriptionDisplayNamesAsync()` and cached under `cm_sub_names`. The count comes from `SubscriptionStoreService.AllIds.Count` and updates immediately when subscriptions are added or removed at runtime.
+
+> **Subscription change propagation**  
+> `SubscriptionStoreService.OnChanged` now carries a correlation ID (`Action<string>`). `MainLayout.razor` uses this to log and trigger cache invalidation plus global state refresh. `Home.razor` logs the same correlation ID when it initiates the change, and `ExportProvisioningService` logs the same ID during auto-provisioning in blob mode.
 
 ```mermaid
 graph LR

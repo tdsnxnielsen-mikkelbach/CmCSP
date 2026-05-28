@@ -2,6 +2,7 @@
 @inject ICostManagementService CostService
 @inject DashboardStateService State
 @inject CostManagementOptions Options
+@inject SubscriptionStoreService SubStore
 @implements IDisposable
 
 <PageTitle>Subscription Breakdown – CSP Dashboard</PageTitle>
@@ -16,6 +17,7 @@
 }
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Subscription Breakdown</MudText>
+<SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
 
 @* ── Summary card *@
 <MudGrid Spacing="3" Class="mb-4">
@@ -107,6 +109,7 @@
 
     private decimal _totalCost;
     private decimal _topShare;
+    private int _withDataSubCount;
     private List<SubPoint> _barData = [];
     private List<TableRow> _rows = [];
 
@@ -140,7 +143,10 @@
         _error   = null;
         try
         {
-            var data  = await CostService.GetMainCostDataAsync();
+            var dataTask = CostService.GetMainCostDataAsync();
+            var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
+            var data  = await dataTask;
+            var subNames = await nameTask;
             var start = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
             var end   = State.SelectedRange.End   ?? DateTime.Now;
             var today = DateTime.UtcNow;
@@ -162,13 +168,32 @@
                 .OrderByDescending(x => x.Total)
                 .ToList();
 
-            _barData = bySub
+            var merged = SubStore.AllIds
+                .Select(id =>
+                {
+                    var existing = bySub.FirstOrDefault(x =>
+                        x.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase));
+                    var resolvedName = subNames.TryGetValue(id, out var n) ? n : id;
+                    return new
+                    {
+                        SubscriptionId = id,
+                        SubscriptionName = !string.IsNullOrWhiteSpace(existing?.SubscriptionName)
+                            ? existing.SubscriptionName
+                            : resolvedName,
+                        Total = existing?.Total ?? 0m,
+                        Mtd = existing?.Mtd ?? 0m
+                    };
+                })
+                .OrderByDescending(x => x.Total)
+                .ToList();
+
+            _barData = merged
                 .Select(x => new SubPoint(
-                    string.IsNullOrWhiteSpace(x.SubscriptionName) ? x.SubscriptionId : x.SubscriptionName,
+                    $"{(string.IsNullOrWhiteSpace(x.SubscriptionName) ? x.SubscriptionId : x.SubscriptionName)} [{x.SubscriptionId}]",
                     x.Total))
                 .ToList();
 
-            _rows = bySub
+            _rows = merged
                 .Select(x => new TableRow(
                     x.SubscriptionId,
                     string.IsNullOrWhiteSpace(x.SubscriptionName) ? x.SubscriptionId : x.SubscriptionName,
@@ -176,6 +201,12 @@
                     x.Mtd,
                     _totalCost > 0 ? x.Total / _totalCost * 100m : 0m))
                 .ToList();
+
+            _withDataSubCount = _rows
+                .Where(r => r.TotalCost > 0)
+                .Select(r => r.SubId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
 
             _topShare = _rows.Count > 0 ? _rows.Max(r => r.SharePct) : 0m;
         }

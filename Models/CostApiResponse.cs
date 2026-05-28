@@ -16,7 +16,7 @@ public sealed record CostApiColumn(string Name, string Type);
 // ─── Budget API response shapes ────────────────────────────────────────────────────────
 // GET /subscriptions/{id}/providers/Microsoft.Consumption/budgets
 
-public sealed record BudgetListResponse(List<BudgetResource>? Value);
+public sealed record BudgetListResponse(List<BudgetResource>? Value, string? NextLink);
 public sealed record BudgetResource(string Name, BudgetResourceProperties? Properties);
 public sealed record BudgetResourceProperties(
     decimal Amount,
