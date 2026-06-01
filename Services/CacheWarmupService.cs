@@ -34,6 +34,7 @@ public sealed class CacheWarmupService : BackgroundService
             await _costService.GetMainCostDataAsync(stoppingToken); // cm_main (most pages)
             await _costService.GetRgCostDataAsync(stoppingToken);   // cm_rg
             await _costService.GetTagCostDataAsync(stoppingToken);  // cm_tag
+            await _costService.GetAmortizedMainCostDataAsync(stoppingToken); // cm_main_amort (Trend & Forecast amortized toggle)
 
             _logger.LogInformation("CacheWarmupService: all datasets pre-warmed successfully.");
         }

@@ -72,6 +72,7 @@ public sealed class DailyApiRefreshService : BackgroundService
                 await _apiService.GetMainCostDataAsync(stoppingToken);
                 await _apiService.GetRgCostDataAsync(stoppingToken);
                 await _apiService.GetTagCostDataAsync(stoppingToken);
+                await _apiService.GetAmortizedMainCostDataAsync(stoppingToken);
 
                 _logger.LogInformation("DailyApiRefreshService: daily API refresh complete.");
             }
