@@ -112,6 +112,40 @@ public sealed class AzureStorageCacheService
             if (!response.HasValue) { value = default; return false; }
 
             var entity = response.Value!;
+
+            // ── Strict TTL enforcement ────────────────────────────────────────
+            // Check expiry before touching the blob to avoid a wasted network
+            // round-trip for large payloads that have already expired.
+            if (entity.TryGetValue("ExpiresAt", out var expObj)
+                && expObj is string expStr
+                && DateTimeOffset.TryParse(expStr, null,
+                       System.Globalization.DateTimeStyles.RoundtripKind, out var expiry)
+                && DateTimeOffset.UtcNow > expiry)
+            {
+                _logger.LogDebug(
+                    "AzureStorageCacheService: key {Key} expired at {Expiry}. Deleting from storage.",
+                    key, expiry);
+                try
+                {
+                    // Delete the pointed blob first, then the table row.
+                    if (entity.TryGetValue("Payload", out var expPayloadObj)
+                        && expPayloadObj is string expPayload
+                        && expPayload.StartsWith(BlobPointerMark, StringComparison.Ordinal))
+                    {
+                        var blobName = expPayload[BlobPointerMark.Length..];
+                        _blobs?.GetBlobClient(blobName).DeleteIfExists();
+                    }
+                    _table.DeleteEntity(PartitionKey, key);
+                }
+                catch (Exception delEx)
+                {
+                    _logger.LogWarning(delEx,
+                        "AzureStorageCacheService: failed to delete expired entry for key {Key}.", key);
+                }
+                value = default;
+                return false;
+            }
+
             string? payload;
 
             if (entity.TryGetValue("Payload", out var raw) && raw is string s)

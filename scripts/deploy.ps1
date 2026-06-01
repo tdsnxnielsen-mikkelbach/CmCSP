@@ -52,7 +52,10 @@ param (
     [switch]$DeployExports,               # pass to also deploy the cost-export schedule
     [string]$ExportName       = 'cmcsp-daily-export',
     [int]$HistoricalMonths    = 0,        # backfill N prior calendar months of export data
-
+    # ── App subscription ─────────────────────────────────────────────────────
+    # The subscription that hosts rg-cmcsp-app, ACR, Container App, etc.
+    # Defaults to whatever 'az account show' returns when the script starts.
+    [string]$AppSubscriptionId = '',
     # ── Misc ──────────────────────────────────────────────────────────────────
     [switch]$WhatIf,
     [hashtable]$Tags          = @{
@@ -167,6 +170,12 @@ function Invoke-AzDeploymentAsync {
                 Start-Sleep -Seconds $StartRetrySeconds
                 Invoke-AzCli $launchArgs | Out-Null
                 $state = 'Running'   # keep the loop going
+            } elseif ($errCode -eq 'RoleAssignmentExists') {
+                # All role assignments for this principal/role/scope already exist from a prior
+                # deployment run. This is safe to ignore – RBAC state is already correct.
+                Write-Host "  Role assignments already exist – treating as success." -ForegroundColor Yellow
+                Write-Host "  Done ($([int]((Get-Date) - $start).TotalSeconds)s)." -ForegroundColor Green
+                return $dep
             } else {
                 Write-Error "Deployment '$Name' failed after ${elapsed}s: $($dep.properties.error | ConvertTo-Json -Compress)"
             }
@@ -249,6 +258,13 @@ $account = az account show --query '{sub:id,tenant:tenantId}' -o json 2>$null | 
 if (-not $account) { Write-Error "Not logged in to az CLI. Run: az login"; exit 1 }
 Write-Host "Logged in – tenant $($account.tenant)"
 
+# Switch to the app subscription if specified (or if currently on the wrong one)
+if ($AppSubscriptionId -and $AppSubscriptionId -ne $account.sub) {
+    Write-Host "Switching to app subscription $AppSubscriptionId..."
+    az account set --subscription $AppSubscriptionId | Out-Null
+    $account = az account show --query '{sub:id,tenant:tenantId}' -o json 2>$null | ConvertFrom-Json
+}
+
 # Default globally-unique names (stable suffix per tenant+app)
 $suffix = Get-Suffix "$TenantId-$AppName"
 if (-not $AcrName)      { $AcrName      = "$($AppName)acr$suffix"     }
@@ -318,7 +334,7 @@ if ($existingCaState -and $existingCaState -notin @('Succeeded', 'Failed', 'Canc
     Wait-ContainerAppReady -Name $AppName -Rg $AppRg
 }
 
-Write-Host "  Starting deployment (ACR, Key Vault, Container Apps env, Container App)..."
+Write-Host "  Starting deployment (ACR, Key Vault, Container Apps env, Container App, Cleanup Job)..."
 $appOut = Invoke-AzDeploymentAsync -Rg $AppRg -Name 'app' -TemplateArgs @(
     '--template-file', "$BicepRoot\app.bicep",
     '--parameters',
@@ -331,11 +347,13 @@ $appOut = Invoke-AzDeploymentAsync -Rg $AppRg -Name 'app' -TemplateArgs @(
 
 $containerAppFqdn    = $appOut.properties.outputs.containerAppFqdn.value
 $containerAppMiId    = $appOut.properties.outputs.containerAppPrincipalId.value
+$cleanupJobMiId      = $appOut.properties.outputs.cleanupJobPrincipalId.value
 $acrLoginServer      = $appOut.properties.outputs.acrLoginServer.value
 $keyVaultUri         = $appOut.properties.outputs.keyVaultUri.value
 
 Write-Host "  Container App FQDN:  $containerAppFqdn"
 Write-Host "  Container App MI:    $containerAppMiId"
+Write-Host "  Cleanup Job MI:      $cleanupJobMiId"
 Write-Host "  ACR Login Server:    $acrLoginServer"
 Write-Host "  Key Vault URI:       $keyVaultUri"
 
@@ -406,6 +424,7 @@ Invoke-AzCli @(
         "storageAccountName=$StorageAccount",
         "location=$Location",
         "appManagedIdentityPrincipalId=$containerAppMiId",
+        "cleanupJobManagedIdentityPrincipalId=$cleanupJobMiId",
         "tags=$tagsJson"
 ) | Out-Null
 
@@ -508,6 +527,22 @@ Invoke-AzCli (@(
     '--resource-group', $AppRg,
     '--set-env-vars'
 ) + $envPairs + @('--only-show-errors')) | Out-Null
+
+# ── Wire the cache cleanup job env vars ──────────────────────────────────────
+# The table endpoint uses the same account as blob but on a different sub-domain.
+$tableStorageUri = $storageUri -replace '\.blob\.core\.windows\.net', '.table.core.windows.net'
+$cleanupJobName  = "$AppName-cleanup"
+
+Write-Host "  Wiring cleanup job storage endpoints ($cleanupJobName)..."
+Invoke-AzCli @(
+    'containerapp', 'job', 'update',
+    '--name', $cleanupJobName,
+    '--resource-group', $AppRg,
+    '--set-env-vars',
+        "CACHE_TABLE_ENDPOINT=$tableStorageUri",
+        "CACHE_BLOB_ENDPOINT=$storageUri",
+    '--only-show-errors'
+) | Out-Null
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 7 – Cost Management exports (optional)

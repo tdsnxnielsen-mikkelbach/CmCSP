@@ -44,11 +44,23 @@ param (
     # Image repository name inside ACR (defaults to AppName lowercased)
     [string]$Repository = '',
 
-    # Path to the .csproj. Defaults to auto-detection from repo root.
+    # Name of the cache cleanup Container Apps Job (defaults to <AppName>-cleanup)
+    [string]$CleanupJobName = '',
+
+    # Cleanup job image repository inside ACR (defaults to <AppName>-cleanup)
+    [string]$CleanupRepository = '',
+
+    # Path to the main app .csproj. Defaults to auto-detection from repo root.
     [string]$ProjectPath = '',
+
+    # Path to the cleanup job .csproj. Defaults to auto-detection from repo root.
+    [string]$CleanupProjectPath = '',
 
     # Skip build+push (image already in ACR); requires -Tag
     [switch]$SkipBuild,
+
+    # Skip building and updating the cleanup job
+    [switch]$SkipCleanupJob,
 
     # Also tag the pushed image as 'latest'
     [switch]$PushLatest,
@@ -163,16 +175,31 @@ function Resolve-AppSubscriptionId() {
 $repoRoot = Split-Path $PSScriptRoot -Parent
 
 if (-not $Repository) { $Repository = $AppName.ToLowerInvariant() }
+if (-not $CleanupJobName) { $CleanupJobName = "$($AppName.ToLowerInvariant())-cleanup" }
+if (-not $CleanupRepository) { $CleanupRepository = "$($AppName.ToLowerInvariant())-cleanup" }
 
 $acrLoginServer = "$AcrName.azurecr.io"
 
-# Locate .csproj automatically
+# Locate main app .csproj automatically
 if (-not $ProjectPath) {
     $found = Get-ChildItem -Path $repoRoot -Filter '*.csproj' -Depth 1 | Select-Object -First 1
     if (-not $found) { Write-Error "No .csproj found under '$repoRoot'. Pass -ProjectPath explicitly." }
     $ProjectPath = $found.FullName
 }
 Write-Host "  Project: $ProjectPath"
+
+# Locate cleanup job .csproj automatically
+if (-not $CleanupProjectPath) {
+    $found = Get-ChildItem -Path (Join-Path $repoRoot 'CacheCleanupJob') -Filter '*.csproj' -Depth 1 `
+             -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) { $CleanupProjectPath = $found.FullName }
+}
+if (-not $SkipCleanupJob -and -not $CleanupProjectPath) {
+    Write-Host "  No cleanup job .csproj found – skipping cleanup job build." -ForegroundColor Yellow
+    $SkipCleanupJob = $true
+} elseif (-not $SkipCleanupJob) {
+    Write-Host "  Cleanup project: $CleanupProjectPath"
+}
 
 $resolvedAppSubscriptionId = Resolve-AppSubscriptionId
 Write-Host "  App subscription: $resolvedAppSubscriptionId"
@@ -297,6 +324,51 @@ if ($SkipBuild) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 3b – Build + push the cache cleanup job image
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Step "Step 3b – Cache cleanup job image"
+
+$cleanupDigest = $null
+$cleanupFullImage = "$acrLoginServer/$CleanupRepository`:$Tag"
+
+if ($SkipCleanupJob) {
+    Write-Host "  -SkipCleanupJob set – skipping cleanup job build."
+} elseif ($SkipBuild) {
+    # Verify the cleanup image already exists when -SkipBuild is passed.
+    Write-Host "  -SkipBuild set – verifying cleanup image exists in ACR..."
+    $cleanupManifest = Invoke-AzCli @(
+        'acr', 'manifest', 'show-metadata',
+        '--registry', $AcrName,
+        '--name', "$CleanupRepository`:$Tag",
+        '--only-show-errors'
+    )
+    if (-not $cleanupManifest -and -not $WhatIf) {
+        Write-Host "  Cleanup image '$cleanupFullImage' not found – skipping job update." -ForegroundColor Yellow
+        $SkipCleanupJob = $true
+    } else {
+        Write-Host "  Cleanup image confirmed in ACR."
+    }
+} else {
+    $containerTags = @($Tag)
+    if ($PushLatest) { $containerTags += 'latest' }
+    $tagsArg = $containerTags -join ';'
+
+    # Re-use the same Docker config credential injection already applied above.
+    Invoke-Cmd 'dotnet' @(
+        'publish', $CleanupProjectPath,
+        '--configuration', 'Release',
+        '--os', 'linux',
+        '--arch', 'x64',
+        '/t:PublishContainer',
+        "-p:ContainerRegistry=$acrLoginServer",
+        "-p:ContainerRepository=$CleanupRepository",
+        "-p:ContainerImageTags=$tagsArg"
+    ) -StreamOutput
+    Write-Host "  Published and pushed: $cleanupFullImage" -ForegroundColor Green
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step 5 – Resolve exact SHA digest
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -323,6 +395,28 @@ if (-not $WhatIf) {
 $pinnedImage = "$acrLoginServer/$Repository@$digest"
 Write-Host "  Digest: $digest"
 Write-Host "  Pinned: $pinnedImage"
+
+# Resolve cleanup job digest (when job build was not skipped).
+$pinnedCleanupImage = $null
+if (-not $SkipCleanupJob) {
+    $cleanupDigestRaw = Invoke-AzCli @(
+        'acr', 'manifest', 'show-metadata',
+        '--registry', $AcrName,
+        '--name', "$CleanupRepository`:$Tag",
+        '--query', 'digest',
+        '-o', 'tsv',
+        '--only-show-errors'
+    )
+    $cleanupDigest = $cleanupDigestRaw.Trim()
+    if (-not $WhatIf -and $cleanupDigest -and $cleanupDigest.StartsWith('sha256:')) {
+        $pinnedCleanupImage = "$acrLoginServer/$CleanupRepository@$cleanupDigest"
+        Write-Host "  Cleanup digest: $cleanupDigest"
+        Write-Host "  Cleanup pinned: $pinnedCleanupImage"
+    } else {
+        Write-Host "  Could not resolve cleanup job digest – skipping job update." -ForegroundColor Yellow
+        $SkipCleanupJob = $true
+    }
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 6 – Update Container App with pinned digest
@@ -358,6 +452,23 @@ if ($TenantId -or $ClientId) {
     Write-Host "  Also updating identity env vars (TenantId/ClientId)..."
 }
 Invoke-AzCli $updateArgs | Out-Null
+
+# ── Update the cache cleanup job image ───────────────────────────────────────
+
+if (-not $SkipCleanupJob -and $pinnedCleanupImage) {
+    Write-Host "  Configuring ACR registry auth on cleanup job '$CleanupJobName'..."
+    Invoke-AzCli @(
+        'containerapp', 'job', 'update',
+        '--name', $CleanupJobName,
+        '--resource-group', $AppRg,
+        '--subscription', $resolvedAppSubscriptionId,
+        '--image', $pinnedCleanupImage,
+        '--registry-server', $acrLoginServer,
+        '--registry-identity', 'system',
+        '--only-show-errors'
+    ) | Out-Null
+    Write-Host "  Cleanup job updated: $pinnedCleanupImage" -ForegroundColor Green
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 7 – Wait for new revision to be active
@@ -421,4 +532,7 @@ Write-Host ""
 Write-Host "  App URL:  https://$($fqdn.Trim())" -ForegroundColor Green
 Write-Host "  Image:    $fullImage"              -ForegroundColor Green
 Write-Host "  Digest:   $digest"                 -ForegroundColor Green
+if (-not $SkipCleanupJob -and $pinnedCleanupImage) {
+    Write-Host "  Cleanup:  $pinnedCleanupImage"   -ForegroundColor Green
+}
 Write-Host ""

@@ -22,6 +22,9 @@ param location string = 'swedencentral'
 @description('Container image to deploy, e.g. cmcspacr.azurecr.io/cmcsp:latest. Leave empty for first-time deploy (placeholder image used).')
 param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
+@description('Container image for the cache cleanup job. Defaults to placeholder on first deploy; updated by deploy-image.ps1.')
+param cleanupJobImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+
 @description('CPU allocation for the Container App (vCPU).')
 param containerCpu string = '0.5'
 
@@ -266,10 +269,90 @@ resource kvSecretsOfficerRole 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
+// ── Cache Cleanup Job ────────────────────────────────────────────────────────
+// Runs every 30 minutes to delete expired entries from Table + Blob cache storage.
+// Uses its own SystemAssigned managed identity – access to storage is granted in
+// main.bicep via the cleanupJobManagedIdentityPrincipalId parameter.
+
+resource cleanupJob 'Microsoft.App/jobs@2024-03-01' = {
+  name: '${appName}-cleanup'
+  location: location
+  tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    environmentId: caEnv.id
+    configuration: {
+      triggerType: 'Schedule'
+      replicaTimeout: 300      // 5 min – enough for any realistic table size
+      replicaRetryLimit: 1
+      scheduleTriggerConfig: {
+        cronExpression: '*/30 * * * *'  // every 30 minutes
+        parallelism: 1
+        replicaCompletionCount: 1
+      }
+      registries: contains(cleanupJobImage, acr.properties.loginServer) ? [
+        {
+          server: acr.properties.loginServer
+          identity: 'system'
+        }
+      ] : []
+    }
+    template: {
+      containers: [
+        {
+          name: '${appName}-cleanup'
+          image: cleanupJobImage
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+          env: [
+            {
+              name: 'CACHE_TABLE_ENDPOINT'
+              value: '' // set via az containerapp job update (deploy.ps1 Phase 6)
+            }
+            {
+              name: 'CACHE_BLOB_ENDPOINT'
+              value: '' // set via az containerapp job update (deploy.ps1 Phase 6)
+            }
+            {
+              name: 'CACHE_TABLE_NAME'
+              value: 'cmcspcache'
+            }
+            {
+              name: 'CACHE_CONTAINER_NAME'
+              value: 'cmcspcache'
+            }
+            {
+              name: 'CACHE_PARTITION_KEY'
+              value: 'cmcsp'
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+
+// ── Role: Cleanup Job MI → ACR Pull ─────────────────────────────────────────
+
+resource cleanupJobAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, cleanupJob.id, acrPullRoleId)
+  scope: acr
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
+    principalId: cleanupJob.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // ── Outputs ──────────────────────────────────────────────────────────────────
 
 output containerAppFqdn string = containerApp.properties.configuration.ingress.fqdn
 output containerAppPrincipalId string = containerApp.identity.principalId
+output cleanupJobPrincipalId string = cleanupJob.identity.principalId
 output acrLoginServer string = acr.properties.loginServer
 output keyVaultUri string = kv.properties.vaultUri
 output logAnalyticsWorkspaceId string = logAnalytics.id

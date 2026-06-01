@@ -61,11 +61,25 @@ the cost-export schedule.
   -SubscriptionIds "<sub-id-1>", "<sub-id-2>" `
   -DeployExports `
   -HistoricalMonths 12
+
+# Re-run against an existing environment on a different active subscription.
+# Use -AppSubscriptionId to ensure the deployment targets the correct subscription
+# regardless of which subscription `az account show` currently returns.
+.\scripts\deploy.ps1 `
+  -AppSubscriptionId "<subscription-hosting-rg-cmcsp-app>" `
+  -TenantId      "<entra-tenant-id>" `
+  -ClientId      "<app-client-id>" `
+  -ClientSecret  "<client-secret>" `
+  -SubscriptionIds "<sub-id-1>", "<sub-id-2>"
 ```
 
 All resource names (`-AcrName`, `-KeyVaultName`, `-StorageAccount`, `-AppRg`,
 `-Location`, `-AppName`) have defaults derived from a stable hash of your tenant ID + app name,
 so re-running the script is fully idempotent.
+
+> **`-AppSubscriptionId`**: Optional. The subscription that hosts `rg-cmcsp-app`, ACR, Container App, etc.
+> Defaults to whatever `az account show` returns. Pass this when you are logged in to a different
+> subscription than the one that owns the app resources, to avoid ARM deployment failures.
 
 After the script completes it prints the next command to run:
 
@@ -81,7 +95,7 @@ resolves the exact `sha256:` digest, and pins the Container App to that digest s
 forced to pull the new image even if the tag name did not change.
 
 ```powershell
-# Build from repo root, push, and update the Container App
+# Build from repo root, push, and update the Container App + cleanup job
 .\scripts\deploy-image.ps1 `
   -AcrName  "<acr-name>" `
   -AppName  "cmcsp" `
@@ -109,7 +123,18 @@ forced to pull the new image even if the tag name did not change.
   -AppRg    "rg-cmcsp-app" `
   -TenantId "<entra-tenant-id>" `
   -ClientId "<app-client-id>"
+
+# Skip the cleanup job build (main app only changed)
+.\scripts\deploy-image.ps1 `
+  -AcrName  "<acr-name>" `
+  -AppName  "cmcsp" `
+  -AppRg    "rg-cmcsp-app" `
+  -SkipCleanupJob
 ```
+
+The script builds and updates **both** the main Container App and the `cmcsp-cleanup` Container Apps Job in a single run. Pass `-SkipCleanupJob` to update only the main app image.
+
+> **Cleanup job prerequisite:** The `cmcsp-cleanup` Container Apps Job must already exist (created by `deploy.ps1`). `deploy-image.ps1` only updates images on existing resources.
 
 Both scripts support `-WhatIf` to print all commands without executing them.
 
@@ -634,7 +659,9 @@ For each additional customer subscription:
 │  │  Storage Account                │◄── Export MI writes daily CSVs    │
 │  │  ├── blob: cost-exports/        │◄── Container App reads CSVs       │
 │  │  ├── blob: cmcspcache/          │◄── Container App writes/reads     │
-│  │  └── table: cmcspcache         │    large cache payloads            │
+│  │                              │    large cache blobs               │
+│  │                              │◄── Cleanup Job deletes expired     │
+│  └── table: cmcspcache         │    entries (runs every 30 min)     │
 │  └──────────────────────────────────┘                                   │
 │                                                                         │
 │  Microsoft.CostManagement/exports  ──► (subscription scope, per sub)   │
@@ -645,14 +672,19 @@ For each additional customer subscription:
 │                                                                         │
 │  ┌─────────────┐   ┌──────────────┐   ┌──────────────────────────┐    │
 │  │  ACR        │   │  Key Vault   │   │  Container Apps Env      │    │
-│  │  cmcsp:latest│   │  secrets     │   │  ┌────────────────────┐  │    │
-│  └──────┬──────┘   └──────┬───────┘   │  │  Container App     │  │    │
-│         │  AcrPull        │  KV Secrets│  │  cmcsp             │  │    │
-│         └────────────┬────┘  User     │  │  SystemAssigned MI │  │    │
-│                      └──────────────► │  └────────────────────┘  │    │
+│  │  cmcsp:*    │   │  secrets     │   │  ┌────────────────────┐  │    │
+│  │  cmcsp-     │   └──────┬───────┘   │  │  Container App     │  │    │
+│  │  cleanup:*  │          │  KV       │  │  cmcsp             │  │    │
+│  └──────┬──────┘          │  Secrets  │  │  SystemAssigned MI │  │    │
+│         │  AcrPull        │  User     │  └────────────────────┘  │    │
+│         └────────────┬────┘           │  ┌────────────────────┐  │    │
+│                      └──────────────► │  │  Job (*/30 cron)   │  │    │
+│                                       │  │  cmcsp-cleanup     │  │    │
+│                                       │  │  SystemAssigned MI │  │    │
+│                                       │  └────────────────────┘  │    │
 │                                       └──────────────────────────┘    │
 │                                                                         │
-│  Log Analytics ──► Container App logs                                  │
+│  Log Analytics ──► Container App + Job logs                            │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -678,6 +710,8 @@ az containerapp logs show -n cmcsp -g rg-cmcsp-app --follow | grep -E "Home\[|Su
 | Key Vault 403 | Container App MI missing Key Vault Secrets User | Check app.bicep deployment |
 | All chips show ✗ immediately | `ClientSecret` not wired; Query API auth failing | Check Step 12b; confirm KV secret `CmCSP--ClientSecret` exists |
 | All chips show ✗ on startup only | No blobs yet AND `ClientSecret` missing | Either add `ClientSecret` (Step 12b) or wait for first export run |
+| Cleanup job not running | Job not provisioned | Run `deploy.ps1` to provision `cmcsp-cleanup` job |
+| Cleanup job fails (403) | MI missing storage roles | Re-run `deploy.ps1`; `main.bicep` grants Table Contributor + Blob Contributor |
 | Daily refresh not updating data | `ApiDailyRefreshHourUtc` set but `ClientSecret` absent | Set `ClientSecret` via KV ref; without it, `CostManagementService` cannot auth |
 | Budgets page shows “no budgets found” | No subscription-scope budgets exist in Azure | Create a budget in Portal: Cost Management → Budgets, per subscription |
 | Budgets page shows 403 error | Entra app SP missing Cost Management Reader | Same role used for cost data – confirm Step 4 || Budgets page shows 0 current spend | CSP `currentSpend` API field returned null/0 | Expected for CSP — spend is automatically computed from `cm_main` cost rows instead; no action needed |
