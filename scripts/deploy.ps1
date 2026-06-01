@@ -52,6 +52,14 @@ param (
     [switch]$DeployExports,               # pass to also deploy the cost-export schedule
     [string]$ExportName       = 'cmcsp-daily-export',
     [int]$HistoricalMonths    = 0,        # backfill N prior calendar months of export data
+
+    # ── Cost Details API (reservations + amortized cost) ─────────────────────
+    # Set -EnableCostDetails to store the feature-flag secret and (optionally) billing-account settings.
+    [switch]$EnableCostDetails,
+    [string]$BillingAccountId  = '',      # numeric billing account ID (leave empty for subscription-scope only)
+    # Parallel arrays: CustomerId[i] + CustomerDisplayName[i] describe each customer.
+    [string[]]$CustomerIds         = @(),
+    [string[]]$CustomerDisplayNames = @(),
     # ── App subscription ─────────────────────────────────────────────────────
     # The subscription that hosts rg-cmcsp-app, ACR, Container App, etc.
     # Defaults to whatever 'az account show' returns when the script starts.
@@ -469,6 +477,21 @@ $secrets = @{
     'CmCSP--ClientId'           = $ClientId
     'CmCSP--ClientSecret'       = $ClientSecret
     'CmCSP--SubscriptionIds'    = ($SubscriptionIds -join ',')
+}
+
+# Optional Cost Details API secrets
+if ($EnableCostDetails) {
+    $secrets['CmCSP--CostDetails--Enabled'] = 'true'
+}
+if ($BillingAccountId) {
+    $secrets['CmCSP--BillingAccount--BillingAccountId'] = $BillingAccountId
+}
+if ($CustomerIds.Count -gt 0) {
+    for ($ci = 0; $ci -lt $CustomerIds.Count; $ci++) {
+        $secrets["CmCSP--BillingAccount--Customers--${ci}--CustomerId"]  = $CustomerIds[$ci]
+        $secrets["CmCSP--BillingAccount--Customers--${ci}--DisplayName"] =
+            $ci -lt $CustomerDisplayNames.Count ? $CustomerDisplayNames[$ci] : $CustomerIds[$ci]
+    }
 }
 
 foreach ($name in $secrets.Keys) {

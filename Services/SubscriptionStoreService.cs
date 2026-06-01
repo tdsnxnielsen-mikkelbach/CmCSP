@@ -15,7 +15,8 @@ namespace CmCSP.Services;
 /// </summary>
 public sealed class SubscriptionStoreService
 {
-    private const string KvSecretName = "CmCSP--UserSubscriptionIds";
+    private const string KvSecretName                  = "CmCSP--UserSubscriptionIds";
+    private const string KvCostDetailsEnabledSecretName = "CmCSP--CostDetails--Enabled";
 
     private readonly CostManagementOptions _options;
     private readonly string _storePath;
@@ -74,6 +75,28 @@ public sealed class SubscriptionStoreService
     public IReadOnlyList<string> AllIds => _options.SubscriptionIds.AsReadOnly();
 
     // ── Mutations ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Enables the Cost Details API at runtime and persists the setting to Key Vault
+    /// so it survives container restarts.
+    /// </summary>
+    public async Task EnableCostDetailsAsync()
+    {
+        _options.CostDetails.Enabled = true;
+
+        if (_kvClient is null)
+            return;
+
+        try
+        {
+            await _kvClient.SetSecretAsync(KvCostDetailsEnabledSecretName, "true");
+            _logger.LogInformation("Cost Details API enabled and persisted to Key Vault.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to persist CostDetails.Enabled to Key Vault.");
+        }
+    }
 
     /// <summary>
     /// Adds one or more subscription IDs. Each entry is validated as a GUID.
@@ -291,6 +314,25 @@ public sealed class SubscriptionStoreService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not load subscription IDs from Key Vault — using disk state only");
+        }
+
+        // Apply persisted CostDetails.Enabled flag (written by EnableCostDetailsAsync).
+        try
+        {
+            var enabledResponse = _kvClient.GetSecret(KvCostDetailsEnabledSecretName);
+            if (bool.TryParse(enabledResponse.Value.Value, out var enabled) && enabled)
+            {
+                _options.CostDetails.Enabled = true;
+                _logger.LogInformation("CostDetails.Enabled restored to true from Key Vault.");
+            }
+        }
+        catch (Azure.RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Not yet set — nothing to restore.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read CostDetails.Enabled from Key Vault.");
         }
     }
 }

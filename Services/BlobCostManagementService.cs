@@ -93,11 +93,21 @@ public sealed class BlobCostManagementService : ICostManagementService
     public Task<List<CostRow>> GetTagCostDataAsync(CancellationToken ct = default) =>
         GetOrPopulateAsync(KeyTag, ct);
 
+    /// <summary>
+    /// AmortizedCost data is never available from blob exports (exports use ActualCost).
+    /// Delegates directly to the underlying API service for all modes.
+    /// </summary>
+    public Task<List<CostRow>> GetAmortizedMainCostDataAsync(CancellationToken ct = default) =>
+        _apiService is not null
+            ? _apiService.GetAmortizedMainCostDataAsync(ct)
+            : Task.FromResult(new List<CostRow>());
+
     public void InvalidateCache()
     {
         _cache.Remove(KeyMain);
         _cache.Remove(KeyRg);
         _cache.Remove(KeyTag);
+        _cache.Remove("cm_main_amort");
         _cache.Remove("cm_budgets");
         _cache.Remove("cm_budgets_subs");
         _cache.Remove("cm_advisor");

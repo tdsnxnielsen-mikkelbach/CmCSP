@@ -113,7 +113,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
     configuration: {
       ingress: {
         external: true
-        targetPort: 8080
+        targetPort: 80
         transport: 'http'
         allowInsecure: false
       }
@@ -162,7 +162,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'ASPNETCORE_URLS'
-              value: 'http://+:8080'
+              value: 'http://+:80'
             }
             // ── Cost Management API (Query mode) ────────────────────────────
             // TenantId and ClientId are plain strings; ClientSecret comes from Key Vault.

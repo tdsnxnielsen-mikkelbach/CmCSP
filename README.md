@@ -18,16 +18,17 @@ Subscriptions can be added and removed at runtime from the **Home** page, with a
 6. [Azure Role Assignments](docs/azure-roles.md)
 7. [CSP Deployment Guide](docs/csp-deployment-guide.md)
 8. [Cache Cleanup Job](docs/cache-cleanup.md)
-9. [User Authentication](#user-authentication)
-10. [Authentication & Security](#authentication--security)
-11. [Data Flow](#data-flow)
-12. [Caching & Rate Limiting](#caching--rate-limiting)
-13. [Blob Exports (Production)](#blob-exports-production)
-14. [Currency Normalisation](#currency-normalisation)
-15. [Dashboard Pages](#dashboard-pages)
-16. [Advisor Overview](#advisor-overview)
-17. [Service Registration](#service-registration)
-18. [Deployment Notes](#deployment-notes)
+9. [Cost Details API – Reservations & Amortized Cost](docs/cost-details-api.md)
+10. [User Authentication](#user-authentication)
+11. [Authentication & Security](#authentication--security)
+12. [Data Flow](#data-flow)
+13. [Caching & Rate Limiting](#caching--rate-limiting)
+14. [Blob Exports (Production)](#blob-exports-production)
+15. [Currency Normalisation](#currency-normalisation)
+16. [Dashboard Pages](#dashboard-pages)
+17. [Advisor Overview](#advisor-overview)
+18. [Service Registration](#service-registration)
+19. [Deployment Notes](#deployment-notes)
 
 ---
 
@@ -84,7 +85,8 @@ CmCSP/
 ├── Properties/
 │   └── launchSettings.json
 ├── Models/
-│   ├── CostManagementOptions.cs          ← strongly-typed config section
+│   ├── CostManagementOptions.cs          ← strongly-typed config section (incl. CostDetails + BillingAccount)
+│   ├── CostDetailsModels.cs              ← Cost Details API request/response shapes + ReservationRow
 │   ├── CostRow.cs                        ← one normalised cost record
 │   ├── CostApiResponse.cs               ← Azure Cost Management + Consumption Budget + Advisor API response shapes
 │   ├── SubscriptionBudget.cs            ← per-subscription budget record (from Consumption Budgets API)
@@ -93,8 +95,10 @@ CmCSP/
 ├── Services/
 │   ├── AzureTokenService.cs              ← MSAL (ClientSecret) or DefaultAzureCredential fallback
 │   ├── ICostManagementService.cs
-│   ├── CostManagementService.cs          ← Query API: fetch / cache / normalise / retry
+│   ├── CostManagementService.cs          ← Query API: fetch / cache / normalise / retry (ActualCost + AmortizedCost)
 │   ├── BlobCostManagementService.cs      ← Blob Export: read CSVs; falls back to API if no blobs
+│   ├── ICostDetailsService.cs            ← interface for Cost Details API (reservation + amortized data)
+│   ├── CostDetailsService.cs             ← async POST→poll→CSV pipeline; billing-account + subscription scope
 │   ├── AzureStorageCacheService.cs       ← Table+Blob distributed cache (wraps IMemoryCache)
 │   ├── DataLoadingStateService.cs        ← tracks per-dataset load phase for the UI
 │   ├── CacheWarmupService.cs             ← background pre-warm on startup
@@ -109,18 +113,19 @@ CmCSP/
 │   ├── Routes.razor
 │   ├── Layout/
 │   │   ├── MainLayout.razor              ← MudLayout, AppBar, Drawer, dark mode, global date-range picker, subscription chip
-│   │   ├── NavMenu.razor                 ← 8 MudNavLinks + Refresh Data button
+│   │   ├── NavMenu.razor                 ← 9 MudNavLinks + Refresh Data button
 │   │   └── ReconnectModal.razor
 │   ├── Pages/
 │   │   ├── _Imports.razor                ← applies [Authorize] to every page in this folder
 │   │   ├── Home.razor                    ← Page 1: Cost Overview
 │   │   ├── Budgets.razor                 ← Page 2: Budgets
-│   │   ├── SubscriptionBreakdown.razor   ← Page 3: Subscription Breakdown
+│   │   ├── SubscriptionBreakdown.razor   ← Page 3: Subscription Breakdown (+ Amortized Cost + RI Savings)
 │   │   ├── ResourceGroupBreakdown.razor  ← Page 4: Resource Group Breakdown
 │   │   ├── TagChargeback.razor           ← Page 5: Tag Chargeback
-│   │   ├── TrendAndForecast.razor        ← Page 6: Trend & Forecast
+│   │   ├── TrendAndForecast.razor        ← Page 6: Trend & Forecast (+ Actual/Amortized toggle)
 │   │   ├── MoMWaterfall.razor            ← Page 7: MoM Waterfall
 │   │   ├── Advisor.razor                 ← Page 8: Advisor Overview (scores + Cost recommendations)
+│   │   ├── Reservations.razor            ← Page 9: Reservations (Used/Unused RI breakdown)
 │   │   ├── Error.razor
 │   │   └── NotFound.razor
 │   └── Shared/
@@ -134,7 +139,9 @@ CmCSP/
 │   └── export-billing.bicep             ← billing-account-scope export (SAS token)
 ├── docs/
 │   ├── azure-roles.md                   ← RBAC guide for all identities
-│   └── csp-deployment-guide.md         ← step-by-step deployment guide for CSPs
+│   ├── csp-deployment-guide.md         ← step-by-step deployment guide for CSPs
+│   ├── cache-cleanup.md                ← cache cleanup job documentation
+│   └── cost-details-api.md             ← Cost Details API: reservations, amortized cost, billing-account scope
 └── wwwroot/
     ├── app.css
     └── apexcharts-theme.js               ← propagates MudBlazor dark/light toggle to ApexCharts
@@ -796,7 +803,9 @@ Budget data is cached under `cm_budgets` with the same TTL as other datasets. `I
 | Largest share % | KPI card | top subscription share |
 | Cost by Subscription | Horizontal bar ApexChart | `cm_main` per subscription |
 | Cost Share | Donut ApexChart | `cm_main` per subscription |
-| Subscription Reference | MudDataGrid | ID, Name, Total, MTD, Share % |
+| Subscription Reference | MudDataGrid | ID, Name, Actual Total, MTD, **Amortized Cost**, **RI Savings**, Share % |
+
+**Amortized Cost** and **RI Savings** columns are only populated when `AzureCostManagement:CostDetails:Enabled = true`. See [docs/cost-details-api.md](docs/cost-details-api.md) for setup.
 
 ---
 
@@ -845,6 +854,8 @@ Budget data is cached under `cm_budgets` with the same TTL as other datasets. `I
 
 **Forecast method:** simple linear extrapolation — `averageDailySpend × daysInMonth`. This gives a sensible first-order estimate without requiring historical ML models.
 
+**Actual vs Amortized toggle:** A chip-set at the top of the page switches between **Actual Cost** (as billed, reservation purchase on purchase date) and **Amortized Cost** (purchase cost spread evenly over the reservation term for smoother trend analysis). Requires `AzureCostManagement:CostDetails:Enabled = true`. Both datasets are cached independently. See [docs/cost-details-api.md](docs/cost-details-api.md).
+
 ---
 
 ### Page 7 – MoM Waterfall (`/waterfall`)
@@ -858,6 +869,28 @@ Budget data is cached under `cm_budgets` with the same TTL as other datasets. `I
 | MoM Cost Change (bar) | Bar ApexChart (green/red) | monthly delta series |
 | MoM Change by Subscription | Horizontal bar (green/red) | current vs prior month per subscription |
 | Monthly Summary | MudDataGrid | Month, Total, Change, Change % |
+
+---
+
+### Page 9 – Reservations (`/reservations`)
+
+Shows Reserved Instance (RI) utilisation — split into **Used** and **Unused** cost — using the
+asynchronous `generateCostDetailsReport` API (`AmortizedCost` metric). Requires
+`AzureCostManagement:CostDetails:Enabled = true`. See [docs/cost-details-api.md](docs/cost-details-api.md)
+for full setup, RBAC requirements, and scope configuration.
+
+| Visual | Type | Data source |
+|---|---|---|
+| Total RI Cost | KPI card | `cd_cust_*` or `cd_sub_*` |
+| Used Cost | KPI card | rows with `ChargeType = Usage` |
+| Unused Cost | KPI card | rows with `ChargeType = UnusedReservation` |
+| Overall Utilisation % | KPI card (colour-coded) | `UsedCost / TotalCost` |
+| Used vs Unused (top 20) | Stacked horizontal bar ApexChart | per reservation |
+| Reservation Detail | MudDataGrid | ReservationName, Service, Term, Customer (billing scope), Subscription, Used/Unused/Total cost, Utilisation bar |
+
+**Scope:** when billing-account access is configured, a toggle switches between
+"Billing Account (all customers)" and "Subscriptions". Without billing-account config,
+only subscription-scope data is available.
 
 ---
 

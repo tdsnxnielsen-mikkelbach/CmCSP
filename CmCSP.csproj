@@ -10,7 +10,7 @@
     <!-- dotnet publish /t:PublishContainer defaults -->
     <ContainerRepository>cmcsp</ContainerRepository>
     <ContainerBaseImage>mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled</ContainerBaseImage>
-    <ContainerPort>8080</ContainerPort>
+    <ContainerPort>80</ContainerPort>
   </PropertyGroup>
 
   <ItemGroup>

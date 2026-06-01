@@ -13,6 +13,13 @@ public interface ICostManagementService
     /// <summary>Daily costs grouped by SubscriptionName + TagKey.</summary>
     Task<List<CostRow>> GetTagCostDataAsync(CancellationToken ct = default);
 
+    /// <summary>
+    /// Daily costs grouped by SubscriptionName + MeterCategory using the AmortizedCost metric.
+    /// Reservation purchase cost is spread evenly over the term, giving a smoother trend line.
+    /// Always fetched from the Query API (not blob exports) since exports use ActualCost only.
+    /// </summary>
+    Task<List<CostRow>> GetAmortizedMainCostDataAsync(CancellationToken ct = default);
+
     /// <summary>Removes all cached results so the next call re-fetches from the API.</summary>
     void InvalidateCache();
 

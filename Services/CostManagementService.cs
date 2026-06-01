@@ -46,10 +46,11 @@ public sealed class CostManagementService : ICostManagementService
     };
 
     // ── cache keys ──────────────────────────────────────────────────────────
-    private const string KeyMain    = "cm_main";
-    private const string KeyRg      = "cm_rg";
-    private const string KeyTag     = "cm_tag";
-    private const string KeyBudgets = "cm_budgets";
+    private const string KeyMain        = "cm_main";
+    private const string KeyMainAmort   = "cm_main_amort";
+    private const string KeyRg          = "cm_rg";
+    private const string KeyTag         = "cm_tag";
+    private const string KeyBudgets     = "cm_budgets";
     private const string KeyBudgetsSubs = "cm_budgets_subs";
     private const string KeyAdvisor       = "cm_advisor";
     private const string KeyAdvisorScores = "cm_advisor_scores";
@@ -99,10 +100,13 @@ public sealed class CostManagementService : ICostManagementService
     // ── public API ───────────────────────────────────────────────────────────
 
     public Task<List<CostRow>> GetMainCostDataAsync(CancellationToken ct = default) =>
-        GetOrFetchAsync(KeyMain, QueryType.ByService, ct);
+        GetOrFetchAsync(KeyMain, QueryType.ByService, metric: "ActualCost", ct);
+
+    public Task<List<CostRow>> GetAmortizedMainCostDataAsync(CancellationToken ct = default) =>
+        GetOrFetchAsync(KeyMainAmort, QueryType.ByService, metric: "AmortizedCost", ct);
 
     public Task<List<CostRow>> GetRgCostDataAsync(CancellationToken ct = default) =>
-        GetOrFetchAsync(KeyRg, QueryType.ByResourceGroup, ct);
+        GetOrFetchAsync(KeyRg, QueryType.ByResourceGroup, metric: "ActualCost", ct);
 
     public Task<List<CostRow>> GetTagCostDataAsync(CancellationToken ct = default)
     {
@@ -118,6 +122,7 @@ public sealed class CostManagementService : ICostManagementService
     public void InvalidateCache()
     {
         _cache.Remove(KeyMain);
+        _cache.Remove(KeyMainAmort);
         _cache.Remove(KeyRg);
         _cache.Remove(KeyTag);
         _cache.Remove(KeyBudgets);
@@ -527,7 +532,7 @@ public sealed class CostManagementService : ICostManagementService
     // ── internal fetch pipeline ──────────────────────────────────────────────
 
     private async Task<List<CostRow>> GetOrFetchAsync(
-        string cacheKey, QueryType type, CancellationToken ct)
+        string cacheKey, QueryType type, string metric, CancellationToken ct)
     {
         if (_cache.TryGetValue<List<CostRow>>(cacheKey, TimeSpan.FromMinutes(_options.CacheExpirationMinutes), out var cached) && cached is not null)
         {
@@ -557,7 +562,7 @@ public sealed class CostManagementService : ICostManagementService
         {
             try
             {
-                var rows = await FetchAllPagesAsync(subId, type, ct);
+                var rows = await FetchAllPagesAsync(subId, type, metric, ct);
                 allRows.AddRange(rows);
                 _logger.LogInformation(
                     "Fetched {Count} rows for subscription {SubId} ({Type}).",
@@ -587,10 +592,10 @@ public sealed class CostManagementService : ICostManagementService
 
     /// <summary>Handles pagination: initial POST then GET for each nextLink.</summary>
     private async Task<List<CostRow>> FetchAllPagesAsync(
-        string subscriptionId, QueryType type, CancellationToken ct)
+        string subscriptionId, QueryType type, string metric, CancellationToken ct)
     {
         var allRows = new List<CostRow>();
-        var body    = BuildQueryBody(type);
+        var body    = BuildQueryBody(type, metric);
         var postUrl = $"https://management.azure.com/subscriptions/{subscriptionId}" +
                       $"/providers/Microsoft.CostManagement/query?api-version={_options.ApiVersion}";
 
@@ -754,7 +759,7 @@ public sealed class CostManagementService : ICostManagementService
 
     // ── query body builder ───────────────────────────────────────────────────
 
-    private object BuildQueryBody(QueryType type)
+    private object BuildQueryBody(QueryType type, string metric = "ActualCost")
     {
         // The API supports max 2 grouping dimensions per request.
         var grouping = type switch
@@ -779,7 +784,7 @@ public sealed class CostManagementService : ICostManagementService
 
         return new
         {
-            type      = "ActualCost",
+            type      = metric,
             timeframe = "Custom",
             timePeriod = new
             {

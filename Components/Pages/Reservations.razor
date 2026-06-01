@@ -1,0 +1,336 @@
+@page "/reservations"
+@inject ICostDetailsService CostDetails
+@inject ICostManagementService CostService
+@inject CostManagementOptions Options
+@inject SubscriptionStoreService SubStore
+@implements IDisposable
+
+<PageTitle>Reservations – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Reservations</MudText>
+
+@* ── Scope info banner ──────────────────────────────────────────────────────── *@
+@if (CostDetails.HasBillingAccountAccess)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4" Dense>
+        Fetching data at <strong>billing-account / customer scope</strong> — full Used/Unused
+        breakdown per customer is available.
+    </MudAlert>
+}
+else
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4" Dense>
+        <strong>Billing account not configured.</strong> Showing reservation data at
+        <strong>subscription scope</strong> only — reservations shared across customers
+        are not visible. Configure <code>AzureCostManagement:BillingAccount</code> to
+        enable per-customer billing-scope queries.
+    </MudAlert>
+}
+
+@if (!Options.CostDetails.Enabled)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Wrap="Wrap.Wrap">
+            <MudText>
+                Cost Details API is disabled. Enable it to fetch reservation and amortized-cost data.
+            </MudText>
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Warning"
+                       Size="Size.Small"
+                       StartIcon="@Icons.Material.Filled.PowerSettingsNew"
+                       Disabled="_enabling"
+                       OnClick="EnableCostDetailsAsync">
+                @(_enabling ? "Enabling…" : "Enable Now")
+            </MudButton>
+        </MudStack>
+    </MudAlert>
+}
+
+@* ── Controls ───────────────────────────────────────────────────────────────── *@
+<MudPaper Class="pa-4 mb-4" Elevation="2">
+    <MudGrid Spacing="2">
+        <MudItem xs="12" sm="4">
+            <MudDatePicker Label="Period (month)"
+                           Date="_selectedMonth"
+                           DateChanged="OnMonthChanged"
+                           OpenTo="OpenTo.Month"
+                           FixDay="1"
+                           Variant="Variant.Outlined" />
+        </MudItem>
+        @if (CostDetails.HasBillingAccountAccess)
+        {
+            <MudItem xs="12" sm="4">
+                <MudSelect T="string" Label="Scope" Value="_selectedScope"
+                           ValueChanged="OnScopeChanged"
+                           Variant="Variant.Outlined">
+                    <MudSelectItem Value=@("billing")>Billing Account (all customers)</MudSelectItem>
+                    <MudSelectItem Value=@("subscription")>Subscriptions</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+        }
+        <MudItem xs="12" sm="4">
+            <MudButton Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.Refresh"
+                       OnClick="LoadAsync"
+                       Disabled="_loading">
+                Refresh
+            </MudButton>
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+@* ── KPI cards ──────────────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3" Class="mb-4">
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Total RI Cost</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_totalCost)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Used Cost</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Success">@Fmt(_usedCost)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Unused Cost</MudText>
+            <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Error">@Fmt(_unusedCost)</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Overall Utilisation</MudText>
+            <MudText Typo="Typo.h5"
+                     Class="mt-1 fw-bold"
+                     Color="@(_utilPct >= 80 ? Color.Success : _utilPct >= 50 ? Color.Warning : Color.Error)">
+                @_utilPct.ToString("F1")%
+            </MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@* ── Utilisation chart ──────────────────────────────────────────────────────── *@
+@if (_chartData.Count > 0)
+{
+    <MudPaper Class="pa-4 mb-4" Elevation="2">
+        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Used vs Unused by Reservation</MudText>
+        <ApexChart TItem="ChartPoint" Options="_barOpts">
+            <ApexPointSeries TItem="ChartPoint"
+                             Items="_chartData.OrderByDescending(x => x.UsedCost).Take(20).ToList()"
+                             Name="Used"
+                             XValue="@(e => e.Label)"
+                             YValue="@(e => (decimal?)e.UsedCost)"
+                             SeriesType="SeriesType.Bar" />
+            <ApexPointSeries TItem="ChartPoint"
+                             Items="_chartData.OrderByDescending(x => x.UsedCost).Take(20).ToList()"
+                             Name="Unused"
+                             XValue="@(e => e.Label)"
+                             YValue="@(e => (decimal?)e.UnusedCost)"
+                             SeriesType="SeriesType.Bar" />
+        </ApexChart>
+    </MudPaper>
+}
+
+@* ── Detail table ──────────────────────────────────────────────────────────── *@
+<MudPaper Class="pa-4" Elevation="2">
+    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">
+        Reservation Detail
+        @if (!string.IsNullOrEmpty(_scopeLabel))
+        {
+            <MudChip T="string" Color="Color.Info" Size="Size.Small" Class="ml-2">@_scopeLabel</MudChip>
+        }
+    </MudText>
+
+    @if (!_loading && _rows.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info">
+            No reservation data found for @_selectedMonth?.ToString("MMMM yyyy").
+            Ensure the service principal has Cost Management Reader access and that
+            reservations exist in the selected period.
+        </MudAlert>
+    }
+    else
+    {
+        <MudDataGrid T="ReservationRow"
+                     Items="_rows"
+                     SortMode="SortMode.Multiple"
+                     Filterable
+                     FilterMode="DataGridFilterMode.ColumnFilterRow"
+                     Dense>
+            <Columns>
+                @if (CostDetails.HasBillingAccountAccess && _selectedScope == "billing")
+                {
+                    <PropertyColumn Property="r => r.CustomerName" Title="Customer" />
+                }
+                <PropertyColumn Property="r => r.ReservationName" Title="Reservation" />
+                <PropertyColumn Property="r => r.MeterCategory"   Title="Service" />
+                <PropertyColumn Property="r => r.Term"            Title="Term" />
+                <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" />
+                <PropertyColumn Property="r => r.NormalizedUsedCost"
+                                Title=@($"Used ({Options.TargetCurrency})")
+                                Format="N0" />
+                <PropertyColumn Property="r => r.NormalizedUnusedCost"
+                                Title=@($"Unused ({Options.TargetCurrency})")
+                                Format="N0" />
+                <PropertyColumn Property="r => r.NormalizedTotalCost"
+                                Title=@($"Total ({Options.TargetCurrency})")
+                                Format="N0" />
+                <TemplateColumn Title="Utilisation %">
+                    <CellTemplate>
+                        <MudProgressLinear Value="(double)context.Item.UtilizationPct"
+                                           Color="@UtilColor(context.Item.UtilizationPct)"
+                                           Rounded Striped Size="Size.Medium"
+                                           Class="my-1" />
+                        <MudText Typo="Typo.caption">@context.Item.UtilizationPct.ToString("F1")%</MudText>
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+        </MudDataGrid>
+    }
+</MudPaper>
+
+@code {
+    private record ChartPoint(string Label, decimal UsedCost, decimal UnusedCost);
+
+    private bool    _loading  = true;
+    private bool    _enabling = false;
+    private string? _error;
+
+    private DateTime? _selectedMonth = new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1);
+    private string    _selectedScope = "billing";
+    private string    _scopeLabel    = string.Empty;
+
+    private List<ReservationRow> _rows      = [];
+    private List<ChartPoint>     _chartData = [];
+
+    private decimal _totalCost;
+    private decimal _usedCost;
+    private decimal _unusedCost;
+    private decimal _utilPct;
+
+    private readonly ApexChartOptions<ChartPoint> _barOpts = new()
+    {
+        Chart       = new Chart { Toolbar = new Toolbar { Show = false }, Stacked = true },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 2 } },
+        Yaxis       = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(0) : ''; }" } }]
+    };
+
+    protected override void OnInitialized()
+    {
+        // Default scope: billing if available, else subscription
+        _selectedScope = CostDetails.HasBillingAccountAccess ? "billing" : "subscription";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Options.CostDetails.Enabled)
+            await LoadAsync();
+        else
+            _loading = false;
+    }
+
+    private async Task OnMonthChanged(DateTime? date)
+    {
+        _selectedMonth = date;
+        if (Options.CostDetails.Enabled)
+            await LoadAsync();
+    }
+
+    private async Task OnScopeChanged(string scope)
+    {
+        _selectedScope = scope;
+        if (Options.CostDetails.Enabled)
+            await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = null;
+        StateHasChanged();
+        try
+        {
+            var month  = _selectedMonth ?? DateTime.UtcNow;
+            var from   = DateOnly.FromDateTime(new DateTime(month.Year, month.Month, 1));
+            var to     = from.AddMonths(1).AddDays(-1);
+
+            List<ReservationRow> rows;
+
+            if (_selectedScope == "billing" && CostDetails.HasBillingAccountAccess)
+            {
+                rows         = await CostDetails.GetAllCustomerReservationsAsync(from, to);
+                _scopeLabel  = "Billing Account";
+            }
+            else
+            {
+                rows         = await CostDetails.GetAllSubscriptionReservationsAsync(from, to);
+                _scopeLabel  = "Subscription";
+            }
+
+            _rows = rows;
+
+            _usedCost   = rows.Sum(r => r.NormalizedUsedCost);
+            _unusedCost = rows.Sum(r => r.NormalizedUnusedCost);
+            _totalCost  = rows.Sum(r => r.NormalizedTotalCost);
+            _utilPct    = _totalCost > 0
+                ? Math.Round(_usedCost / _totalCost * 100m, 1)
+                : 0m;
+
+            // Chart: aggregate by reservation (sum across subscriptions / customers)
+            _chartData = rows
+                .GroupBy(r => r.ReservationId)
+                .Select(g => new ChartPoint(
+                    g.First().ReservationName is { Length: > 0 } n ? n : g.Key,
+                    g.Sum(r => r.NormalizedUsedCost),
+                    g.Sum(r => r.NormalizedUnusedCost)))
+                .OrderByDescending(x => x.UsedCost + x.UnusedCost)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load reservation data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task EnableCostDetailsAsync()
+    {
+        _enabling = true;
+        StateHasChanged();
+        try
+        {
+            await SubStore.EnableCostDetailsAsync();
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to enable Cost Details API: {ex.Message}";
+        }
+        finally
+        {
+            _enabling = false;
+        }
+    }
+
+    private string Fmt(decimal value) =>
+        $"{Options.TargetCurrency} {value:N0}";
+
+    private static Color UtilColor(decimal pct) =>
+        pct >= 80 ? Color.Success : pct >= 50 ? Color.Warning : Color.Error;
+
+    public void Dispose() { }
+}

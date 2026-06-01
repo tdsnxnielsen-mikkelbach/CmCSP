@@ -354,17 +354,39 @@ if ($SkipCleanupJob) {
     if ($PushLatest) { $containerTags += 'latest' }
     $tagsArg = $containerTags -join ';'
 
-    # Re-use the same Docker config credential injection already applied above.
-    Invoke-Cmd 'dotnet' @(
-        'publish', $CleanupProjectPath,
-        '--configuration', 'Release',
-        '--os', 'linux',
-        '--arch', 'x64',
-        '/t:PublishContainer',
-        "-p:ContainerRegistry=$acrLoginServer",
-        "-p:ContainerRepository=$CleanupRepository",
-        "-p:ContainerImageTags=$tagsArg"
-    ) -StreamOutput
+    # Docker config was restored after the main image push — re-inject credentials.
+    $dockerConfig2 = if ($originalDockerConfig) { $originalDockerConfig | ConvertFrom-Json } else { [PSCustomObject]@{} }
+    $dockerConfig2.PSObject.Properties.Remove('credsStore')
+    if (-not $dockerConfig2.PSObject.Properties['auths']) {
+        $dockerConfig2 | Add-Member -MemberType NoteProperty -Name 'auths' -Value ([PSCustomObject]@{})
+    }
+    $dockerConfig2.auths | Add-Member -MemberType NoteProperty -Name $acrLoginServer `
+        -Value ([PSCustomObject]@{ auth = $authValue }) -Force
+    if (-not $WhatIf) { $dockerConfig2 | ConvertTo-Json -Depth 10 | Set-Content $dockerConfigPath }
+    Write-Host "  Credentials re-injected for cleanup job push"
+
+    try {
+        Invoke-Cmd 'dotnet' @(
+            'publish', $CleanupProjectPath,
+            '--configuration', 'Release',
+            '--os', 'linux',
+            '--arch', 'x64',
+            '/t:PublishContainer',
+            "-p:ContainerRegistry=$acrLoginServer",
+            "-p:ContainerRepository=$CleanupRepository",
+            "-p:ContainerImageTags=$tagsArg"
+        ) -StreamOutput
+    } finally {
+        if (-not $WhatIf) {
+            if ($null -ne $originalDockerConfig) {
+                Set-Content -Path $dockerConfigPath -Value $originalDockerConfig
+            } else {
+                Remove-Item -Path $dockerConfigPath -ErrorAction SilentlyContinue
+            }
+        }
+        Write-Host "  Docker config restored."
+    }
+
     Write-Host "  Published and pushed: $cleanupFullImage" -ForegroundColor Green
 }
 
@@ -458,13 +480,21 @@ Invoke-AzCli $updateArgs | Out-Null
 if (-not $SkipCleanupJob -and $pinnedCleanupImage) {
     Write-Host "  Configuring ACR registry auth on cleanup job '$CleanupJobName'..."
     Invoke-AzCli @(
+        'containerapp', 'job', 'registry', 'set',
+        '--name', $CleanupJobName,
+        '--resource-group', $AppRg,
+        '--subscription', $resolvedAppSubscriptionId,
+        '--server', $acrLoginServer,
+        '--identity', 'system',
+        '--only-show-errors'
+    ) | Out-Null
+    Write-Host "  Setting image on cleanup job '$CleanupJobName'..."
+    Invoke-AzCli @(
         'containerapp', 'job', 'update',
         '--name', $CleanupJobName,
         '--resource-group', $AppRg,
         '--subscription', $resolvedAppSubscriptionId,
         '--image', $pinnedCleanupImage,
-        '--registry-server', $acrLoginServer,
-        '--registry-identity', 'system',
         '--only-show-errors'
     ) | Out-Null
     Write-Host "  Cleanup job updated: $pinnedCleanupImage" -ForegroundColor Green

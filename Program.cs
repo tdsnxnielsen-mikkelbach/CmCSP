@@ -121,6 +121,12 @@ else
 // browser tab gets its own date-range filter.
 builder.Services.AddScoped<DashboardStateService>();
 
+// CostDetailsService: async report-based API for reservation and amortized-cost data.
+// Registered as Singleton — stateless fetch + shared cache; safe for concurrent use.
+// Only actively used when CostDetails:Enabled = true but always registered so pages
+// can inject ICostDetailsService and check HasBillingAccountAccess at runtime.
+builder.Services.AddSingleton<ICostDetailsService, CostDetailsService>();
+
 // ── HTTPS / HSTS ─────────────────────────────────────────────────────────────
 builder.Services.AddHsts(opts =>
 {

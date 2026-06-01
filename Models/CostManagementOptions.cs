@@ -110,4 +110,73 @@ public class CostManagementOptions
         public string TableName          { get; set; } = "cmcspcache";
         public string CacheContainerName { get; set; } = "cmcspcache";
     }
+
+    // ── Cost Details API (generateCostDetailsReport) ──────────────────────────
+
+    /// <summary>
+    /// Configuration for the Cost Details API (generateCostDetailsReport).
+    /// This is an async, report-based API that returns line-item cost data
+    /// including reservation Used/Unused breakdown via AmortizedCost metric.
+    /// Supports both subscription scope and billing-account/customer scope (MCA/CSP).
+    /// </summary>
+    public CostDetailsApiOptions CostDetails { get; set; } = new();
+
+    public sealed class CostDetailsApiOptions
+    {
+        /// <summary>Set to true to enable the Cost Details API features (Reservations page, AmortizedCost toggle).</summary>
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>
+        /// API version for generateCostDetailsReport.
+        /// Supported values: 2023-11-01 (GA for EA/MCA/CSP).
+        /// </summary>
+        public string ApiVersion { get; set; } = "2023-11-01";
+
+        /// <summary>How long to poll for a report before timing out (seconds). Default 600 (10 min).</summary>
+        public int PollingTimeoutSeconds { get; set; } = 600;
+
+        /// <summary>Interval between polling requests (seconds). Default 15.</summary>
+        public int PollingIntervalSeconds { get; set; } = 15;
+
+        /// <summary>
+        /// Cache TTL for Cost Details results (hours). The API data updates every ~4 hours.
+        /// Default 4 hours. Setting lower increases API usage.
+        /// </summary>
+        public int CacheTtlHours { get; set; } = 4;
+    }
+
+    // ── CSP Billing Account (MCA partner model) ───────────────────────────────
+
+    /// <summary>
+    /// Billing account configuration for CSP partners (Microsoft Customer Agreement).
+    /// When configured, the Reservations page can fetch per-customer reservation data
+    /// at billing-account scope, giving full Used/Unused/Total RI utilisation.
+    /// Without this, reservation data is fetched at subscription scope only.
+    /// </summary>
+    public BillingAccountOptions BillingAccount { get; set; } = new();
+
+    public sealed class BillingAccountOptions
+    {
+        /// <summary>
+        /// The billing account ID from Azure portal → Cost Management → Properties.
+        /// Format: numeric string, e.g. "12345678".
+        /// </summary>
+        public string BillingAccountId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// List of CSP customers under this billing account.
+        /// Each entry maps a customer's Azure AD tenant/customer ID to a display name.
+        /// The CustomerId is the value shown under Billing Account → Customers in the portal.
+        /// </summary>
+        public List<BillingCustomerOptions> Customers { get; set; } = [];
+    }
+
+    public sealed class BillingCustomerOptions
+    {
+        /// <summary>Azure billing customer ID (e.g. "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx").</summary>
+        public string CustomerId { get; set; } = string.Empty;
+
+        /// <summary>Human-readable display name shown in the dashboard.</summary>
+        public string DisplayName { get; set; } = string.Empty;
+    }
 }

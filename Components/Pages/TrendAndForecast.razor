@@ -19,6 +19,29 @@
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Trend &amp; Forecast</MudText>
 <SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
 
+@* ── Cost metric toggle ──────────────────────────────────────────────────────────── *@
+<MudPaper Class="pa-3 mb-4" Elevation="2">
+    <MudStack Row AlignItems="AlignItems.Center" Spacing="2">
+        <MudText Typo="Typo.body2">Cost metric:</MudText>
+        <MudChipSet T="string" @bind-SelectedValue="_metric" SelectionMode="SelectionMode.SingleSelection"
+                    CheckMark>
+            <MudChip T="string" Value=@("ActualCost") Color="Color.Primary" Variant="Variant.Filled"
+                     OnClick="OnMetricChangedAsync">
+                Actual Cost
+            </MudChip>
+            <MudChip T="string" Value=@("AmortizedCost") Color="Color.Secondary" Variant="Variant.Filled"
+                     OnClick="OnMetricChangedAsync">
+                Amortized Cost
+            </MudChip>
+        </MudChipSet>
+        <MudTooltip Text="Amortized Cost spreads reservation purchase costs evenly over the term, 
+giving a smoother daily trend. Useful for comparing periods fairly when reservation 
+purchases skew ActualCost." Arrow>
+            <MudIcon Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Default" />
+        </MudTooltip>
+    </MudStack>
+</MudPaper>
+
 @* ── Global date-range slicer ─────────────────────────────────────────────── *@
 <MudPaper Class="pa-4 mb-4" Elevation="2">
     <MudDateRangePicker Label="Date Range"
@@ -157,6 +180,7 @@
 
     private bool _loading = true;
     private string? _error;
+    private string _metric = "ActualCost";
     private DateRange _selectedRange = new(
         new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1),
         DateTime.Now);
@@ -222,13 +246,20 @@
         await LoadAsync();
     }
 
+    private async Task OnMetricChangedAsync()
+    {
+        await LoadAsync();
+    }
+
     private async Task LoadAsync()
     {
         _loading = true;
         _error   = null;
         try
         {
-            var dataTask = CostService.GetMainCostDataAsync();
+            var dataTask = _metric == "AmortizedCost"
+                ? CostService.GetAmortizedMainCostDataAsync()
+                : CostService.GetMainCostDataAsync();
             var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
             var data  = await dataTask;
             _subNames = await nameTask;

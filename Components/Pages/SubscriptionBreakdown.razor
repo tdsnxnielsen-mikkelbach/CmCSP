@@ -3,6 +3,7 @@
 @inject DashboardStateService State
 @inject CostManagementOptions Options
 @inject SubscriptionStoreService SubStore
+@inject ICostDetailsService CostDetails
 @implements IDisposable
 
 <PageTitle>Subscription Breakdown – CSP Dashboard</PageTitle>
@@ -75,7 +76,14 @@
     @* Reference table *@
     <MudItem xs="12">
         <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Subscription Reference</MudText>
+            <MudStack Row AlignItems="AlignItems.Center" Class="mb-3" Spacing="2">
+                <MudText Typo="Typo.subtitle1" Class="fw-bold">Subscription Reference</MudText>
+                <MudTooltip Text="Amortized Cost spreads reservation purchases evenly over the term. 
+RI Savings = ActualCost − AmortizedCost (positive = reservation benefit). 
+Values only available when CostDetails:Enabled = true." Arrow>
+                    <MudIcon Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Default" />
+                </MudTooltip>
+            </MudStack>
             <MudDataGrid T="TableRow"
                          Items="_rows"
                          SortMode="SortMode.Multiple"
@@ -85,10 +93,27 @@
                 <Columns>
                     <PropertyColumn Property="r => r.SubId"    Title="Subscription ID" />
                     <PropertyColumn Property="r => r.SubName"  Title="Name" />
-                    <PropertyColumn Property="r => r.TotalCost" Title="Total Cost"
+                    <PropertyColumn Property="r => r.TotalCost" Title="Actual Cost"
                                     Format="N0" />
-                    <PropertyColumn Property="r => r.MtdCost"  Title="MTD Cost"
+                    <PropertyColumn Property="r => r.MtdCost"  Title="MTD (Actual)"
                                     Format="N0" />
+                    <PropertyColumn Property="r => r.AmortizedCost" Title="Amortized Cost"
+                                    Format="N0" />
+                    <TemplateColumn Title="RI Savings">
+                        <CellTemplate>
+                            @if (context.Item.AmortizedCost > 0)
+                            {
+                                var savings = context.Item.TotalCost - context.Item.AmortizedCost;
+                                <MudText Color="@(savings > 0 ? Color.Error : Color.Success)">
+                                    @savings.ToString("N0")
+                                </MudText>
+                            }
+                            else
+                            {
+                                <MudText Color="Color.Default">—</MudText>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
                     <TemplateColumn Title="Share %">
                         <CellTemplate>
                             @context.Item.SharePct.ToString("F1")%
@@ -102,7 +127,8 @@
 
 @code {
     private record SubPoint(string SubName, decimal Cost);
-    private record TableRow(string SubId, string SubName, decimal TotalCost, decimal MtdCost, decimal SharePct);
+    private record TableRow(string SubId, string SubName, decimal TotalCost, decimal MtdCost,
+                            decimal AmortizedCost, decimal SharePct);
 
     private bool _loading = true;
     private string? _error;
@@ -143,10 +169,14 @@
         _error   = null;
         try
         {
-            var dataTask = CostService.GetMainCostDataAsync();
-            var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
-            var data  = await dataTask;
+            var dataTask  = CostService.GetMainCostDataAsync();
+            var nameTask  = CostService.GetSubscriptionDisplayNamesAsync();
+            var amortTask = Options.CostDetails.Enabled
+                ? CostService.GetAmortizedMainCostDataAsync()
+                : Task.FromResult(new List<CostRow>());
+            var data     = await dataTask;
             var subNames = await nameTask;
+            var amortData = await amortTask;
             var start = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
             var end   = State.SelectedRange.End   ?? DateTime.Now;
             var today = DateTime.UtcNow;
@@ -174,6 +204,10 @@
                     var existing = bySub.FirstOrDefault(x =>
                         x.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase));
                     var resolvedName = subNames.TryGetValue(id, out var n) ? n : id;
+                    var amortTotal = amortData
+                        .Where(r => r.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase)
+                                 && r.Date >= start && r.Date <= end)
+                        .Sum(r => r.NormalizedCost);
                     return new
                     {
                         SubscriptionId = id,
@@ -181,7 +215,8 @@
                             ? existing.SubscriptionName
                             : resolvedName,
                         Total = existing?.Total ?? 0m,
-                        Mtd = existing?.Mtd ?? 0m
+                        Mtd = existing?.Mtd ?? 0m,
+                        Amortized = amortTotal
                     };
                 })
                 .OrderByDescending(x => x.Total)
@@ -199,6 +234,7 @@
                     string.IsNullOrWhiteSpace(x.SubscriptionName) ? x.SubscriptionId : x.SubscriptionName,
                     x.Total,
                     x.Mtd,
+                    x.Amortized,
                     _totalCost > 0 ? x.Total / _totalCost * 100m : 0m))
                 .ToList();
 
