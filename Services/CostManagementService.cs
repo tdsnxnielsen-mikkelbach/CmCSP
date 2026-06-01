@@ -539,7 +539,7 @@ public sealed class CostManagementService : ICostManagementService
             _logger.LogDebug("Cache hit for {Key}.", cacheKey);
             // Ensure the UI shows Ready even when the warmup service didn't run
             // (e.g. the page called the service before the background service fired).
-            if (_loadingState.For(cacheKey).Phase != LoadPhase.Ready)
+            if (_loadingState.For(cacheKey)?.Phase != LoadPhase.Ready)
                 _loadingState.Update(cacheKey, LoadPhase.Ready,
                     $"{cached.Count:N0} rows (cached)");
             return cached;

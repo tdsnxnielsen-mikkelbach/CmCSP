@@ -31,13 +31,13 @@ public sealed class DataLoadingStateService
     /// <summary>Raised on the calling thread whenever any dataset state changes.</summary>
     public event Action? OnChanged;
 
-    /// <summary>Returns the <see cref="DatasetStatus"/> for the given cache key.</summary>
-    internal DatasetStatus For(string cacheKey) => cacheKey switch
+    /// <summary>Returns the <see cref="DatasetStatus"/> for the given cache key, or <c>null</c> if the key is not tracked.</summary>
+    internal DatasetStatus? For(string cacheKey) => cacheKey switch
     {
         "cm_main" => Main,
         "cm_rg"   => Rg,
         "cm_tag"  => Tag,
-        _         => throw new ArgumentOutOfRangeException(nameof(cacheKey))
+        _         => null
     };
 
     /// <summary>Called by <see cref="CostManagementService"/> to report progress.</summary>
