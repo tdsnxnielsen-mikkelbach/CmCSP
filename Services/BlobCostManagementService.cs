@@ -95,12 +95,41 @@ public sealed class BlobCostManagementService : ICostManagementService
 
     /// <summary>
     /// AmortizedCost data is never available from blob exports (exports use ActualCost).
-    /// Delegates directly to the underlying API service for all modes.
+    /// Delegates to the underlying API service on a best-effort basis — if the API is
+    /// unavailable or rate-limited, returns an empty list rather than blocking.
+    /// A 90-second timeout prevents a rate-limited API from blocking the warmup cycle.
     /// </summary>
-    public Task<List<CostRow>> GetAmortizedMainCostDataAsync(CancellationToken ct = default) =>
-        _apiService is not null
-            ? _apiService.GetAmortizedMainCostDataAsync(ct)
-            : Task.FromResult(new List<CostRow>());
+    public async Task<List<CostRow>> GetAmortizedMainCostDataAsync(CancellationToken ct = default)
+    {
+        if (_apiService is null)
+            return [];
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var linked  = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+
+        try
+        {
+            return await _apiService.GetAmortizedMainCostDataAsync(linked.Token);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "BlobCostManagementService: amortized cost API call timed out (blob exports unaffected). " +
+                "Amortized data will be unavailable until the next successful API call.");
+            return [];
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "BlobCostManagementService: amortized cost API call failed (blob exports unaffected). " +
+                "Amortized data will be unavailable until the next successful API call.");
+            return [];
+        }
+    }
 
     public void InvalidateCache()
     {
@@ -147,7 +176,7 @@ public sealed class BlobCostManagementService : ICostManagementService
         if (_cache.TryGetValue<List<CostRow>>(key, ttl, out var hit) && hit is not null)
         {
             _logger.LogDebug("Cache hit for {Key}.", key);
-            if (_loadingState.For(key).Phase != LoadPhase.Ready)
+            if (_loadingState.For(key)?.Phase != LoadPhase.Ready)
                 _loadingState.Update(key, LoadPhase.Ready, $"{hit.Count:N0} rows (cached)");
             return hit;
         }

@@ -95,7 +95,7 @@ public sealed class ExportProvisioningService
             return new ExportProvisioningResult(false, false, "AzureTokenService is not using service principal mode.");
         }
 
-        var existingExport = await FindReusableExportAsync(subscriptionId, correlationId, ct);
+        var (existingExport, listFailed) = await FindReusableExportAsync(subscriptionId, correlationId, ct);
         string? exportMiPrincipalId;
         string resolvedExportName;
         string resolutionMessage;
@@ -108,6 +108,15 @@ public sealed class ExportProvisioningService
                 ? $"Export '{existingExport.Name}' is already provisioned."
                 : $"Reused existing export '{existingExport.Name}' targeting the configured storage account.";
         }
+        else if (listFailed)
+        {
+            // Could not enumerate exports (likely 401/403) — skip rather than blindly attempting to create.
+            _logger.LogWarning(
+                "ExportProvisioning[{CorrelationId}]: skipping export creation for {SubId} — could not list existing exports (insufficient permissions). " +
+                "Ensure the Entra App SP has at least 'Cost Management Reader' on this subscription.",
+                correlationId, subscriptionId);
+            return new ExportProvisioningResult(false, true, "Could not list existing exports — insufficient permissions to enumerate or create exports.");
+        }
         else
         {
             exportMiPrincipalId = await CreateExportAsync(subscriptionId, correlationId, ct);
@@ -119,7 +128,14 @@ public sealed class ExportProvisioningService
         }
 
         if (string.IsNullOrWhiteSpace(exportMiPrincipalId))
-            return new ExportProvisioningResult(false, false, $"Export '{resolvedExportName}' does not expose a managed identity principal.", resolvedExportName);
+        {
+            // Export exists and targets the correct storage account but has no managed identity.
+            // The export is clearly functional (data loads), so treat this as success and skip role grant.
+            _logger.LogInformation(
+                "ExportProvisioning[{CorrelationId}]: export '{ExportName}' on {SubId} has no managed identity — skipping storage role grant (export already operational).",
+                correlationId, resolvedExportName, subscriptionId);
+            return new ExportProvisioningResult(true, false, $"{resolutionMessage} No managed identity present — storage role grant skipped.", resolvedExportName);
+        }
 
         var grantSucceeded = await GrantStorageRoleAsync(exportMiPrincipalId, correlationId, ct);
         if (!grantSucceeded)
@@ -128,7 +144,8 @@ public sealed class ExportProvisioningService
         return new ExportProvisioningResult(true, false, $"{resolutionMessage} Storage access verified.", resolvedExportName, exportMiPrincipalId);
     }
 
-    private async Task<ExistingExportInfo?> FindReusableExportAsync(
+    /// <returns>The reusable export (if found) and a flag indicating whether the list call itself failed (true = skip creation).</returns>
+    private async Task<(ExistingExportInfo? Export, bool ListFailed)> FindReusableExportAsync(
         string subscriptionId,
         string correlationId,
         CancellationToken ct)
@@ -148,12 +165,12 @@ public sealed class ExportProvisioningService
             _logger.LogWarning(
                 "ExportProvisioning[{CorrelationId}]: could not enumerate existing exports on {SubId}: HTTP {Status} — {Body}",
                 correlationId, subscriptionId, (int)resp.StatusCode, json);
-            return null;
+            return (null, true);
         }
 
         using var doc = JsonDocument.Parse(json);
         if (!doc.RootElement.TryGetProperty("value", out var exportsElement) || exportsElement.ValueKind != JsonValueKind.Array)
-            return null;
+            return (null, false);
 
         ExistingExportInfo? sameNameExport = null;
         ExistingExportInfo? sameStorageExport = null;
@@ -168,54 +185,45 @@ public sealed class ExportProvisioningService
             var principalId = GetString(export, "identity", "principalId");
             var storageResourceId = GetString(export, "properties", "deliveryInfo", "destination", "resourceId");
 
+            _logger.LogDebug(
+                "ExportProvisioning[{CorrelationId}]: enumerated export '{Name}' on {SubId} — storageResourceId: '{StorageResourceId}', principalId: '{PrincipalId}'",
+                correlationId, name, subscriptionId, storageResourceId, principalId);
+
             var exportInfo = new ExistingExportInfo(name, resourceId, principalId, storageResourceId);
             if (string.Equals(name, ExportName, StringComparison.OrdinalIgnoreCase))
                 sameNameExport = exportInfo;
 
-            if (string.Equals(storageResourceId, _options.ExportBlob.StorageAccountResourceId, StringComparison.OrdinalIgnoreCase))
+            if (NormalizeResourceId(storageResourceId) == NormalizeResourceId(_options.ExportBlob.StorageAccountResourceId))
                 sameStorageExport ??= exportInfo;
         }
 
         if (sameNameExport is not null)
         {
-            var matchesStorage = string.Equals(
-                sameNameExport.StorageResourceId,
-                _options.ExportBlob.StorageAccountResourceId,
-                StringComparison.OrdinalIgnoreCase);
+            var matchesStorage = NormalizeResourceId(sameNameExport.StorageResourceId)
+                              == NormalizeResourceId(_options.ExportBlob.StorageAccountResourceId);
 
-            if (matchesStorage && !string.IsNullOrWhiteSpace(sameNameExport.PrincipalId))
-            {
-                _logger.LogInformation(
-                    "ExportProvisioning[{CorrelationId}]: found existing canonical export '{ExportName}' on {SubId}; reusing export MI {PrincipalId}",
-                    correlationId, sameNameExport.Name, subscriptionId, sameNameExport.PrincipalId);
-                return sameNameExport;
-            }
-
+            // Reuse the canonical export regardless of storage match — if it exists by name
+            // it was provisioned by this app and is already operational.
             _logger.LogInformation(
-                "ExportProvisioning[{CorrelationId}]: canonical export '{ExportName}' exists on {SubId} but will be updated (storage match: {MatchesStorage}, principal present: {HasPrincipal})",
+                "ExportProvisioning[{CorrelationId}]: found canonical export '{ExportName}' on {SubId} (storage match: {MatchesStorage}, principal present: {HasPrincipal}); reusing.",
                 correlationId, sameNameExport.Name, subscriptionId, matchesStorage, !string.IsNullOrWhiteSpace(sameNameExport.PrincipalId));
-            return null;
-        }
-
-        if (sameStorageExport is not null && !string.IsNullOrWhiteSpace(sameStorageExport.PrincipalId))
-        {
-            _logger.LogInformation(
-                "ExportProvisioning[{CorrelationId}]: found compatible export '{ExportName}' on {SubId}; reusing it instead of creating '{CanonicalName}'",
-                correlationId, sameStorageExport.Name, subscriptionId, ExportName);
-            return sameStorageExport;
+            return (sameNameExport, false);
         }
 
         if (sameStorageExport is not null)
         {
+            var hasPrincipal = !string.IsNullOrWhiteSpace(sameStorageExport.PrincipalId);
             _logger.LogInformation(
-                "ExportProvisioning[{CorrelationId}]: found storage-compatible export '{ExportName}' on {SubId} without a managed identity principal; creating canonical export '{CanonicalName}' instead",
-                correlationId, sameStorageExport.Name, subscriptionId, ExportName);
+                "ExportProvisioning[{CorrelationId}]: found compatible export '{ExportName}' on {SubId}; reusing it (has MI principal: {HasPrincipal})",
+                correlationId, sameStorageExport.Name, subscriptionId, hasPrincipal);
+            return (sameStorageExport, false);
         }
 
-        return null;
+        _logger.LogWarning(
+            "ExportProvisioning[{CorrelationId}]: no reusable export found on {SubId} matching storage resource ID '{StorageResourceId}' — will attempt to create '{ExportName}'.",
+            correlationId, subscriptionId, _options.ExportBlob.StorageAccountResourceId, ExportName);
+        return (null, false);
     }
-
-    // ── Step 1: create / update the export resource ──────────────────────────
 
     private async Task<string?> CreateExportAsync(
         string subscriptionId,
@@ -359,8 +367,14 @@ public sealed class ExportProvisioningService
         return true;
     }
 
-    private static string? GetString(JsonElement element, params string[] path)
+    /// <summary>Normalises an ARM resource ID for comparison: lowercase, leading slash, no trailing slash.</summary>
+    private static string NormalizeResourceId(string? id)
     {
+        if (string.IsNullOrWhiteSpace(id)) return string.Empty;
+        return "/" + id.Trim().TrimStart('/').ToLowerInvariant().TrimEnd('/');
+    }
+
+    private static string? GetString(JsonElement element, params string[] path)    {
         var current = element;
         foreach (var segment in path)
         {

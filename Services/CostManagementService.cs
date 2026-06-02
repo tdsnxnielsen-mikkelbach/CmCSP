@@ -669,6 +669,7 @@ public sealed class CostManagementService : ICostManagementService
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", token);
 
+        int rateLimitRetries = 0;
         for (int attempt = 0; attempt < MaxRetries; attempt++)
         {
             try
@@ -679,18 +680,35 @@ public sealed class CostManagementService : ICostManagementService
 
                 if ((int)response.StatusCode == 429)
                 {
-                    var delay = response.Headers.RetryAfter?.Delta ?? DefaultRetryDelay;
+                    if (rateLimitRetries >= MaxRetries)
+                    {
+                        _logger.LogError(
+                            "Rate-limited too many times on subscription {SubId}. Giving up after {Count} rate-limit retries.",
+                            subscriptionId, rateLimitRetries);
+                        throw new InvalidOperationException(
+                            $"Query rate-limited after {rateLimitRetries} retries for subscription {subscriptionId}.");
+                    }
+
+                    var delay = response.Headers.RetryAfter?.Delta
+                        ?? (response.Headers.RetryAfter?.Date is DateTimeOffset retryDate
+                            ? retryDate - DateTimeOffset.UtcNow
+                            : DefaultRetryDelay);
+                    if (delay <= TimeSpan.Zero) delay = DefaultRetryDelay;
+
                     _logger.LogWarning(
-                        "Rate-limited on subscription {SubId}. Waiting {Seconds}s (attempt {Attempt}/{Max}).",
-                        subscriptionId, delay.TotalSeconds, attempt + 1, MaxRetries);
+                        "Rate-limited on subscription {SubId}. Waiting {Seconds}s (attempt {Attempt}/{Max}, rate-limit retry {RlRetry}/{RlMax}).",
+                        subscriptionId, delay.TotalSeconds, attempt + 1, MaxRetries, rateLimitRetries + 1, MaxRetries);
 
                     await Task.Delay(delay, ct);
+                    rateLimitRetries++;
 
                     // Refresh token in case it expired during the wait
                     token = await _tokenService.GetAccessTokenAsync(ct);
                     client.DefaultRequestHeaders.Authorization =
                         new AuthenticationHeaderValue("Bearer", token);
 
+                    // Do not consume a retry attempt for 429 — the wait itself is the backoff.
+                    attempt--;
                     continue;
                 }
 

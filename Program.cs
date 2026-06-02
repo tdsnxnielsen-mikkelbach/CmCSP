@@ -1,3 +1,5 @@
+using Azure.Identity;
+using Azure.Extensions.AspNetCore.Configuration.Secrets;
 using CmCSP.Components;
 using CmCSP.Models;
 using CmCSP.Services;
@@ -9,6 +11,18 @@ using Microsoft.Identity.Web;
 using MudBlazor.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ── Azure Key Vault configuration ────────────────────────────────────────────
+// KeyVaultUri is injected as an environment variable by the Container App Bicep.
+// Uses DefaultAzureCredential (managed identity in Azure, az login locally).
+// Secret names use '--' as separator, e.g. AzureCostManagement--ExportBlob--StorageAccountResourceId.
+var keyVaultUri = builder.Configuration["KeyVaultUri"];
+if (!string.IsNullOrWhiteSpace(keyVaultUri))
+{
+    builder.Configuration.AddAzureKeyVault(
+        new Uri(keyVaultUri),
+        new DefaultAzureCredential());
+}
 
 // ── Razor / Blazor ──────────────────────────────────────────────────────────
 builder.Services.AddRazorComponents()
