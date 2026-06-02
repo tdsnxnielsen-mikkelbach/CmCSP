@@ -1,45 +1,19 @@
 @page "/subscriptions"
-@inject ICostManagementService CostService
-@inject DashboardStateService State
-@inject CostManagementOptions Options
-@inject SubscriptionStoreService SubStore
 @inject ICostDetailsService CostDetails
-@implements IDisposable
+@inherits CostPageBase
 
 <PageTitle>Subscription Breakdown – CSP Dashboard</PageTitle>
 
-@if (_loading)
-{
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
-}
-@if (_error is not null)
-{
-    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
-}
+<LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Subscription Breakdown</MudText>
 <SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
 
 @* ── Summary card *@
 <MudGrid Spacing="3" Class="mb-4">
-    <MudItem xs="12" sm="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Cost</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_totalCost)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Subscriptions</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_rows.Count</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Largest Subscription Share</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_topShare.ToString("F1")%</MudText>
-        </MudPaper>
-    </MudItem>
+    <KpiCard Label="Total Cost" Value="@Fmt(_totalCost)" Sm="4" Md="4" />
+    <KpiCard Label="Subscriptions" Value="@_rows.Count.ToString()" Sm="4" Md="4" />
+    <KpiCard Label="Largest Subscription Share" Value="@($"{_topShare:F1}%")" Sm="4" Md="4" />
 </MudGrid>
 
 <MudGrid Spacing="3">
@@ -130,44 +104,18 @@ Values only available when CostDetails:Enabled = true." Arrow>
     private record TableRow(string SubId, string SubName, decimal TotalCost, decimal MtdCost,
                             decimal AmortizedCost, decimal SharePct);
 
-    private bool _loading = true;
-    private string? _error;
-
     private decimal _totalCost;
     private decimal _topShare;
-    private int _withDataSubCount;
     private List<SubPoint> _barData = [];
     private List<TableRow> _rows = [];
 
-    private readonly ApexChartOptions<SubPoint> _hbarOpts = new()
+    private readonly ApexChartOptions<SubPoint> _hbarOpts = ApexChartPresets.HorizontalBar<SubPoint>();
+
+    private readonly ApexChartOptions<SubPoint> _donutOpts = ApexChartPresets.Donut<SubPoint>();
+
+    protected override async Task LoadAsync()
     {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
-        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } }
-    };
-
-    private readonly ApexChartOptions<SubPoint> _donutOpts = new()
-    {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
-        Legend = new Legend { Position = LegendPosition.Bottom }
-    };
-
-    protected override void OnInitialized() =>
-        State.OnStateChanged += RefreshData;
-
-    protected override async Task OnInitializedAsync() =>
-        await LoadAsync();
-
-    private async void RefreshData()
-    {
-        await LoadAsync();
-        await InvokeAsync(StateHasChanged);
-    }
-
-    private async Task LoadAsync()
-    {
-        _loading = true;
-        _error   = null;
-        try
+        await RunLoadAsync(async () =>
         {
             var dataTask  = CostService.GetMainCostDataAsync();
             var nameTask  = CostService.GetSubscriptionDisplayNamesAsync();
@@ -175,10 +123,10 @@ Values only available when CostDetails:Enabled = true." Arrow>
                 ? CostService.GetAmortizedMainCostDataAsync()
                 : Task.FromResult(new List<CostRow>());
             var data     = await dataTask;
-            var subNames = await nameTask;
+            _subNames = await nameTask;
             var amortData = await amortTask;
-            var start = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
-            var end   = State.SelectedRange.End   ?? DateTime.Now;
+            var start = RangeStart;
+            var end   = RangeEnd;
             var today = DateTime.UtcNow;
 
             var filtered = data.Where(r => r.Date >= start && r.Date <= end).ToList();
@@ -203,7 +151,7 @@ Values only available when CostDetails:Enabled = true." Arrow>
                 {
                     var existing = bySub.FirstOrDefault(x =>
                         x.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase));
-                    var resolvedName = subNames.TryGetValue(id, out var n) ? n : id;
+                    var resolvedName = _subNames.TryGetValue(id, out var n) ? n : id;
                     var amortTotal = amortData
                         .Where(r => r.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase)
                                  && r.Date >= start && r.Date <= end)
@@ -245,19 +193,7 @@ Values only available when CostDetails:Enabled = true." Arrow>
                 .Count();
 
             _topShare = _rows.Count > 0 ? _rows.Max(r => r.SharePct) : 0m;
-        }
-        catch (Exception ex)
-        {
-            _error = $"Failed to load subscription data: {ex.Message}";
-        }
-        finally
-        {
-            _loading = false;
-        }
+        });
     }
-
-    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
-
-    public void Dispose() => State.OnStateChanged -= RefreshData;
 }
 

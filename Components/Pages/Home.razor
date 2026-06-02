@@ -1,51 +1,20 @@
 @page "/"
-@inject ICostManagementService CostService
-@inject DashboardStateService State
-@inject SubscriptionStoreService SubStore
 @inject ExportProvisioningService ExportProvisioner
 @inject ILogger<Home> Logger
-@implements IDisposable
+@inherits CostPageBase
 
 <PageTitle>Cost Overview – CSP Dashboard</PageTitle>
 
-@if (_loading)
-{
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
-}
-
-@if (_error is not null)
-{
-    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
-}
+<LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
 
 @* ── Summary cards ────────────────────────────────────────────────────────── *@
 <MudGrid Spacing="3" Class="mb-4">
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Cost (selected range)</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@FormatCost(_totalCost)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Cost Month-to-Date</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@FormatCost(_costMtd)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Cost Year-to-Date</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@FormatCost(_costYtd)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Avg Daily Cost</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@FormatCost(_avgDailyCost)</MudText>
-        </MudPaper>
-    </MudItem>
+    <KpiCard Label="Total Cost (selected range)" Value="@Fmt(_totalCost)" Sm="6" Md="3" />
+    <KpiCard Label="Cost Month-to-Date" Value="@Fmt(_costMtd)" Sm="6" Md="3" />
+    <KpiCard Label="Cost Year-to-Date" Value="@Fmt(_costYtd)" Sm="6" Md="3" />
+    <KpiCard Label="Avg Daily Cost" Value="@Fmt(_avgDailyCost)" Sm="6" Md="3" />
 </MudGrid>
 
 @* ── Charts ───────────────────────────────────────────────────────────────── *@
@@ -240,17 +209,13 @@
     private record MonthlyPoint(string Label, string SubscriptionId, decimal Cost);
     private record ServicePoint(string ServiceName, string SubscriptionId, string Label, decimal Cost);
 
-    private bool _loading = true;
-    private string? _error;
     private List<CostRow> _data = [];
-    private Dictionary<string, string> _subNames = [];
     private bool _subNamesBusy;
 
     private decimal _totalCost;
     private decimal _costMtd;
     private decimal _costYtd;
     private decimal _avgDailyCost;
-    private int _withDataSubCount;
 
     private List<DailyPoint> _currentMonthDaily = [];
     private List<DailyPoint> _priorMonthDaily = [];
@@ -258,59 +223,25 @@
     private List<ServicePoint> _topServices = [];
     private List<string> _seriesSubIds = [];
 
-    private readonly ApexChartOptions<DailyPoint> _twoLineOpts = new()
-    {
-        Chart  = new Chart { Toolbar = new Toolbar { Show = false } },
-        Stroke = new Stroke { Curve = Curve.Smooth, Width = [2, 2] },
-        Xaxis  = new XAxis { Type = XAxisType.Numeric },
-        Yaxis  = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
-    };
+    private readonly ApexChartOptions<DailyPoint> _twoLineOpts = ApexChartPresets.SmoothLine<DailyPoint>();
 
-    private readonly ApexChartOptions<MonthlyPoint> _barOpts = new()
-    {
-        Chart       = new Chart { Toolbar = new Toolbar { Show = false }, Stacked = true },
-        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { BorderRadius = 4 } },
-        Yaxis       = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
-    };
+    private readonly ApexChartOptions<MonthlyPoint> _barOpts = ApexChartPresets.StackedBar<MonthlyPoint>();
 
-    private readonly ApexChartOptions<ServicePoint> _hbarOpts = new()
-    {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
-        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } }
-    };
-
-    protected override void OnInitialized() =>
-        State.OnStateChanged += RefreshData;
+    private readonly ApexChartOptions<ServicePoint> _hbarOpts = ApexChartPresets.HorizontalBar<ServicePoint>();
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadAsync();
+        await base.OnInitializedAsync();
         await RefreshSubNamesAsync();
     }
 
-    private async void RefreshData()
+    protected override async Task LoadAsync()
     {
-        await LoadAsync();
-        await InvokeAsync(StateHasChanged);
-    }
-
-    private async Task LoadAsync()
-    {
-        _loading = true;
-        _error   = null;
-        try
+        await RunLoadAsync(async () =>
         {
             _data = await CostService.GetMainCostDataAsync();
             Compute();
-        }
-        catch (Exception ex)
-        {
-            _error = $"Failed to load cost data: {ex.Message}";
-        }
-        finally
-        {
-            _loading = false;
-        }
+        });
     }
 
     private void Compute()
@@ -319,10 +250,7 @@
         var end    = State.SelectedRange.End   ?? DateTime.Now;
         var today  = DateTime.UtcNow;
         var filtered = _data.Where(r => r.Date >= start && r.Date <= end).ToList();
-        _seriesSubIds = SubStore.AllIds
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(GetSubName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        _seriesSubIds = GetOrderedSubscriptionIds();
 
         _totalCost    = filtered.Sum(r => r.NormalizedCost);
         _withDataSubCount = filtered
@@ -412,17 +340,6 @@
                 serviceBySub.TryGetValue((service, subId), out var cost) ? cost : 0m)))
             .ToList();
     }
-
-    private string GetSubName(string subscriptionId) =>
-        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
-
-    private string FormatCost(decimal value) => Fmt(value);
-
-    // Re-format using injected options at component level
-    [Inject] private CostManagementOptions Options { get; set; } = default!;
-    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
-
-    public void Dispose() => State.OnStateChanged -= RefreshData;
 
     // ── Subscription management ──────────────────────────────────────────────
 

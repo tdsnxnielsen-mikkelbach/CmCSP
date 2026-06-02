@@ -1,0 +1,24 @@
+@* A reusable KPI summary card. *@
+<MudItem xs="12" sm="@Sm" md="@Md">
+    <MudPaper Class="@PaperClass" Elevation="2">
+        <MudText Typo="Typo.caption" Color="Color.Secondary">@Label</MudText>
+        <MudText Typo="Typo.h5" Class="@ValueClass" Color="@ValueColor">@Value</MudText>
+        @if (Footer is not null)
+        {
+            <MudText Typo="Typo.caption" Color="@FooterColor" Class="@FooterClass">@Footer</MudText>
+        }
+    </MudPaper>
+</MudItem>
+
+@code {
+    [Parameter] public string Label { get; set; } = string.Empty;
+    [Parameter] public string Value { get; set; } = string.Empty;
+    [Parameter] public string? Footer { get; set; }
+    [Parameter] public Color ValueColor { get; set; } = Color.Default;
+    [Parameter] public Color FooterColor { get; set; } = Color.Secondary;
+    [Parameter] public int Sm { get; set; } = 6;
+    [Parameter] public int Md { get; set; } = 4;
+    [Parameter] public string PaperClass { get; set; } = "pa-4";
+    [Parameter] public string ValueClass { get; set; } = "mt-1 fw-bold";
+    [Parameter] public string FooterClass { get; set; } = "";
+}

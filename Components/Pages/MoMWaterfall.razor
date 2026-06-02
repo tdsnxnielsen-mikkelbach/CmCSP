@@ -1,20 +1,9 @@
 @page "/waterfall"
-@inject ICostManagementService CostService
-@inject DashboardStateService State
-@inject CostManagementOptions Options
-@inject SubscriptionStoreService SubStore
-@implements IDisposable
+@inherits CostPageBase
 
 <PageTitle>MoM Waterfall – CSP Dashboard</PageTitle>
 
-@if (_loading)
-{
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
-}
-@if (_error is not null)
-{
-    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
-}
+<LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Month-over-Month Waterfall</MudText>
 <SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
@@ -29,42 +18,10 @@
 
 @* ── KPI cards ─────────────────────────────────────────────────────────────── *@
 <MudGrid Spacing="3" Class="mb-4">
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">MoM Change</MudText>
-            <MudText Typo="Typo.h5"
-                     Class="mt-1 fw-bold"
-                     Color="@(_momChange > 0 ? Color.Error : Color.Success)">
-                @Fmt(_momChange)
-            </MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">MoM Change %</MudText>
-            <MudText Typo="Typo.h5"
-                     Class="mt-1 fw-bold"
-                     Color="@(_momPct > 0 ? Color.Error : Color.Success)">
-                @_momPct.ToString("F1")%
-            </MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">YoY Change %</MudText>
-            <MudText Typo="Typo.h5"
-                     Class="mt-1 fw-bold"
-                     Color="@(_yoyPct > 0 ? Color.Error : Color.Success)">
-                @_yoyPct.ToString("F1")%
-            </MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Current Month Spend</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_currentMonthCost)</MudText>
-        </MudPaper>
-    </MudItem>
+    <KpiCard Label="MoM Change" Value="@Fmt(_momChange)" ValueColor="@(_momChange > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />
+    <KpiCard Label="MoM Change %" Value="@($"{_momPct:F1}%")" ValueColor="@(_momPct > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />
+    <KpiCard Label="YoY Change %" Value="@($"{_yoyPct:F1}%")" ValueColor="@(_yoyPct > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />
+    <KpiCard Label="Current Month Spend" Value="@Fmt(_currentMonthCost)" Sm="6" Md="3" />
 </MudGrid>
 
 <MudGrid Spacing="3">
@@ -136,8 +93,6 @@
     private record SubMomPoint(string SubscriptionId, string SubName, decimal Change);
     private record MonthSummaryRow(string Label, decimal Total, decimal Change, decimal ChangePct);
 
-    private bool _loading = true;
-    private string? _error;
     private DateRange _selectedRange = new(
         new DateTime(DateTime.Now.Year - 1, 1, 1),
         DateTime.Now);
@@ -146,97 +101,33 @@
     private decimal _momPct;
     private decimal _yoyPct;
     private decimal _currentMonthCost;
-    private int _withDataSubCount;
-    private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _seriesSubIds = [];
 
     private List<MomPoint> _momData = [];
     private List<SubMomPoint> _subMomData = [];
     private List<MonthSummaryRow> _monthSummary = [];
 
-    private readonly ApexChartOptions<MomPoint> _momBarOpts = new()
-    {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
-        PlotOptions = new PlotOptions
-        {
-            Bar = new PlotOptionsBar
-            {
-                BorderRadius = 3,
-                Colors = new PlotOptionsBarColors
-                {
-                    Ranges =
-                    [
-                        new PlotOptionsBarColorRange { From = -10_000_000d, To = -0.01d, Color = "#00C853" },
-                        new PlotOptionsBarColorRange { From = 0d,           To = 10_000_000d, Color = "#D50000" }
-                    ]
-                }
-            }
-        },
-        DataLabels = new DataLabels { Enabled = false },
-        Yaxis = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
-    };
+    private readonly ApexChartOptions<MomPoint> _momBarOpts = ApexChartPresets.WaterfallBar<MomPoint>();
 
-    private readonly ApexChartOptions<SubMomPoint> _subMomOpts = new()
-    {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
-        PlotOptions = new PlotOptions
-        {
-            Bar = new PlotOptionsBar
-            {
-                Horizontal   = true,
-                BorderRadius = 3,
-                Colors = new PlotOptionsBarColors
-                {
-                    Ranges =
-                    [
-                        new PlotOptionsBarColorRange { From = -10_000_000d, To = -0.01d, Color = "#00C853" },
-                        new PlotOptionsBarColorRange { From = 0d,           To = 10_000_000d, Color = "#D50000" }
-                    ]
-                }
-            }
-        },
-        DataLabels = new DataLabels { Enabled = false },
-        Xaxis = new XAxis { Labels = new XAxisLabels { Formatter = "function(val) { return val != null ? parseFloat(val).toFixed(2) : ''; }" } }
-    };
+    private readonly ApexChartOptions<SubMomPoint> _subMomOpts = ApexChartPresets.WaterfallBar<SubMomPoint>(horizontal: true);
 
     protected override void OnInitialized()
     {
         _selectedRange = State.SelectedRange;
-        State.OnStateChanged += RefreshData;
+        base.OnInitialized();
     }
 
-    protected override async Task OnInitializedAsync() =>
-        await LoadAsync();
-
-    private async void RefreshData()
+    protected override async Task LoadAsync()
     {
         _selectedRange = State.SelectedRange;
-        await LoadAsync();
-        await InvokeAsync(StateHasChanged);
-    }
-
-    private async Task OnDateRangeChanged(DateRange range)
-    {
-        State.SetDateRange(range);
-        _selectedRange = range;
-        await LoadAsync();
-    }
-
-    private async Task LoadAsync()
-    {
-        _loading = true;
-        _error   = null;
-        try
+        await RunLoadAsync(async () =>
         {
             var dataTask = CostService.GetMainCostDataAsync();
             var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
             var data  = await dataTask;
             _subNames = await nameTask;
             var today = DateTime.UtcNow;
-            _seriesSubIds = SubStore.AllIds
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(GetSubName, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            _seriesSubIds = GetOrderedSubscriptionIds();
 
             var rangeStart = _selectedRange.Start ?? today.AddYears(-1);
             var rangeEnd   = _selectedRange.End   ?? today;
@@ -334,22 +225,13 @@
                     subMomActual.TryGetValue(id, out var change) ? change : 0m))
                 .OrderBy(x => x.Change)
                 .ToList();
-        }
-        catch (Exception ex)
-        {
-            _error = $"Failed to load MoM data: {ex.Message}";
-        }
-        finally
-        {
-            _loading = false;
-        }
+        });
     }
 
-    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
-
-    private string GetSubName(string subscriptionId) =>
-        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
-
-    public void Dispose() => State.OnStateChanged -= RefreshData;
+    private async Task OnDateRangeChanged(DateRange range)
+    {
+        State.SetDateRange(range);
+        _selectedRange = range;
+        await LoadAsync();
+    }
 }
-

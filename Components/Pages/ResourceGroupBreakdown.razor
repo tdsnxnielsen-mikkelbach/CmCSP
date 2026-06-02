@@ -1,43 +1,17 @@
 @page "/resource-groups"
-@inject ICostManagementService CostService
-@inject DashboardStateService State
-@inject CostManagementOptions Options
-@inject SubscriptionStoreService SubStore
-@implements IDisposable
+@inherits CostPageBase
 
 <PageTitle>Resource Group Breakdown – CSP Dashboard</PageTitle>
 
-@if (_loading)
-{
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
-}
-@if (_error is not null)
-{
-    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
-}
+<LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Resource Group Breakdown</MudText>
 <SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
 
 <MudGrid Spacing="3" Class="mb-4">
-    <MudItem xs="12" sm="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Cost</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_totalCost)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Resource Groups (top 15 shown)</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_totalRgCount</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Avg Monthly Cost (top 15)</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_avgMonthly)</MudText>
-        </MudPaper>
-    </MudItem>
+    <KpiCard Label="Total Cost" Value="@Fmt(_totalCost)" Sm="4" Md="4" />
+    <KpiCard Label="Resource Groups (top 15 shown)" Value="@_totalRgCount.ToString()" Sm="4" Md="4" />
+    <KpiCard Label="Avg Monthly Cost (top 15)" Value="@Fmt(_avgMonthly)" Sm="4" Md="4" />
 </MudGrid>
 
 <MudGrid Spacing="3">
@@ -94,62 +68,31 @@
         decimal AvgMonthly);
     private record RgSeriesPoint(string RgName, string SubscriptionId, decimal Cost);
 
-    private bool _loading = true;
-    private string? _error;
-
     private decimal _totalCost;
     private decimal _avgMonthly;
     private int _totalRgCount;
-    private int _withDataSubCount;
     private List<RgPoint> _barData = [];
     private List<RgSeriesPoint> _chartData = [];
-    private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _seriesSubIds = [];
 
-    private readonly ApexChartOptions<RgSeriesPoint> _hbarOpts = new()
+    private readonly ApexChartOptions<RgSeriesPoint> _hbarOpts = ApexChartPresets.HorizontalBar<RgSeriesPoint>(420);
+
+    protected override async Task LoadAsync()
     {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Height = 420 },
-        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } },
-        DataLabels = new DataLabels { Enabled = false }
-    };
-
-    protected override void OnInitialized() =>
-        State.OnStateChanged += RefreshData;
-
-    protected override async Task OnInitializedAsync() =>
-        await LoadAsync();
-
-    private async void RefreshData()
-    {
-        await LoadAsync();
-        await InvokeAsync(StateHasChanged);
-    }
-
-    private async Task LoadAsync()
-    {
-        _loading = true;
-        _error   = null;
-        try
+        await RunLoadAsync(async () =>
         {
             var dataTask = CostService.GetRgCostDataAsync();
             var subNameTask = CostService.GetSubscriptionDisplayNamesAsync();
             var data  = await dataTask;
             _subNames = await subNameTask;
-            var start = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
-            var end   = State.SelectedRange.End   ?? DateTime.Now;
+            var start = RangeStart;
+            var end   = RangeEnd;
             var today = DateTime.UtcNow;
 
             var filtered = data.Where(r => r.Date >= start && r.Date <= end).ToList();
             _totalCost   = filtered.Sum(r => r.NormalizedCost);
-            _withDataSubCount = filtered
-                .Where(r => !string.IsNullOrWhiteSpace(r.SubscriptionId))
-                .Select(r => r.SubscriptionId)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Count();
-            _seriesSubIds = SubStore.AllIds
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(GetSubName, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            ComputeWithDataSubCount(filtered);
+            _seriesSubIds = GetOrderedSubscriptionIds();
 
             var byRg = filtered
                 .GroupBy(r => string.IsNullOrWhiteSpace(r.ResourceGroupName)
@@ -200,19 +143,8 @@
                     _totalCost > 0 ? x.Total / _totalCost * 100m : 0m,
                     x.AvgMthly))
                 .ToList();
-        }
-        catch (Exception ex)
-        {
-            _error = $"Failed to load resource group data: {ex.Message}";
-        }
-        finally
-        {
-            _loading = false;
-        }
+        });
     }
-
-    private string GetSubName(string subscriptionId) =>
-        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
 
     private string GetTopSubForRg(List<CostRow> filtered, string rgName)
     {
@@ -225,8 +157,5 @@
         return best is null ? string.Empty : GetSubName(best.Id);
     }
 
-    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
-
-    public void Dispose() => State.OnStateChanged -= RefreshData;
 }
 

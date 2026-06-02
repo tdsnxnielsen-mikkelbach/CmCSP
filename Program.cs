@@ -70,7 +70,7 @@ builder.Services.AddSingleton<AzureStorageCacheService>();
 // ── Named HttpClient for Azure Management API ────────────────────────────────
 builder.Services.AddHttpClient("AzureMgmt", client =>
 {
-    client.Timeout = TimeSpan.FromSeconds(90);
+    client.Timeout = TimeSpan.FromSeconds(180);
 });
 
 // ── Azure Cost Management options ────────────────────────────────────────────

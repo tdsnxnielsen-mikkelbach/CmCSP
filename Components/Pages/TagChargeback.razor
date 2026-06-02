@@ -1,20 +1,9 @@
 @page "/tags"
-@inject ICostManagementService CostService
-@inject DashboardStateService State
-@inject CostManagementOptions Options
-@inject SubscriptionStoreService SubStore
-@implements IDisposable
+@inherits CostPageBase
 
 <PageTitle>Tag Chargeback – CSP Dashboard</PageTitle>
 
-@if (_loading)
-{
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
-}
-@if (_error is not null)
-{
-    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
-}
+<LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Tag Chargeback</MudText>
 <SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
@@ -31,24 +20,9 @@
 }
 
 <MudGrid Spacing="3" Class="mb-4">
-    <MudItem xs="12" sm="6" md="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Tagged Cost</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_taggedCost)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Untagged Cost</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Warning">@Fmt(_untaggedCost)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Distinct Tag Keys</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_tagData.Count</MudText>
-        </MudPaper>
-    </MudItem>
+    <KpiCard Label="Total Tagged Cost" Value="@Fmt(_taggedCost)" Md="4" />
+    <KpiCard Label="Untagged Cost" Value="@Fmt(_untaggedCost)" ValueColor="Color.Warning" Md="4" />
+    <KpiCard Label="Distinct Tag Keys" Value="@_tagData.Count.ToString()" Md="4" />
 </MudGrid>
 
 <MudPaper Class="pa-4 mb-4" Elevation="2">
@@ -135,58 +109,27 @@
     private record TagSeriesPoint(string Tag, string SubscriptionId, decimal Cost);
     private record SubCoverage(string SubscriptionId, string SubscriptionName, decimal TotalCost, decimal TaggedCost, decimal UntaggedCost);
 
-    private bool _loading = true;
-    private string? _error;
-
     private decimal _taggedCost;
     private decimal _untaggedCost;
-    private int _withDataSubCount;
     private List<TagPoint> _tagData = [];
     private List<TagSeriesPoint> _tagSeriesData = [];
     private List<SubCoverage> _subCoverage = [];
-    private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _seriesSubIds = [];
 
-    private readonly ApexChartOptions<TagSeriesPoint> _treemapOpts = new()
+    private readonly ApexChartOptions<TagSeriesPoint> _treemapOpts = ApexChartPresets.VerticalBar<TagSeriesPoint>();
+
+    private readonly ApexChartOptions<TagSeriesPoint> _hbarOpts = ApexChartPresets.HorizontalBar<TagSeriesPoint>();
+
+    protected override async Task LoadAsync()
     {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Height = 380 },
-        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = false, BorderRadius = 3 } },
-        DataLabels = new DataLabels { Enabled = false },
-        Yaxis = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
-    };
-
-    private readonly ApexChartOptions<TagSeriesPoint> _hbarOpts = new()
-    {
-        Chart = new Chart { Toolbar = new Toolbar { Show = false } },
-        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } },
-        DataLabels = new DataLabels { Enabled = false },
-        Xaxis = new XAxis { Labels = new XAxisLabels { Formatter = "function(val) { return val != null ? parseFloat(val).toFixed(2) : ''; }" } }
-    };
-
-    protected override void OnInitialized() =>
-        State.OnStateChanged += RefreshData;
-
-    protected override async Task OnInitializedAsync() =>
-        await LoadAsync();
-
-    private async void RefreshData()
-    {
-        await LoadAsync();
-        await InvokeAsync(StateHasChanged);
-    }
-
-    private async Task LoadAsync()
-    {
-        _loading = true;
-        _error   = null;
-        try
+        await RunLoadAsync(async () =>
         {
             var dataTask = CostService.GetTagCostDataAsync();
             var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
             var data  = await dataTask;
             _subNames = await nameTask;
-            var start = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
-            var end   = State.SelectedRange.End   ?? DateTime.Now;
+            var start = RangeStart;
+            var end   = RangeEnd;
 
             var filtered = data.Where(r => r.Date >= start && r.Date <= end).ToList();
             var total    = filtered.Sum(r => r.NormalizedCost);
@@ -207,10 +150,7 @@
                 .OrderByDescending(t => t.Cost)
                 .ToList();
 
-            _seriesSubIds = SubStore.AllIds
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(GetSubName, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            _seriesSubIds = GetOrderedSubscriptionIds();
 
             var topTags = _tagData.Select(t => t.Tag).ToList();
             var tagBySub = tagged
@@ -238,22 +178,7 @@
                 .ToList();
 
             _withDataSubCount = _subCoverage.Count(s => s.TotalCost > 0);
-        }
-        catch (Exception ex)
-        {
-            _error = $"Failed to load tag data: {ex.Message}";
-        }
-        finally
-        {
-            _loading = false;
-        }
+        });
     }
-
-    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
-
-    private string GetSubName(string subscriptionId) =>
-        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
-
-    public void Dispose() => State.OnStateChanged -= RefreshData;
 }
 

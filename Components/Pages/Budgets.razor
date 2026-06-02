@@ -1,20 +1,9 @@
 @page "/budgets"
-@inject ICostManagementService CostService
-@inject DashboardStateService State
-@inject CostManagementOptions Options
-@inject SubscriptionStoreService SubStore
-@implements IDisposable
+@inherits CostPageBase
 
 <PageTitle>Budgets – CSP Dashboard</PageTitle>
 
-@if (_loading)
-{
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
-}
-@if (_error is not null)
-{
-    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
-}
+<LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Budgets</MudText>
 <SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
@@ -172,15 +161,11 @@ else if (_budgets.Count > 0)
         decimal CurrentSpend,
         decimal UsagePct);
 
-    private bool _loading = true;
-    private string? _error;
-
     private List<SubscriptionBudget> _budgets = [];
     private decimal _totalBudget;
     private decimal _totalCurrentSpend;
     private decimal _variance;
     private decimal _variancePct;
-    private int _withDataSubCount;
 
     private List<GaugePoint>      _gaugeData     = [];
     private List<SubBudgetPoint>  _subBudgetData = [];
@@ -206,38 +191,13 @@ else if (_budgets.Count > 0)
         }
     };
 
-    private readonly ApexChartOptions<SubBudgetPoint> _subBarOpts = new()
+    private readonly ApexChartOptions<SubBudgetPoint> _subBarOpts = ApexChartPresets.VerticalBar<SubBudgetPoint>();
+
+    private readonly ApexChartOptions<MonthBudgetPoint> _groupedBarOpts = ApexChartPresets.VerticalBar<MonthBudgetPoint>();
+
+    protected override async Task LoadAsync()
     {
-        Chart       = new Chart { Toolbar = new Toolbar { Show = false } },
-        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { BorderRadius = 3 } },
-        Yaxis       = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
-    };
-
-    private readonly ApexChartOptions<MonthBudgetPoint> _groupedBarOpts = new()
-    {
-        Chart       = new Chart { Toolbar = new Toolbar { Show = false } },
-        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { BorderRadius = 3 } },
-        Stroke      = new Stroke { Width = [0, 2], Curve = Curve.Straight },
-        Yaxis       = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
-    };
-
-    protected override void OnInitialized() =>
-        State.OnStateChanged += RefreshData;
-
-    protected override async Task OnInitializedAsync() =>
-        await LoadAsync();
-
-    private async void RefreshData()
-    {
-        await LoadAsync();
-        await InvokeAsync(StateHasChanged);
-    }
-
-    private async Task LoadAsync()
-    {
-        _loading = true;
-        _error   = null;
-        try
+        await RunLoadAsync(async () =>
         {
             // Start both requests concurrently – both are likely cache hits after first load.
             var costTask   = CostService.GetMainCostDataAsync();
@@ -327,19 +287,7 @@ else if (_budgets.Count > 0)
                 .OrderBy(p => DateTime.ParseExact(p.Label, "MMM yy", null))
                 .TakeLast(6)
                 .ToList();
-        }
-        catch (Exception ex)
-        {
-            _error = $"Failed to load budget data: {ex.Message}";
-        }
-        finally
-        {
-            _loading = false;
-        }
+        });
     }
-
-    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
-
-    public void Dispose() => State.OnStateChanged -= RefreshData;
 }
 

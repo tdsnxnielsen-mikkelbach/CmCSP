@@ -1,20 +1,9 @@
 @page "/trend"
-@inject ICostManagementService CostService
-@inject DashboardStateService State
-@inject CostManagementOptions Options
-@inject SubscriptionStoreService SubStore
-@implements IDisposable
+@inherits CostPageBase
 
 <PageTitle>Trend &amp; Forecast – CSP Dashboard</PageTitle>
 
-@if (_loading)
-{
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
-}
-@if (_error is not null)
-{
-    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
-}
+<LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Trend &amp; Forecast</MudText>
 <SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
@@ -52,34 +41,10 @@ purchases skew ActualCost." Arrow>
 
 @* ── KPI cards ─────────────────────────────────────────────────────────────── *@
 <MudGrid Spacing="3" Class="mb-4">
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Cost MTD</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_costMtd)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Month-End Forecast</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_forecast)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Rolling 3-Month Avg</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_rolling3m)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">YoY Change %</MudText>
-            <MudText Typo="Typo.h5"
-                     Class="mt-1 fw-bold"
-                     Color="@(_yoyPct > 0 ? Color.Error : Color.Success)">
-                @_yoyPct.ToString("F1")%
-            </MudText>
-        </MudPaper>
-    </MudItem>
+    <KpiCard Label="Cost MTD" Value="@Fmt(_costMtd)" Sm="6" Md="3" />
+    <KpiCard Label="Month-End Forecast" Value="@Fmt(_forecast)" Sm="6" Md="3" />
+    <KpiCard Label="Rolling 3-Month Avg" Value="@Fmt(_rolling3m)" Sm="6" Md="3" />
+    <KpiCard Label="YoY Change %" Value="@($"{_yoyPct:F1}%")" ValueColor="@(_yoyPct > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />
 </MudGrid>
 
 <MudPaper Class="pa-4 mb-4" Elevation="2">
@@ -178,8 +143,6 @@ purchases skew ActualCost." Arrow>
     private record MonthlyPoint(string Label, string SubscriptionId, decimal Cost);
     private record SubRangePoint(string SubscriptionId, string SubscriptionName, decimal Cost);
 
-    private bool _loading = true;
-    private string? _error;
     private string _metric = "ActualCost";
     private DateRange _selectedRange = new(
         new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1),
@@ -189,8 +152,6 @@ purchases skew ActualCost." Arrow>
     private decimal _forecast;
     private decimal _rolling3m;
     private decimal _yoyPct;
-    private int _withDataSubCount;
-    private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _seriesSubIds = [];
 
     private List<DailyPoint> _actualDaily = [];
@@ -201,42 +162,16 @@ purchases skew ActualCost." Arrow>
     private List<MonthlyPoint> _priorYearMonthly = [];
     private List<SubRangePoint> _subRangeData = [];
 
-    private readonly ApexChartOptions<DailyPoint> _forecastOpts = new()
-    {
-        Chart  = new Chart { Toolbar = new Toolbar { Show = false } },
-        Stroke = new Stroke { Curve = Curve.Smooth, Width = [2, 2], DashArray = [0, 5] },
-        Xaxis  = new XAxis { Type = XAxisType.Datetime },
-        Yaxis  = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
-    };
+    private readonly ApexChartOptions<DailyPoint> _forecastOpts = ApexChartPresets.SmoothLine<DailyPoint>(dashArray: [0, 5]);
 
-    private readonly ApexChartOptions<MonthlyPoint> _rollingOpts = new()
-    {
-        Chart  = new Chart { Toolbar = new Toolbar { Show = false }, Stacked = true },
-        Stroke = new Stroke { Width = [0, 2] },
-        Yaxis  = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
-    };
+    private readonly ApexChartOptions<MonthlyPoint> _rollingOpts = ApexChartPresets.StackedBar<MonthlyPoint>();
 
-    private readonly ApexChartOptions<MonthlyPoint> _yoyOpts = new()
-    {
-        Chart  = new Chart { Toolbar = new Toolbar { Show = false } },
-        Stroke = new Stroke { Curve = Curve.Smooth, Width = [2, 2] },
-        Yaxis  = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(2) : ''; }" } }]
-    };
+    private readonly ApexChartOptions<MonthlyPoint> _yoyOpts = ApexChartPresets.SmoothLine<MonthlyPoint>();
 
     protected override void OnInitialized()
     {
         _selectedRange = State.SelectedRange;
-        State.OnStateChanged += RefreshData;
-    }
-
-    protected override async Task OnInitializedAsync() =>
-        await LoadAsync();
-
-    private async void RefreshData()
-    {
-        _selectedRange = State.SelectedRange;
-        await LoadAsync();
-        await InvokeAsync(StateHasChanged);
+        base.OnInitialized();
     }
 
     private async Task OnDateRangeChanged(DateRange range)
@@ -246,16 +181,12 @@ purchases skew ActualCost." Arrow>
         await LoadAsync();
     }
 
-    private async Task OnMetricChangedAsync()
+    // TrendAndForecast overrides LoadAsync to also sync _selectedRange from State
+    // when triggered by a global date-range broadcast.
+    protected override async Task LoadAsync()
     {
-        await LoadAsync();
-    }
-
-    private async Task LoadAsync()
-    {
-        _loading = true;
-        _error   = null;
-        try
+        _selectedRange = State.SelectedRange;
+        await RunLoadAsync(async () =>
         {
             var dataTask = _metric == "AmortizedCost"
                 ? CostService.GetAmortizedMainCostDataAsync()
@@ -264,10 +195,7 @@ purchases skew ActualCost." Arrow>
             var data  = await dataTask;
             _subNames = await nameTask;
             var today = DateTime.UtcNow;
-            _seriesSubIds = SubStore.AllIds
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(GetSubName, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            _seriesSubIds = GetOrderedSubscriptionIds();
 
             // ── Forecast ──────────────────────────────────────────────────────
             var curMonthData = data
@@ -396,22 +324,8 @@ purchases skew ActualCost." Arrow>
             var curTotal   = _currentYearMonthly.Sum(p => p.Cost);
             var priorTotal = _priorYearMonthly.Sum(p => p.Cost);
             _yoyPct = priorTotal > 0 ? (curTotal - priorTotal) / priorTotal * 100m : 0m;
-        }
-        catch (Exception ex)
-        {
-            _error = $"Failed to load trend data: {ex.Message}";
-        }
-        finally
-        {
-            _loading = false;
-        }
+        });
     }
 
-    private string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
-
-    private string GetSubName(string subscriptionId) =>
-        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
-
-    public void Dispose() => State.OnStateChanged -= RefreshData;
+    private async Task OnMetricChangedAsync() => await LoadAsync();
 }
-
