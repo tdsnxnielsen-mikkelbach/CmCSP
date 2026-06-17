@@ -132,7 +132,24 @@
                     var displayName = _subNames.TryGetValue(capturedId, out var name) ? name : capturedId;
                     var isProvisionBusy = _provisionBusy.Contains(capturedId);
                     <div class="d-flex align-center justify-space-between gap-2 flex-wrap">
-                        <MudText Typo="Typo.body2">@displayName</MudText>
+                        <div class="d-flex align-center gap-2 flex-wrap">
+                            <MudText Typo="Typo.body2">@displayName</MudText>
+                            @if (_exportPaths.TryGetValue(capturedId, out var path))
+                            {
+                                <MudChip T="string"
+                                         Size="Size.Small"
+                                         Variant="Variant.Text"
+                                         Color="@ExportPathColor(path.State)"
+                                         Icon="@ExportPathIcon(path.State)"
+                                         title="@path.Detail">
+                                    @path.ShortLabel
+                                </MudChip>
+                            }
+                            else if (_exportPathsBusy)
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">checking…</MudText>
+                            }
+                        </div>
                         <MudButton Variant="Variant.Outlined"
                                    Color="Color.Secondary"
                                    Size="Size.Small"
@@ -233,6 +250,7 @@
     {
         await base.OnInitializedAsync();
         await RefreshSubNamesAsync();
+        await DetectExportPathsAsync();
     }
 
     protected override async Task LoadAsync()
@@ -357,6 +375,63 @@
     private bool   _subBusy   = false;
     private readonly HashSet<string> _provisionBusy = new(StringComparer.OrdinalIgnoreCase);
 
+    // Detected export-provisioning path per subscription, shown as a short chip in the UI.
+    private readonly Dictionary<string, ExportPathStatus> _exportPaths = new(StringComparer.OrdinalIgnoreCase);
+    private bool _exportPathsBusy;
+
+    private async Task DetectExportPathsAsync()
+    {
+        if (!Options.ExportBlob.Enabled || !SubStore.AllIds.Any()) return;
+
+        _exportPathsBusy = true;
+        try
+        {
+            var ids = SubStore.AllIds.ToList();
+            var results = await Task.WhenAll(ids.Select(async id => (Id: id, Status: await SafeDetectAsync(id))));
+            foreach (var (id, status) in results)
+            {
+                if (status is not null) _exportPaths[id] = status;
+            }
+        }
+        finally
+        {
+            _exportPathsBusy = false;
+        }
+    }
+
+    private async Task<ExportPathStatus?> SafeDetectAsync(string id)
+    {
+        try
+        {
+            return await ExportProvisioner.DetectAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Home: could not detect export path for subscription {SubId}", id);
+            return null;
+        }
+    }
+
+    private static Color ExportPathColor(ExportPathState state) => state switch
+    {
+        ExportPathState.Provisioned   => Color.Success,
+        ExportPathState.Reused        => Color.Info,
+        ExportPathState.NoIdentity    => Color.Warning,
+        ExportPathState.NotProvisioned => Color.Error,
+        ExportPathState.Unknown       => Color.Default,
+        _                             => Color.Default
+    };
+
+    private static string ExportPathIcon(ExportPathState state) => state switch
+    {
+        ExportPathState.Provisioned    => Icons.Material.Filled.CheckCircle,
+        ExportPathState.Reused         => Icons.Material.Filled.Link,
+        ExportPathState.NoIdentity     => Icons.Material.Filled.Warning,
+        ExportPathState.NotProvisioned => Icons.Material.Filled.ErrorOutline,
+        ExportPathState.Unknown        => Icons.Material.Filled.HelpOutline,
+        _                              => Icons.Material.Filled.RemoveCircleOutline
+    };
+
     private sealed record SubResult(Severity Severity, string Message);
     private SubResult? _subResult;
 
@@ -381,6 +456,7 @@
                 _subResult = new(Severity.Success,
                     name != id ? $"Subscription '{name}' added." : "Subscription added.");
                 _newSubId = string.Empty;
+                await DetectExportPathsAsync();
             }
         }
         finally { _subBusy = false; }
@@ -445,6 +521,7 @@
             {
                 await RefreshSubNamesAsync();
                 await InvalidateAndRefreshAllAsync(correlationId);
+                await DetectExportPathsAsync();
             }
         }
         finally { _subBusy = false; }
@@ -454,6 +531,7 @@
     {
         var correlationId = Guid.NewGuid().ToString("N");
         await SubStore.RemoveAsync(id, correlationId);
+        _exportPaths.Remove(id);
         await RefreshSubNamesAsync();
         await InvalidateAndRefreshAllAsync(correlationId);
     }
@@ -483,6 +561,8 @@
         finally
         {
             _provisionBusy.Remove(id);
+            var refreshed = await SafeDetectAsync(id);
+            if (refreshed is not null) _exportPaths[id] = refreshed;
         }
     }
 

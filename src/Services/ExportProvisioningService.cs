@@ -13,6 +13,30 @@ public sealed record ExportProvisioningResult(
     string? ExportName = null,
     string? PrincipalId = null);
 
+/// <summary>The detected export-provisioning route for a single subscription (read-only).</summary>
+public enum ExportPathState
+{
+    /// <summary>ExportBlob mode is off or no destination storage is configured.</summary>
+    NotApplicable,
+    /// <summary>Exports could not be enumerated (e.g. insufficient permissions / not SP mode).</summary>
+    Unknown,
+    /// <summary>No export targets the configured storage account yet.</summary>
+    NotProvisioned,
+    /// <summary>The canonical <c>cmcsp-daily-export</c> exists with a managed identity.</summary>
+    Provisioned,
+    /// <summary>A differently-named export targeting the same storage is being reused.</summary>
+    Reused,
+    /// <summary>An export exists but has no managed identity (storage role grant skipped).</summary>
+    NoIdentity
+}
+
+/// <summary>Short, display-friendly summary of a subscription's detected export path.</summary>
+public sealed record ExportPathStatus(
+    ExportPathState State,
+    string ShortLabel,
+    string Detail,
+    string? ExportName = null);
+
 /// <summary>
 /// Automatically provisions a daily Cost Management export and its storage role assignment
 /// when a new subscription is added through the UI.
@@ -142,6 +166,54 @@ public sealed class ExportProvisioningService
             return new ExportProvisioningResult(false, false, $"{resolutionMessage} Storage role assignment for the export managed identity failed.", resolvedExportName, exportMiPrincipalId);
 
         return new ExportProvisioningResult(true, false, $"{resolutionMessage} Storage access verified.", resolvedExportName, exportMiPrincipalId);
+    }
+
+    /// <summary>
+    /// Read-only probe that reports which export-provisioning path a subscription is currently on,
+    /// without creating or modifying any Azure resources. Mirrors the resolution logic used by
+    /// <see cref="ProvisionAsync"/> so the UI can show the detected state next to each subscription.
+    /// </summary>
+    public async Task<ExportPathStatus> DetectAsync(
+        string subscriptionId,
+        string? correlationId = null,
+        CancellationToken ct = default)
+    {
+        correlationId ??= Guid.NewGuid().ToString("N");
+
+        if (!_options.ExportBlob.Enabled)
+            return new ExportPathStatus(ExportPathState.NotApplicable, "n/a", "ExportBlob mode is not enabled.");
+
+        if (string.IsNullOrWhiteSpace(_options.ExportBlob.StorageAccountResourceId))
+            return new ExportPathStatus(ExportPathState.NotApplicable, "n/a", "No export storage account is configured.");
+
+        if (!_spTokenService.UsingServicePrincipal)
+            return new ExportPathStatus(ExportPathState.Unknown, "unknown",
+                "Service principal mode is not active, so exports cannot be enumerated.");
+
+        var (export, listFailed) = await FindReusableExportAsync(subscriptionId, correlationId, ct);
+
+        if (listFailed)
+            return new ExportPathStatus(ExportPathState.Unknown, "unknown",
+                "Could not enumerate exports — the Entra App SP likely lacks 'Cost Management Reader' on this subscription.");
+
+        if (export is null)
+            return new ExportPathStatus(ExportPathState.NotProvisioned, "not provisioned",
+                $"No export targets the configured storage account. Use Re-provision to create '{ExportName}'.");
+
+        var hasIdentity = !string.IsNullOrWhiteSpace(export.PrincipalId);
+        var isCanonical = string.Equals(export.Name, ExportName, StringComparison.OrdinalIgnoreCase);
+
+        if (!hasIdentity)
+            return new ExportPathStatus(ExportPathState.NoIdentity,
+                isCanonical ? "no identity" : $"reused · no identity",
+                $"Export '{export.Name}' exists but has no managed identity, so the storage role grant is skipped.",
+                export.Name);
+
+        return isCanonical
+            ? new ExportPathStatus(ExportPathState.Provisioned, "provisioned",
+                $"Export '{export.Name}' is provisioned with a managed identity.", export.Name)
+            : new ExportPathStatus(ExportPathState.Reused, $"reused: {export.Name}",
+                $"Reusing existing export '{export.Name}' (managed identity present).", export.Name);
     }
 
     /// <returns>The reusable export (if found) and a flag indicating whether the list call itself failed (true = skip creation).</returns>
