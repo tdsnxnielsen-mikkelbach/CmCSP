@@ -40,6 +40,13 @@ param keyVaultName string = ''
 @description('Storage account name. Leave empty to derive a globally-unique name.')
 param storageAccountName string = ''
 
+@description('''When true, grants the Container App managed identity 'Role Based Access Control Administrator'
+on THIS subscription, constrained (via an ABAC condition) to assigning only the Cost Management Contributor
+role. This makes UI-added subscriptions self-onboard without a manual role grant — but only covers the
+deployment subscription. For multi-subscription / future-subscription coverage, assign the role once at a
+management group instead. Leave false to keep onboarding a manual step (scripts/onboard-subscription.ps1).''')
+param grantMiRbacAdminOnSubscription bool = false
+
 @description('Tags applied to every resource.')
 param tags object = {
   project: 'cmcsp'
@@ -93,7 +100,33 @@ module storage '../bicep/main.bicep' = {
     location: location
     appManagedIdentityPrincipalId: app.outputs.containerAppPrincipalId
     cleanupJobManagedIdentityPrincipalId: app.outputs.cleanupJobPrincipalId
+    collectJobManagedIdentityPrincipalId: app.outputs.collectJobPrincipalId
     tags: allTags
+  }
+}
+
+// ── Optional: let the Container App MI self-onboard subscriptions ───────────────
+// Grants 'Role Based Access Control Administrator' on this subscription, constrained
+// by an ABAC condition so the MI can ONLY assign the Cost Management Contributor role
+// (and nothing else). This is what enables ExportProvisioningService to grant the
+// Entra App SP its export-creation role at runtime when a subscription is added via
+// the UI. Scoped to the deployment subscription only — see param description.
+
+var rbacAdminRoleId = 'f58310d9-a9f6-439a-9e8d-f62e7b41a168' // Role Based Access Control Administrator
+var costMgmtContributorRoleId = '1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40'
+
+// Condition: permit roleAssignments write/delete ONLY when the role being assigned is
+// Cost Management Contributor. All other assignment attempts by this MI are denied.
+var rbacAdminCondition = '((!(ActionMatches{\'Microsoft.Authorization/roleAssignments/write\'})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${costMgmtContributorRoleId}})) AND ((!(ActionMatches{\'Microsoft.Authorization/roleAssignments/delete\'})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${costMgmtContributorRoleId}}))'
+
+resource miRbacAdmin 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantMiRbacAdminOnSubscription) {
+  name: guid(subscription().id, appName, rbacAdminRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', rbacAdminRoleId)
+    principalId: app.outputs.containerAppPrincipalId
+    principalType: 'ServicePrincipal'
+    conditionVersion: '2.0'
+    condition: rbacAdminCondition
   }
 }
 
@@ -116,3 +149,4 @@ output EXPORT_CONTAINER_NAME string = storage.outputs.exportContainerName
 output CONTAINER_APP_NAME string = appName
 output CONTAINER_APP_FQDN string = app.outputs.containerAppFqdn
 output CLEANUP_JOB_NAME string = '${appName}-cleanup'
+output COLLECT_JOB_NAME string = app.outputs.collectJobName

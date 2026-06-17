@@ -14,11 +14,23 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Exclude the sibling CacheCleanupJob project from this project's implicit globbing -->
+    <!-- Exclude sibling projects from this project's implicit globbing -->
     <Compile Remove="CacheCleanupJob\**" />
     <Content Remove="CacheCleanupJob\**" />
     <EmbeddedResource Remove="CacheCleanupJob\**" />
     <None Remove="CacheCleanupJob\**" />
+    <Compile Remove="CmCSP.Core\**" />
+    <Content Remove="CmCSP.Core\**" />
+    <EmbeddedResource Remove="CmCSP.Core\**" />
+    <None Remove="CmCSP.Core\**" />
+    <Compile Remove="CostCollectorJob\**" />
+    <Content Remove="CostCollectorJob\**" />
+    <EmbeddedResource Remove="CostCollectorJob\**" />
+    <None Remove="CostCollectorJob\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="CmCSP.Core\CmCSP.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

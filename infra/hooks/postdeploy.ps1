@@ -1,20 +1,24 @@
 <#
 .SYNOPSIS
-    azd postdeploy hook for CmCSP – build & push the cache cleanup Job image.
+    azd postdeploy hook for CmCSP – build & push the Container Apps Job images.
 
 .DESCRIPTION
     `azd deploy` builds and rolls the main web app (service "web"), but Azure
-    Container Apps Jobs are not an azd service host. This hook builds the
-    CacheCleanupJob image with the .NET SDK's container support (no Dockerfile),
-    pushes it to ACR, and updates the Container Apps Job to the new digest.
+    Container Apps Jobs are not an azd service host. This hook builds each job
+    image with the .NET SDK's container support (no Dockerfile), pushes it to
+    ACR, and updates the corresponding Container Apps Job to the new digest.
 
-    Mirrors the cleanup-job portion of scripts/deploy-image.ps1, reusing the
-    ACR token + Docker-config credential injection pattern.
+    Jobs handled:
+      • cache cleanup  (src/CacheCleanupJob  → cmcsp-cleanup → CLEANUP_JOB_NAME)
+      • cost collector (src/CostCollectorJob  → cmcsp-collect → COLLECT_JOB_NAME)
+
+    Mirrors the job portion of scripts/deploy-image.ps1, reusing the ACR token +
+    Docker-config credential injection pattern.
 
 .NOTES
     Inputs come from azd outputs:
       AZURE_CONTAINER_REGISTRY_NAME, AZURE_CONTAINER_REGISTRY_ENDPOINT,
-      AZURE_RESOURCE_GROUP, CLEANUP_JOB_NAME
+      AZURE_RESOURCE_GROUP, CLEANUP_JOB_NAME, COLLECT_JOB_NAME
 #>
 
 Set-StrictMode -Version Latest
@@ -37,14 +41,12 @@ $repoRoot       = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $acrName        = Require-Env 'AZURE_CONTAINER_REGISTRY_NAME'
 $acrLoginServer = Get-Env 'AZURE_CONTAINER_REGISTRY_ENDPOINT' "$acrName.azurecr.io"
 $appRg          = Require-Env 'AZURE_RESOURCE_GROUP'
-$cleanupJobName = Require-Env 'CLEANUP_JOB_NAME'
-$repository     = 'cmcsp-cleanup'
 
-$projectPath = Join-Path $repoRoot 'src' 'CacheCleanupJob' 'CacheCleanupJob.csproj'
-if (-not (Test-Path $projectPath)) {
-    Write-Host "  CacheCleanupJob project not found at $projectPath – skipping." -ForegroundColor Yellow
-    return
-}
+# Jobs to build/push/update. Names come from bicep outputs; project/repository are static.
+$jobs = @(
+    [PSCustomObject]@{ JobName = (Require-Env 'CLEANUP_JOB_NAME'); Project = 'CacheCleanupJob';  Repository = 'cmcsp-cleanup' }
+    [PSCustomObject]@{ JobName = (Require-Env 'COLLECT_JOB_NAME'); Project = 'CostCollectorJob';  Repository = 'cmcsp-collect' }
+)
 
 # Tag: <yyyyMMdd>-<git-short-sha> (random suffix if no git history).
 $datePart = (Get-Date -Format 'yyyyMMdd')
@@ -52,12 +54,11 @@ $gitSha   = git -C $repoRoot rev-parse --short HEAD 2>$null
 if ($LASTEXITCODE -ne 0 -or -not $gitSha) {
     $gitSha = [System.Guid]::NewGuid().ToString('N').Substring(0, 7)
 }
-$tag       = "$datePart-$($gitSha.Trim())"
-$fullImage = "$acrLoginServer/$repository`:$tag"
+$tag = "$datePart-$($gitSha.Trim())"
 
 Write-Host ""
 Write-Host "───────────────────────────────────────────────" -ForegroundColor Cyan
-Write-Host "  postdeploy – cache cleanup job image ($tag)"    -ForegroundColor Cyan
+Write-Host "  postdeploy – Container Apps Job images ($tag)"  -ForegroundColor Cyan
 Write-Host "───────────────────────────────────────────────" -ForegroundColor Cyan
 
 # ── ACR token (no Docker daemon required) ─────────────────────────────────────
@@ -80,26 +81,36 @@ $dockerConfig.auths | Add-Member -MemberType NoteProperty -Name $acrLoginServer 
 $dockerConfig | ConvertTo-Json -Depth 10 | Set-Content $dockerConfigPath
 
 try {
-    Write-Host "  dotnet publish /t:PublishContainer → $fullImage"
-    dotnet publish $projectPath `
-        --configuration Release --os linux --arch x64 `
-        /t:PublishContainer `
-        "-p:ContainerRegistry=$acrLoginServer" `
-        "-p:ContainerRepository=$repository" `
-        "-p:ContainerImageTags=$tag"
-    if ($LASTEXITCODE -ne 0) { Write-Error "dotnet publish failed (exit $LASTEXITCODE)." }
+    foreach ($job in $jobs) {
+        $projectPath = Join-Path $repoRoot 'src' $job.Project "$($job.Project).csproj"
+        if (-not (Test-Path $projectPath)) {
+            Write-Host "  $($job.Project) project not found at $projectPath – skipping." -ForegroundColor Yellow
+            continue
+        }
+
+        $fullImage = "$acrLoginServer/$($job.Repository)`:$tag"
+        Write-Host ""
+        Write-Host "  dotnet publish /t:PublishContainer → $fullImage"
+        dotnet publish $projectPath `
+            --configuration Release --os linux --arch x64 `
+            /t:PublishContainer `
+            "-p:ContainerRegistry=$acrLoginServer" `
+            "-p:ContainerRepository=$($job.Repository)" `
+            "-p:ContainerImageTags=$tag"
+        if ($LASTEXITCODE -ne 0) { Write-Error "dotnet publish failed for $($job.Project) (exit $LASTEXITCODE)." }
+
+        # ── Resolve digest and update the job ─────────────────────────────────
+        $digest = az acr manifest show-metadata --registry $acrName --name "$($job.Repository)`:$tag" `
+            --query 'digest' -o tsv --only-show-errors
+        $imageRef = if ($digest) { "$acrLoginServer/$($job.Repository)@$digest" } else { $fullImage }
+
+        Write-Host "  Updating job '$($job.JobName)' → $imageRef"
+        az containerapp job update --name $job.JobName --resource-group $appRg `
+            --image $imageRef --only-show-errors | Out-Null
+
+        Write-Host "  $($job.JobName) image updated." -ForegroundColor Green
+    }
 } finally {
     if ($null -ne $originalDockerConfig) { Set-Content -Path $dockerConfigPath -Value $originalDockerConfig }
     else { Remove-Item -Path $dockerConfigPath -ErrorAction SilentlyContinue }
 }
-
-# ── Resolve digest and update the job ─────────────────────────────────────────
-$digest = az acr manifest show-metadata --registry $acrName --name "$repository`:$tag" `
-    --query 'digest' -o tsv --only-show-errors
-$imageRef = if ($digest) { "$acrLoginServer/$repository@$digest" } else { $fullImage }
-
-Write-Host "  Updating job '$cleanupJobName' → $imageRef"
-az containerapp job update --name $cleanupJobName --resource-group $appRg `
-    --image $imageRef --only-show-errors | Out-Null
-
-Write-Host "  Cleanup job image updated." -ForegroundColor Green

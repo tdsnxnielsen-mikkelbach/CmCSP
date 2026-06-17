@@ -681,6 +681,23 @@ When `ExportBlob:Enabled = true` and `ExportBlob:StorageAccountResourceId` is co
 
 The provisioning runs in the background; the subscription is immediately active for Query API while the export is being set up. Errors are logged to the container's application log stream.
 
+> **Cost Management Contributor on each subscription** is required before export creation can succeed (otherwise the log shows `RBACAccessDenied`). This is handled automatically in two places:
+> - **At deploy time** — the `postprovision` hook assigns the role to the Entra App SP for every subscription in `CMCSP_SUBSCRIPTION_IDS` (it runs as the deployer, who holds Owner/UAA).
+> - **At runtime (UI add)** — `ExportProvisioningService` attempts a best-effort self-grant using the Container App managed identity. This only works if the MI holds `Role Based Access Control Administrator` on the subscription (ideally assigned once at a **management group** covering current + future subscriptions, optionally condition-scoped to just the Cost Management Contributor role).
+>
+> For the **single-subscription** case you can make the runtime path fully hands-off by setting `GRANT_MI_RBAC_ADMIN=true` before `azd up`. This grants the Container App MI `Role Based Access Control Administrator` on the deployment subscription, constrained by an ABAC condition so it can **only** assign Cost Management Contributor — nothing else:
+>
+> ```pwsh
+> azd env set GRANT_MI_RBAC_ADMIN true
+> azd up
+> ```
+>
+> When the MI isn't permitted to assign roles, grant it manually in one step, then click **Re-provision Export**:
+>
+> ```pwsh
+> ./scripts/onboard-subscription.ps1 -SubscriptionId <subscription-guid>
+> ```
+
 The **subscription display name** (e.g. "Contoso Azure") is shown in the chip immediately after adding, with the GUID available as a tooltip.
 
 ### Configuration keys

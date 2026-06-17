@@ -25,6 +25,9 @@ param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-hellowo
 @description('Container image for the cache cleanup job. Defaults to placeholder on first deploy; updated by the azd postdeploy hook.')
 param cleanupJobImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
+@description('Container image for the cost collector job. Defaults to placeholder on first deploy; updated by the azd postdeploy hook.')
+param collectJobImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+
 @description('CPU allocation for the Container App (vCPU).')
 param containerCpu string = '0.5'
 
@@ -64,6 +67,34 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-01-01-preview' = {
   sku: { name: 'Basic' }
   properties: {
     adminUserEnabled: false // use managed identity pull — no username/password
+  }
+}
+
+// ── User-assigned identity for ACR pulls ─────────────────────────────────────
+// A dedicated pull identity (rather than each resource's SystemAssigned identity)
+// is required to break a chicken-and-egg on first deploy: the Container App / Job
+// declare this ACR in `registries`, and Container Apps validates registry access
+// while provisioning the very first revision. A SystemAssigned identity does not
+// exist until the resource is created, so its AcrPull role can only be assigned
+// *after* provisioning has already started — the validation then hangs until it
+// times out. This identity is created and granted AcrPull up-front, and the app
+// and job take an explicit dependency on that grant (see `dependsOn` below).
+
+var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+
+resource acrPullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-${appName}-acrpull'
+  location: location
+  tags: tags
+}
+
+resource acrPullUamiRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, acrPullIdentity.id, acrPullRoleId)
+  scope: acr
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
+    principalId: acrPullIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
   }
 }
 
@@ -109,8 +140,18 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   location: location
   tags: union(tags, empty(azdServiceName) ? {} : { 'azd-service-name': azdServiceName })
   identity: {
-    type: 'SystemAssigned'
+    // SystemAssigned: used at runtime for Key Vault + storage + ARM calls.
+    // UserAssigned (acrPullIdentity): used only to pull the image from ACR.
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${acrPullIdentity.id}': {}
+    }
   }
+  // Ensure the pull identity already holds AcrPull before the first revision is
+  // provisioned, otherwise registry validation hangs until it times out.
+  dependsOn: [
+    acrPullUamiRole
+  ]
   properties: {
     managedEnvironmentId: caEnv.id
     configuration: {
@@ -120,15 +161,14 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         transport: 'http'
         allowInsecure: false
       }
-      // Always register this ACR for system-identity pulls. `azd provision` runs
-      // with the public MCR placeholder image (so no ACR validation happens on the
-      // initial deploy), but the registry entry must already be present so that the
-      // later `azd deploy` image swap to <acr>/cmcsp/web-csp-cost can authenticate
-      // via the SystemAssigned identity (granted AcrPull below).
+      // Register this ACR for image pulls using the dedicated user-assigned
+      // identity (granted AcrPull above). `azd provision` runs with the public
+      // MCR placeholder image; the registry entry must already be present so the
+      // later `azd deploy` image swap to <acr>/cmcsp/web-csp-cost can authenticate.
       registries: [
         {
           server: acr.properties.loginServer
-          identity: 'system'   // pull image using the SystemAssigned identity
+          identity: acrPullIdentity.id
         }
       ]
       secrets: [
@@ -220,6 +260,21 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'AzureCostManagement__AzureCache__CacheContainerName'
               value: 'cmcspcache'
             }
+            // ── Cost collector job coordinates (for the "Collect now" button) ─
+            // The app's managed identity starts this job via ARM jobs/start
+            // (granted by collectJobOperatorAssignment) and polls its status.
+            {
+              name: 'CollectorJob__SubscriptionId'
+              value: subscription().subscriptionId
+            }
+            {
+              name: 'CollectorJob__ResourceGroup'
+              value: resourceGroup().name
+            }
+            {
+              name: 'CollectorJob__JobName'
+              value: '${appName}-collect'
+            }
           ]
         }
       ]
@@ -228,20 +283,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         maxReplicas: maxReplicas
       }
     }
-  }
-}
-
-// ── Role: Container App MI → ACR Pull ────────────────────────────────────────
-
-var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
-
-resource acrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, containerApp.id, acrPullRoleId)
-  scope: acr
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
-    principalId: containerApp.identity.principalId
-    principalType: 'ServicePrincipal'
   }
 }
 
@@ -284,8 +325,16 @@ resource cleanupJob 'Microsoft.App/jobs@2024-03-01' = {
   location: location
   tags: tags
   identity: {
-    type: 'SystemAssigned'
+    // SystemAssigned: used at runtime for storage access.
+    // UserAssigned (acrPullIdentity): used only to pull the image from ACR.
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${acrPullIdentity.id}': {}
+    }
   }
+  dependsOn: [
+    acrPullUamiRole
+  ]
   properties: {
     environmentId: caEnv.id
     configuration: {
@@ -297,12 +346,12 @@ resource cleanupJob 'Microsoft.App/jobs@2024-03-01' = {
         parallelism: 1
         replicaCompletionCount: 1
       }
-      // Always register this ACR for system-identity pulls (see Container App note
-      // above). The job image is swapped to <acr>/cmcsp-cleanup by the postdeploy hook.
+      // Register this ACR using the dedicated pull identity (see Container App
+      // note above). The job image is swapped to <acr>/cmcsp-cleanup by postdeploy.
       registries: [
         {
           server: acr.properties.loginServer
-          identity: 'system'
+          identity: acrPullIdentity.id
         }
       ]
     }
@@ -343,14 +392,190 @@ resource cleanupJob 'Microsoft.App/jobs@2024-03-01' = {
   }
 }
 
-// ── Role: Cleanup Job MI → ACR Pull ─────────────────────────────────────────
+// ── Cost Collector Job ───────────────────────────────────────────────────────
+// Refreshes the shared cost-data cache (the four aggregate datasets every page reads).
+// Two ways to run:
+//   • Schedule – nightly at 02:00 UTC (cronExpression below).
+//   • Manual   – started on demand from the dashboard "Collect now" button, which calls
+//                the ARM `jobs/start` action using the Container App's managed identity
+//                (granted via collectJobOperatorAssignment below).
+// A Schedule-triggered job can still be started manually via the start API, so a single
+// job resource serves both paths. Runtime storage/Key Vault access uses its own
+// SystemAssigned identity (storage roles granted in main.bicep, KV role below).
 
-resource cleanupJobAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, cleanupJob.id, acrPullRoleId)
-  scope: acr
+resource collectJob 'Microsoft.App/jobs@2024-03-01' = {
+  name: '${appName}-collect'
+  location: location
+  tags: tags
+  identity: {
+    // SystemAssigned: runtime access to storage (cache + audit), Key Vault and Cost Management.
+    // UserAssigned (acrPullIdentity): used only to pull the image from ACR.
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${acrPullIdentity.id}': {}
+    }
+  }
+  dependsOn: [
+    acrPullUamiRole
+  ]
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
-    principalId: cleanupJob.identity.principalId
+    environmentId: caEnv.id
+    configuration: {
+      triggerType: 'Schedule'
+      replicaTimeout: 1800     // 30 min – cost collection across many subscriptions can be slow
+      replicaRetryLimit: 1
+      scheduleTriggerConfig: {
+        cronExpression: '0 2 * * *'  // nightly at 02:00 UTC
+        // parallelism: 1 — a single replica refreshes the AGGREGATE datasets (cache keys
+        // cm_main/cm_rg/cm_tag/cm_main_amort span ALL subscriptions). Per-subscription
+        // partitioning (parallelism > 1) would require per-subscription cache keys first.
+        parallelism: 1
+        replicaCompletionCount: 1
+      }
+      // Register this ACR using the dedicated pull identity (see Container App note above).
+      // The job image is swapped to <acr>/cmcsp-collect by the postdeploy hook.
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: acrPullIdentity.id
+        }
+      ]
+      secrets: [
+        // ClientSecret fetched from Key Vault via the job's SystemAssigned identity
+        // (collectJobKvSecretsRole below). Used for the Cost Management Query API fallback.
+        {
+          name: 'client-secret'
+          keyVaultUrl: '${kv.properties.vaultUri}secrets/CmCSP--ClientSecret'
+          identity: 'system'
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: '${appName}-collect'
+          image: collectJobImage
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: [
+            {
+              name: 'KeyVaultUri'
+              value: kv.properties.vaultUri
+            }
+            {
+              name: 'ASPNETCORE_ENVIRONMENT'
+              value: 'Production'
+            }
+            {
+              name: 'COLLECT_TRIGGER'
+              value: 'schedule' // overridden to 'manual' on UI-started executions
+            }
+            // ── Cost Management API (Query mode fallback) ───────────────────
+            {
+              name: 'AzureCostManagement__TenantId'
+              value: '' // set via az containerapp job update (postprovision hook)
+            }
+            {
+              name: 'AzureCostManagement__ClientId'
+              value: '' // set via az containerapp job update (postprovision hook)
+            }
+            {
+              name: 'AzureCostManagement__ClientSecret'
+              secretRef: 'client-secret'
+            }
+            // ── Blob Export mode ────────────────────────────────────────────
+            {
+              name: 'AzureCostManagement__ExportBlob__Enabled'
+              value: 'true'
+            }
+            {
+              name: 'AzureCostManagement__ExportBlob__StorageAccountUri'
+              value: '' // set via postprovision hook
+            }
+            {
+              name: 'AzureCostManagement__ExportBlob__ContainerName'
+              value: 'cost-exports'
+            }
+            {
+              name: 'AzureCostManagement__ExportBlob__BlobPrefix'
+              value: 'exports'
+            }
+            {
+              name: 'AzureCostManagement__ExportBlob__StorageAccountResourceId'
+              value: '' // set via postprovision hook
+            }
+            // ── Azure distributed cache (also hosts the audit table) ────────
+            {
+              name: 'AzureCostManagement__AzureCache__Enabled'
+              value: 'true'
+            }
+            {
+              name: 'AzureCostManagement__AzureCache__StorageAccountUri'
+              value: '' // set via postprovision hook
+            }
+            {
+              name: 'AzureCostManagement__AzureCache__TableName'
+              value: 'cmcspcache'
+            }
+            {
+              name: 'AzureCostManagement__AzureCache__CacheContainerName'
+              value: 'cmcspcache'
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+
+// ── Role: Collect Job MI → Key Vault Secrets User ───────────────────────────
+
+resource collectJobKvSecretsRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(kv.id, collectJob.id, kvSecretsUserRoleId)
+  scope: kv
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
+    principalId: collectJob.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ── Custom role: start the collect job + read its execution status ──────────
+// No built-in role grants only `Microsoft.App/jobs/start`, so a tightly-scoped
+// custom role is defined and assigned to the Container App MI on the collect job.
+// This lets the dashboard "Collect now" button start the job and poll execution
+// status without granting broad Container Apps management rights.
+
+resource collectJobOperatorRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: guid(resourceGroup().id, appName, 'collect-job-operator')
+  properties: {
+    roleName: 'CmCSP Collect Job Operator (${appName})'
+    description: 'Start the cost collector job and read its execution status.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: [
+          'Microsoft.App/jobs/read'
+          'Microsoft.App/jobs/start/action'
+          'Microsoft.App/jobs/executions/read'
+        ]
+        notActions: []
+      }
+    ]
+    assignableScopes: [
+      resourceGroup().id
+    ]
+  }
+}
+
+resource collectJobOperatorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(collectJob.id, containerApp.id, collectJobOperatorRole.id)
+  scope: collectJob
+  properties: {
+    roleDefinitionId: collectJobOperatorRole.id
+    principalId: containerApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
 }
@@ -358,8 +583,11 @@ resource cleanupJobAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-
 // ── Outputs ──────────────────────────────────────────────────────────────────
 
 output containerAppFqdn string = containerApp.properties.configuration.ingress.fqdn
+output containerAppName string = containerApp.name
 output containerAppPrincipalId string = containerApp.identity.principalId
 output cleanupJobPrincipalId string = cleanupJob.identity.principalId
+output collectJobName string = collectJob.name
+output collectJobPrincipalId string = collectJob.identity.principalId
 output acrLoginServer string = acr.properties.loginServer
 output keyVaultUri string = kv.properties.vaultUri
 output logAnalyticsWorkspaceId string = logAnalytics.id

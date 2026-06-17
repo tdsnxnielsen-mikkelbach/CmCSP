@@ -7,8 +7,10 @@
     legacy scripts/deploy.ps1:
 
       5. Seed Key Vault secrets (identity + optional Cost Details settings).
-      6. Wire Container App + cache cleanup Job environment variables, including
-         the Key Vault reference for the client secret.
+      6. Wire Container App + cache cleanup Job + cost collector Job environment
+         variables, including the Key Vault reference for the client secret.
+      6b. Assign Cost Management Contributor to the Entra App SP on every
+          configured subscription (required for export auto-provisioning).
       7. Deploy the Cost Management export at the scope selected by EXPORT_SCOPE:
             subscription → bicep/export-sub.bicep    (managed-identity auth)
             billing      → bicep/export-billing.bicep (SAS-token auth, tenant scope)
@@ -109,6 +111,7 @@ $location         = Get-Env    'AZURE_LOCATION' 'swedencentral'
 $appRg            = Require-Env 'AZURE_RESOURCE_GROUP'
 $containerAppName = Require-Env 'CONTAINER_APP_NAME'
 $cleanupJobName   = Get-Env    'CLEANUP_JOB_NAME' "$containerAppName-cleanup"
+$collectJobName   = Get-Env    'COLLECT_JOB_NAME' "$containerAppName-collect"
 $keyVaultName     = Require-Env 'AZURE_KEY_VAULT_NAME'
 $keyVaultUri      = Require-Env 'AZURE_KEY_VAULT_URI'
 $storageName      = Require-Env 'STORAGE_ACCOUNT_NAME'
@@ -203,6 +206,45 @@ Write-Host "  Wiring cleanup job storage endpoints ($cleanupJobName)..."
 az containerapp job update --name $cleanupJobName --resource-group $appRg `
     --set-env-vars "CACHE_TABLE_ENDPOINT=$tableStorageUri" "CACHE_BLOB_ENDPOINT=$storageUri" `
     --only-show-errors 2>$null | Out-Null
+
+# Collect job runs the same data pipeline as the web app, so it takes the same
+# cost + cache env vars (its 'client-secret' secret is defined in bicep/app.bicep).
+Write-Host "  Wiring collect job environment variables ($collectJobName)..."
+az containerapp job update --name $collectJobName --resource-group $appRg `
+    --set-env-vars @envPairs --only-show-errors 2>$null | Out-Null
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 6b – Cost Management Contributor for the Entra App SP
+# ──────────────────────────────────────────────────────────────────────────────
+# The app creates Cost Management exports as the Entra App SP, which requires
+# 'Cost Management Contributor' on each target subscription. Assign it here (as the
+# deployer) so multi-subscription deployments work out of the box. Runtime UI-added
+# subscriptions are handled best-effort by ExportProvisioningService.
+
+Write-Step "Phase 6b – Cost Management role for service principal"
+
+$costMgmtContributorRoleId = '1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40'
+$spObjectId = az ad sp show --id $clientId --query id -o tsv --only-show-errors 2>$null
+
+if (-not $spObjectId) {
+    Write-Host "  Could not resolve SP object id for client $clientId — skipping role assignment." -ForegroundColor Yellow
+}
+else {
+    foreach ($sub in $subscriptionIds) {
+        $scope    = "/subscriptions/$sub"
+        $assigned = az role assignment list --assignee $clientId --role $costMgmtContributorRoleId `
+            --scope $scope --query "[?scope=='$scope'] | length(@)" -o tsv --only-show-errors 2>$null
+        if (($assigned -as [int]) -ge 1) {
+            Write-Host "  $sub — already assigned." -ForegroundColor Green
+        }
+        else {
+            Write-Host "  $sub — assigning Cost Management Contributor..."
+            az role assignment create --assignee-object-id $spObjectId --assignee-principal-type ServicePrincipal `
+                --role $costMgmtContributorRoleId --scope $scope --only-show-errors | Out-Null
+            Write-Host "    Assigned." -ForegroundColor Green
+        }
+    }
+}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 7 – Cost Management exports (scope switch)

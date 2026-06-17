@@ -55,6 +55,7 @@ public sealed class ExportProvisioningService
 {
     private const string ExportName                   = "cmcsp-daily-export";
     private const string StorageBlobContributorRoleId = "ba92f5b4-2d11-453d-a403-e96b0029c9fe";
+    private const string CostMgmtContributorRoleId    = "1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40";
     private const string RoleAssignmentsApiVersion    = "2022-04-01";
 
     private readonly AzureTokenService                  _spTokenService;
@@ -118,6 +119,12 @@ public sealed class ExportProvisioningService
                 correlationId, subscriptionId);
             return new ExportProvisioningResult(false, false, "AzureTokenService is not using service principal mode.");
         }
+
+        // Best-effort: ensure the Entra App SP holds Cost Management Contributor on this
+        // subscription so newly-added subscriptions can be onboarded from the UI without a
+        // manual role grant. No-op when the SP already has it; logs guidance (and continues)
+        // when the Container App MI lacks rights to assign roles on the subscription.
+        await EnsureCostManagementContributorAsync(subscriptionId, correlationId, ct);
 
         var (existingExport, listFailed) = await FindReusableExportAsync(subscriptionId, correlationId, ct);
         string? exportMiPrincipalId;
@@ -377,8 +384,88 @@ public sealed class ExportProvisioningService
         return principalId;
     }
 
-    // ── Step 2: grant Storage Blob Data Contributor to the export MI ──────────
+    // ── Step 0 (best-effort): ensure the Entra App SP can manage exports here ──
+    // Assigns Cost Management Contributor to the SP on the subscription using the
+    // Container App MI. Enables UI onboarding of new subscriptions without a manual
+    // grant — but only works when the MI itself holds role-assignment write (e.g.
+    // 'Role Based Access Control Administrator' on the subscription / management group).
+    // Always best-effort: never throws, never blocks export provisioning.
+    private async Task EnsureCostManagementContributorAsync(
+        string subscriptionId,
+        string correlationId,
+        CancellationToken ct)
+    {
+        var spObjectId = await _spTokenService.GetServicePrincipalObjectIdAsync(ct);
+        if (string.IsNullOrWhiteSpace(spObjectId))
+        {
+            _logger.LogDebug(
+                "ExportProvisioning[{CorrelationId}]: could not resolve SP object id — skipping Cost Management role pre-check on {SubId}.",
+                correlationId, subscriptionId);
+            return;
+        }
 
+        try
+        {
+            var tokenCtx = new TokenRequestContext(["https://management.azure.com/.default"]);
+            var miToken  = (await _miCredential.GetTokenAsync(tokenCtx, ct)).Token;
+
+            var roleDefId      = $"/subscriptions/{subscriptionId}/providers/Microsoft.Authorization/roleDefinitions/{CostMgmtContributorRoleId}";
+            var assignmentGuid = Guid.NewGuid().ToString();
+            var url            = $"https://management.azure.com/subscriptions/{subscriptionId}" +
+                                 $"/providers/Microsoft.Authorization/roleAssignments/{assignmentGuid}" +
+                                 $"?api-version={RoleAssignmentsApiVersion}";
+
+            var body = new
+            {
+                properties = new
+                {
+                    roleDefinitionId = roleDefId,
+                    principalId      = spObjectId,
+                    principalType    = "ServicePrincipal"
+                }
+            };
+
+            var client = _httpFactory.CreateClient("AzureMgmt");
+            using var req = new HttpRequestMessage(HttpMethod.Put, url);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", miToken);
+            req.Content = JsonContent.Create(body);
+
+            using var resp = await client.SendAsync(req, ct);
+
+            // 409 Conflict = already assigned — idempotent, the SP can already manage exports.
+            if (resp.StatusCode == System.Net.HttpStatusCode.Conflict)
+            {
+                _logger.LogDebug(
+                    "ExportProvisioning[{CorrelationId}]: SP already holds Cost Management Contributor on {SubId}.",
+                    correlationId, subscriptionId);
+                return;
+            }
+
+            if (resp.IsSuccessStatusCode)
+            {
+                _logger.LogInformation(
+                    "ExportProvisioning[{CorrelationId}]: granted Cost Management Contributor to the Entra App SP on {SubId} " +
+                    "(role propagation may take a moment).",
+                    correlationId, subscriptionId);
+                return;
+            }
+
+            var error = await resp.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning(
+                "ExportProvisioning[{CorrelationId}]: could not auto-grant Cost Management Contributor to the SP on {SubId}: HTTP {Status} — {Body}. " +
+                "Grant it manually (scripts/onboard-subscription.ps1), or give the Container App managed identity " +
+                "'Role Based Access Control Administrator' on the subscription / management group to enable automatic onboarding.",
+                correlationId, subscriptionId, (int)resp.StatusCode, error);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "ExportProvisioning[{CorrelationId}]: Cost Management role pre-check failed on {SubId} — continuing with export provisioning.",
+                correlationId, subscriptionId);
+        }
+    }
+
+    // ── Step 2: grant Storage Blob Data Contributor to the export MI ──────────
     private async Task<bool> GrantStorageRoleAsync(
         string exportMiPrincipalId,
         string correlationId,

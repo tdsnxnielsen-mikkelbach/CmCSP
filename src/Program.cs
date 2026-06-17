@@ -118,9 +118,9 @@ if (costOptions.ExportBlob.Enabled)
     builder.Services.AddSingleton<CostManagementService>();
     builder.Services.AddSingleton<ICostManagementService, BlobCostManagementService>();
     builder.Services.AddHostedService<CacheWarmupService>();
-    // Daily refresh: call the Query API once per day so dashboards always show
-    // up-to-date figures, independent of when the blob export last landed.
-    builder.Services.AddHostedService<DailyApiRefreshService>();
+    // Daily refresh now runs externally as the CostCollectorJob Container Apps Job
+    // (scheduled nightly + on-demand via the dashboard "Collect now" button), so the
+    // in-process DailyApiRefreshService hosted service has been retired.
     builder.Services.AddHostedService<SubscriptionExportReconcileService>();
 }
 else
@@ -130,6 +130,14 @@ else
     // startup so the first user doesn't wait for cold API calls.
     builder.Services.AddHostedService<CacheWarmupService>();
 }
+
+// CollectionAuditService reads the cost-collector job's audit trail (last-run status,
+// row counts, trigger, duration) from Table Storage so the dashboard can surface it.
+builder.Services.AddSingleton<CollectionAuditService>();
+
+// JobControlService starts the CostCollectorJob on demand (ARM jobs/start via the app
+// managed identity) and polls its execution status, coalescing onto a running execution.
+builder.Services.AddSingleton<JobControlService>();
 
 // DashboardStateService is Scoped: one instance per SignalR circuit so each
 // browser tab gets its own date-range filter.

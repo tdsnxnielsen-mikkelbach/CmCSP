@@ -1,50 +1,85 @@
 namespace CmCSP.Services;
 
+using CmCSP.Models;
+
 /// <summary>
-/// Hosted service that pre-warms all three cost data caches immediately on startup,
-/// so the first page a user visits doesn't block waiting for Azure API calls.
+/// Hosted service that rehydrates the per-replica in-memory cache from the shared
+/// persistent cache (Azure Table/Blob) immediately on startup, so the first page a
+/// user visits after a container restart or scale-out doesn't pay the storage-read
+/// latency on the critical path.
 ///
-/// Datasets are fetched sequentially (not concurrently) because all three query the
-/// same subscriptions and concurrent fetches would compete for the 5-req/min
-/// per-subscription rate limit that <see cref="CostManagementService"/> enforces.
+/// This service is a <b>rehydrator only</b>: it never issues live Cost Management API
+/// calls. Collection of fresh data is owned by <c>CostCollectorJob</c> (nightly +
+/// on-demand). If a dataset isn't present in the persistent cache yet (e.g. a brand
+/// new deployment before the collector's first run), warmup simply skips it — the
+/// collector will populate it, and the first user request lazily falls back as before.
 /// </summary>
 public sealed class CacheWarmupService : BackgroundService
 {
-    private readonly ICostManagementService      _costService;
-    private readonly ILogger<CacheWarmupService> _logger;
+    // Cache keys owned by the cost services (see services-cache.instructions.md).
+    private static readonly string[] DatasetKeys = ["cm_main", "cm_rg", "cm_tag", "cm_main_amort"];
+
+    private readonly AzureStorageCacheService     _cache;
+    private readonly TimeSpan                      _memoryTtl;
+    private readonly ILogger<CacheWarmupService>  _logger;
 
     public CacheWarmupService(
-        ICostManagementService      costService,
-        ILogger<CacheWarmupService> logger)
+        AzureStorageCacheService     cache,
+        CostManagementOptions        options,
+        ILogger<CacheWarmupService>  logger)
     {
-        _costService = costService;
-        _logger      = logger;
+        _cache     = cache;
+        _memoryTtl = TimeSpan.FromMinutes(options.CacheExpirationMinutes);
+        _logger    = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Small delay lets ASP.NET Core finish its startup pipeline before we
-        // issue API calls and start logging cost-service messages.
+        // touch storage and start logging cache messages.
         await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
 
-        _logger.LogInformation("CacheWarmupService: starting pre-warm of all cost datasets.");
+        if (!_cache.IsAzureEnabled)
+        {
+            _logger.LogInformation(
+                "CacheWarmupService: persistent cache disabled — nothing to rehydrate.");
+            return;
+        }
 
-        try
-        {
-            await _costService.GetMainCostDataAsync(stoppingToken); // cm_main (most pages)
-            await _costService.GetRgCostDataAsync(stoppingToken);   // cm_rg
-            await _costService.GetTagCostDataAsync(stoppingToken);  // cm_tag
-            await _costService.GetAmortizedMainCostDataAsync(stoppingToken); // cm_main_amort (Trend & Forecast amortized toggle)
+        _logger.LogInformation("CacheWarmupService: rehydrating in-memory cache from persistent storage.");
 
-            _logger.LogInformation("CacheWarmupService: all datasets pre-warmed successfully.");
-        }
-        catch (OperationCanceledException)
+        var rehydrated = 0;
+        foreach (var key in DatasetKeys)
         {
-            _logger.LogInformation("CacheWarmupService: cancelled during application shutdown.");
+            if (stoppingToken.IsCancellationRequested) break;
+
+            try
+            {
+                // TryGetValue re-populates the in-memory tier when the entry exists in
+                // Azure Storage. A miss means the collector hasn't produced it yet —
+                // skip rather than triggering a live API fetch.
+                if (_cache.TryGetValue<List<CostRow>>(key, _memoryTtl, out var rows) && rows is not null)
+                {
+                    rehydrated++;
+                    _logger.LogInformation(
+                        "CacheWarmupService: rehydrated {Key} ({Rows} rows) from persistent cache.",
+                        key, rows.Count);
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "CacheWarmupService: {Key} not in persistent cache yet — skipping (collector will populate).",
+                        key);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "CacheWarmupService: failed to rehydrate {Key}.", key);
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "CacheWarmupService: pre-warm failed.");
-        }
+
+        _logger.LogInformation(
+            "CacheWarmupService: rehydration complete ({Rehydrated}/{Total} datasets).",
+            rehydrated, DatasetKeys.Length);
     }
 }

@@ -1,6 +1,7 @@
 using Azure.Core;
 using Azure.Identity;
 using Microsoft.Identity.Client;
+using System.Text.Json;
 using CmCSP.Models;
 
 namespace CmCSP.Services;
@@ -62,5 +63,32 @@ public sealed class AzureTokenService
         var token = await _credential!.GetTokenAsync(
             new TokenRequestContext(AzureScopes), ct);
         return token.Token;
+    }
+
+    /// <summary>
+    /// Returns the Entra App service principal's directory object id (the <c>oid</c> claim
+    /// from its own access token), or <c>null</c> when not running in service-principal mode.
+    /// Used as the <c>principalId</c> when assigning roles to the SP — avoids a Microsoft
+    /// Graph lookup, since the SP's token already contains its object id.
+    /// </summary>
+    public async Task<string?> GetServicePrincipalObjectIdAsync(CancellationToken ct = default)
+    {
+        if (_app is null) return null;
+
+        var token = await GetAccessTokenAsync(ct);
+        var parts = token.Split('.');
+        if (parts.Length < 2) return null;
+
+        try
+        {
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload += (payload.Length % 4) switch { 2 => "==", 3 => "=", _ => string.Empty };
+            using var doc = JsonDocument.Parse(Convert.FromBase64String(payload));
+            return doc.RootElement.TryGetProperty("oid", out var oid) ? oid.GetString() : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

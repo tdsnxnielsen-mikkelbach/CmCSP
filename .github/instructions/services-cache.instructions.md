@@ -1,5 +1,5 @@
 ---
-applyTo: "src/Services/**/*.cs"
+applyTo: "src/**/Services/**/*.cs"
 ---
 ## Hybrid Cache Architecture — Always Read Before Editing
 
@@ -19,8 +19,8 @@ This project uses a **three-layer hybrid cache**. Any change to a service file m
 
 ### Concurrency Rules
 - `BlobCostManagementService` uses a `SemaphoreSlim(1,1)` (`_fetchLock`) to prevent thundering herd on cold-start — do not remove or bypass this.
-- `CacheWarmupService` fetches all three datasets **sequentially** on startup — this is intentional to respect the 5 req/min per-subscription API rate limit when falling back to `CostManagementService`.
-- `DailyApiRefreshService` calls `InvalidateCache()` before re-fetching — any new cache key must also be cleared there.
+- `CacheWarmupService` is a **rehydrator only**: on startup it repopulates the in-memory tier from the persistent (Table/Blob) cache via `AzureStorageCacheService.TryGetValue` and never issues live API calls. A persistent-cache miss is skipped, not fetched.
+- Fresh data collection is owned by `CostCollectorJob` (nightly + on-demand), which calls `InvalidateCache()` before re-fetching — any new cache key must also be cleared there.
 
 ### Configuration
 All TTL and storage settings live in `CostManagementOptions` (`appsettings.json` section `AzureCostManagement`):

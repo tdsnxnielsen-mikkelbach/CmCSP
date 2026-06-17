@@ -34,6 +34,9 @@ param appManagedIdentityPrincipalId string = ''
 @description('Principal ID of the cache cleanup job managed identity (for delete access to expired cache entries). Leave empty to skip.')
 param cleanupJobManagedIdentityPrincipalId string = ''
 
+@description('Principal ID of the cost collector job managed identity (cache read/write + export read + audit write). Leave empty to skip.')
+param collectJobManagedIdentityPrincipalId string = ''
+
 @description('Tags to apply to all resources.')
 param tags object = {}
 
@@ -191,6 +194,40 @@ resource cleanupJobCacheBlobRole 'Microsoft.Authorization/roleAssignments@2022-0
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
     principalId: cleanupJobManagedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ── Roles: Collect Job MI → Blob Data Reader + Cache Blob Contributor + Table Data Contributor ──
+// The collector runs the same data path as the app: reads cost-export blobs, writes large
+// cache payloads to the cache container, and writes cache + audit rows to Table Storage.
+
+resource collectJobBlobReadRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(collectJobManagedIdentityPrincipalId)) {
+  name: guid(sa.id, collectJobManagedIdentityPrincipalId, storageBlobDataReaderRoleId)
+  scope: sa
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataReaderRoleId)
+    principalId: collectJobManagedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource collectJobCacheBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(collectJobManagedIdentityPrincipalId)) {
+  name: guid(sa.id, collectJobManagedIdentityPrincipalId, storageBlobDataContributorRoleId, 'collect')
+  scope: cacheContainer
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
+    principalId: collectJobManagedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource collectJobTableRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(collectJobManagedIdentityPrincipalId)) {
+  name: guid(sa.id, collectJobManagedIdentityPrincipalId, storageTableDataContributorRoleId)
+  scope: sa
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageTableDataContributorRoleId)
+    principalId: collectJobManagedIdentityPrincipalId
     principalType: 'ServicePrincipal'
   }
 }

@@ -22,6 +22,9 @@
     },
     "storageAccountName": {
       "value": "${STORAGE_ACCOUNT_NAME=}"
+    },
+    "grantMiRbacAdminOnSubscription": {
+      "value": "${GRANT_MI_RBAC_ADMIN=false}"
     }
   }
 }
