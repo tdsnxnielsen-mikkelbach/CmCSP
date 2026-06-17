@@ -13,12 +13,12 @@ This project uses a three-layer cache architecture:
 3. **Azure Blob Storage** — shared across replicas, for payloads > 60 KB
 
 Key services to review:
-- `Services/AzureStorageCacheService.cs` — hybrid cache read/write routing
-- `Services/BlobCostManagementService.cs` — blob export reader, uses semaphore to prevent thundering herd
-- `Services/CacheWarmupService.cs` — startup pre-warm of all three datasets
-- `Services/DailyApiRefreshService.cs` — nightly API refresh to supplement stale exports
-- `Services/CostManagementService.cs` — direct Query API path, subject to 5 req/min rate limit
-- `Models/CostManagementOptions.cs` — all tuneable parameters (`CacheExpirationMinutes`, `ApiDailyRefreshHourUtc`, `AzureCache` section)
+- `src/Services/AzureStorageCacheService.cs` — hybrid cache read/write routing
+- `src/Services/BlobCostManagementService.cs` — blob export reader, uses semaphore to prevent thundering herd
+- `src/Services/CacheWarmupService.cs` — startup pre-warm of all three datasets
+- `src/Services/DailyApiRefreshService.cs` — nightly API refresh to supplement stale exports
+- `src/Services/CostManagementService.cs` — direct Query API path, subject to 5 req/min rate limit
+- `src/Models/CostManagementOptions.cs` — all tuneable parameters (`CacheExpirationMinutes`, `ApiDailyRefreshHourUtc`, `AzureCache` section)
 
 ## Approach
 

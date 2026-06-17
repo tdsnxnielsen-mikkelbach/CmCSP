@@ -11,17 +11,17 @@ and how to configure and deploy at both **billing-account/customer scope** (MCA/
 
 | Area | Change |
 |------|--------|
-| `Models/CostDetailsModels.cs` | New: request/response shapes for `generateCostDetailsReport` + `ReservationRow` model with Used/Unused/Total and `UtilizationPct` |
-| `Services/ICostDetailsService.cs` | New: interface for billing-account and subscription scope reservation queries |
-| `Services/CostDetailsService.cs` | New: async POST → 202 → poll → CSV download → parse → cache (4h TTL). Full RFC 4180 CSV parser, currency normalisation, multi-month split |
-| `Services/ICostManagementService.cs` | `GetAmortizedMainCostDataAsync()` added |
-| `Services/CostManagementService.cs` | `GetAmortizedMainCostDataAsync` + `cm_main_amort` cache key. `BuildQueryBody` now accepts a `metric` parameter (`ActualCost` / `AmortizedCost`) |
-| `Services/BlobCostManagementService.cs` | Delegates `GetAmortizedMainCostDataAsync` to the API service (exports use ActualCost only) |
-| `Components/Pages/Reservations.razor` | New page at `/reservations` |
-| `Components/Pages/TrendAndForecast.razor` | Chip-toggle for Actual/Amortized cost metric |
-| `Components/Pages/SubscriptionBreakdown.razor` | Added "Amortized Cost" and "RI Savings" columns |
-| `Components/Layout/NavMenu.razor` | "Reservations" nav entry added |
-| `Models/CostManagementOptions.cs` | Two new config sections: `CostDetails` and `BillingAccount` |
+| `src/Models/CostDetailsModels.cs` | New: request/response shapes for `generateCostDetailsReport` + `ReservationRow` model with Used/Unused/Total and `UtilizationPct` |
+| `src/Services/ICostDetailsService.cs` | New: interface for billing-account and subscription scope reservation queries |
+| `src/Services/CostDetailsService.cs` | New: async POST → 202 → poll → CSV download → parse → cache (4h TTL). Full RFC 4180 CSV parser, currency normalisation, multi-month split |
+| `src/Services/ICostManagementService.cs` | `GetAmortizedMainCostDataAsync()` added |
+| `src/Services/CostManagementService.cs` | `GetAmortizedMainCostDataAsync` + `cm_main_amort` cache key. `BuildQueryBody` now accepts a `metric` parameter (`ActualCost` / `AmortizedCost`) |
+| `src/Services/BlobCostManagementService.cs` | Delegates `GetAmortizedMainCostDataAsync` to the API service (exports use ActualCost only) |
+| `src/Components/Pages/Reservations.razor` | New page at `/reservations` |
+| `src/Components/Pages/TrendAndForecast.razor` | Chip-toggle for Actual/Amortized cost metric |
+| `src/Components/Pages/SubscriptionBreakdown.razor` | Added "Amortized Cost" and "RI Savings" columns |
+| `src/Components/Layout/NavMenu.razor` | "Reservations" nav entry added |
+| `src/Models/CostManagementOptions.cs` | Two new config sections: `CostDetails` and `BillingAccount` |
 | `appsettings.json` | Default values for the new sections |
 
 ---
@@ -167,7 +167,7 @@ dotnet user-secrets set "AzureCostManagement:BillingAccount:Customers:0:Customer
 dotnet user-secrets set "AzureCostManagement:BillingAccount:Customers:0:DisplayName" "Credaris AG"
 ```
 
-For Container Apps (via `deploy-image.ps1` or `az containerapp update`):
+For Container Apps (via the azd `postprovision` hook or `az containerapp update`):
 
 ```bash
 az containerapp update \
@@ -189,42 +189,39 @@ and that the service principal has billing-scope Reader access.
 
 ---
 
-## Deploying via scripts
+## Deploying via azd
 
-### `deploy.ps1` — new optional parameters
+### `azd provision` — optional settings
 
-The two new configuration sections are **not** set by `deploy.ps1` by default (they require
+The two new configuration sections are **not** enabled by default (they require
 billing-account access which may not be available during initial setup). To add them post-deploy,
-run `deploy.ps1` with the new parameters, or set them manually via `az containerapp update`
+re-run `azd provision` with the new settings, or set them manually via `az containerapp update`
 as shown above.
 
-If you want to include them in a fresh `deploy.ps1` run, pass:
+If you want to include them in a fresh `azd provision` run, set:
 
-```powershell
-.\scripts\deploy.ps1 `
-  -TenantId     "<tenant>" `
-  -ClientId     "<client>" `
-  -ClientSecret "<secret>" `
-  -SubscriptionIds "<sub-id>" `
-  -EnableCostDetails `
-  -BillingAccountId "12345678" `
-  -CustomerIds         "cust-id-1", "cust-id-2" `
-  -CustomerDisplayNames "Credaris AG",  "Fabrikam Ltd"
+```pwsh
+azd env set ENABLE_COST_DETAILS true
+azd env set BILLING_ACCOUNT_ID  "12345678"
+azd provision
 ```
 
-| Parameter | Description |
+> Per-customer mappings (`CustomerIds` / `CustomerDisplayNames`) can be stored as
+> Key Vault secrets (`CmCSP--BillingAccount--Customers--<i>--CustomerId` /
+> `--DisplayName`) via `az keyvault secret set` after provisioning.
+
+| Setting | Description |
 |-----------|-------------|
-| `-EnableCostDetails` | Switch — sets `CmCSP--CostDetails--Enabled = true` in Key Vault |
-| `-BillingAccountId` | Numeric billing account ID — sets `CmCSP--BillingAccount--BillingAccountId` |
-| `-CustomerIds` | String array of customer billing IDs |
-| `-CustomerDisplayNames` | Matching display names (parallel array with `-CustomerIds`) |
+| `ENABLE_COST_DETAILS` | `azd env set ENABLE_COST_DETAILS true` — sets `CmCSP--CostDetails--Enabled = true` in Key Vault |
+| `BILLING_ACCOUNT_ID` | Numeric billing account ID — sets `CmCSP--BillingAccount--BillingAccountId` |
+| Customer mappings | Stored as `CmCSP--BillingAccount--Customers--<i>--CustomerId` / `--DisplayName` Key Vault secrets |
 
-All parameters are optional. Omitting them means the Cost Details feature stays disabled until you set the secrets manually.
+All settings are optional. Omitting them means the Cost Details feature stays disabled until you set the secrets manually.
 
-### `deploy-image.ps1`
+### `azd deploy`
 
 Image deploys do **not** change environment variables — they only update the container image
-digest. The Cost Details and BillingAccount settings you set once via `deploy.ps1` or
+digest. The Cost Details and BillingAccount settings you set once via `azd provision` or
 `az containerapp update` are preserved across image updates.
 
 ---

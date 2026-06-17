@@ -38,7 +38,7 @@ The application requires exactly these roles on the storage account:
 
 - DO NOT suggest changes that remove the `allowSharedKeyAccess: true` property — it is required for the Cost Management export service.
 - DO NOT recommend adding new Azure services or dependencies not already present in the templates.
-- DO NOT change parameter names or output names — they are referenced by deployment scripts in `scripts/`.
+- DO NOT change parameter names or output names — they are referenced by `infra/main.bicep` and the azd hooks in `infra/hooks/`.
 - ONLY audit `bicep/` files in this project; do not touch C# services or configuration files.
 
 ## Output Format

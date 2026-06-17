@@ -68,9 +68,9 @@ Audits Bicep templates for IAM correctness, export configuration, and Azure best
 ### Services Cache Rules
 
 **File:** `.github/instructions/services-cache.instructions.md`  
-**Applies to:** `Services/**/*.cs`
+**Applies to:** `src/Services/**/*.cs`
 
-This instruction file is **loaded automatically** whenever Copilot edits any file under `Services/`. It ensures the agent never violates the hybrid cache contract when modifying service code.
+This instruction file is **loaded automatically** whenever Copilot edits any file under `src/Services/`. It ensures the agent never violates the hybrid cache contract when modifying service code.
 
 It enforces:
 
@@ -81,7 +81,7 @@ It enforces:
 - **Invalidation contract** — any new cache key must also be cleared in `DailyApiRefreshService`
 - **Encapsulation** — all Table/Blob reads and writes must go through `AzureStorageCacheService`, never directly
 
-You do not need to invoke this manually — it is applied automatically by Copilot when the file path matches `Services/**/*.cs`.
+You do not need to invoke this manually — it is applied automatically by Copilot when the file path matches `src/Services/**/*.cs`.
 
 ---
 
@@ -93,5 +93,5 @@ You do not need to invoke this manually — it is applied automatically by Copil
     azure-cache-optimizer.agent.md   ← @Azure Cache Optimizer
     bicep-reviewer.agent.md          ← @Bicep Reviewer
   instructions/
-    services-cache.instructions.md   ← auto-applied to Services/**/*.cs
+    services-cache.instructions.md   ← auto-applied to src/Services/**/*.cs
 ```

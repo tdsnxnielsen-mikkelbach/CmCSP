@@ -27,121 +27,31 @@ from a clean starting point. Follow the steps in order.
 
 ## Automated deployment (recommended)
 
-Two PowerShell scripts in `scripts/` automate the full lifecycle. Use them instead of
-running the individual `az` commands in Steps 5–12.
+Deployment is driven by the **Azure Developer CLI (`azd`)**. A single `azd up`
+provisions all infrastructure (via the Bicep modules in `bicep/`), seeds Key Vault,
+wires Container App environment variables, deploys the Cost Management exports, and
+builds + pushes both container images.
 
-### `scripts/deploy.ps1` — full from-scratch provisioning
-
-Covers Steps 5–10: resource groups, storage, app infrastructure (ACR / Key Vault / Container Apps),
-cross-RG role assignments, Key Vault secrets, Container App environment variables, and (optionally)
-the cost-export schedule.
-
-```powershell
-# Minimal — Query API mode (no blob exports)
-.\scripts\deploy.ps1 `
-  -TenantId      "<entra-tenant-id>" `
-  -ClientId      "<app-client-id>" `
-  -ClientSecret  "<client-secret>" `
-  -SubscriptionIds "<sub-id-1>", "<sub-id-2>"
-
-# Production — blob export mode + cost export schedule
-.\scripts\deploy.ps1 `
-  -TenantId      "<entra-tenant-id>" `
-  -ClientId      "<app-client-id>" `
-  -ClientSecret  "<client-secret>" `
-  -SubscriptionIds "<sub-id-1>", "<sub-id-2>" `
-  -DeployExports
-
-# First deploy only — backfill the last 12 calendar months of cost data into blob storage.
-# Omit -HistoricalMonths on subsequent deploys (blobs already exist).
-.\scripts\deploy.ps1 `
-  -TenantId      "<entra-tenant-id>" `
-  -ClientId      "<app-client-id>" `
-  -ClientSecret  "<client-secret>" `
-  -SubscriptionIds "<sub-id-1>", "<sub-id-2>" `
-  -DeployExports `
-  -HistoricalMonths 12
-
-# Re-run against an existing environment on a different active subscription.
-# Use -AppSubscriptionId to ensure the deployment targets the correct subscription
-# regardless of which subscription `az account show` currently returns.
-.\scripts\deploy.ps1 `
-  -AppSubscriptionId "<subscription-hosting-rg-cmcsp-app>" `
-  -TenantId      "<entra-tenant-id>" `
-  -ClientId      "<app-client-id>" `
-  -ClientSecret  "<client-secret>" `
-  -SubscriptionIds "<sub-id-1>", "<sub-id-2>"
+```pwsh
+azd auth login
+azd env new cmcsp-prod
+azd env set CMCSP_TENANT_ID        "<entra-tenant-id>"
+azd env set CMCSP_CLIENT_ID        "<app-client-id>"
+azd env set CMCSP_CLIENT_SECRET    "<client-secret>"
+azd env set CMCSP_SUBSCRIPTION_IDS "<sub-id-1>,<sub-id-2>"
+azd env set EXPORT_SCOPE           subscription   # or: billing
+azd up
 ```
 
-All resource names (`-AcrName`, `-KeyVaultName`, `-StorageAccount`, `-AppRg`,
-`-Location`, `-AppName`) have defaults derived from a stable hash of your tenant ID + app name,
-so re-running the script is fully idempotent.
+**See [azd-deployment-guide.md](azd-deployment-guide.md) for the complete walkthrough**, including
+the subscription ↔ billing-account export scope switch, optional settings
+(`ENABLE_COST_DETAILS`, `HISTORICAL_MONTHS`), adopting existing resources, and day-2
+operations (`azd deploy`, `azd provision`, `azd down`).
 
-> **`-AppSubscriptionId`**: Optional. The subscription that hosts `rg-cmcsp-app`, ACR, Container App, etc.
-> Defaults to whatever `az account show` returns. Pass this when you are logged in to a different
-> subscription than the one that owns the app resources, to avoid ARM deployment failures.
+After deployment, the app performs a one-time export reconciliation pass at startup for all active subscriptions when `AzureCostManagement:ExportBlob:Enabled=true`. If a subscription already has a compatible Cost Management export targeting the configured storage account, the app reuses it. If not, it creates the canonical `cmcsp-daily-export`. Operators can also open the **Home** page and use **Re-provision Export** for any active subscription to retry that flow manually.
 
-After the script completes it prints the next command to run:
-
-```
-Next step: run .\scripts\deploy-image.ps1 -AcrName <name> -AppName cmcsp -AppRg rg-cmcsp-app
-```
-
-### `scripts/deploy-image.ps1` — build, push, and force-update the Container App
-
-Covers Steps 11–12: uses `dotnet publish /t:PublishContainer` to build a container image and push
-it directly to ACR — **no Dockerfile or Docker daemon required**. Tags with `yyyyMMdd-<git-sha>`,
-resolves the exact `sha256:` digest, and pins the Container App to that digest so ACA is always
-forced to pull the new image even if the tag name did not change.
-
-```powershell
-# Build from repo root, push, and update the Container App + cleanup job
-.\scripts\deploy-image.ps1 `
-  -AcrName  "<acr-name>" `
-  -AppName  "cmcsp" `
-  -AppRg    "rg-cmcsp-app"
-
-# Skip build (image already pushed to ACR by CI); -Tag required
-.\scripts\deploy-image.ps1 `
-  -AcrName  "<acr-name>" `
-  -AppName  "cmcsp" `
-  -AppRg    "rg-cmcsp-app" `
-  -SkipBuild -Tag "20260513-abc1234"
-
-# Override the tag (e.g. a CI-assigned version)
-.\scripts\deploy-image.ps1 `
-  -AcrName  "<acr-name>" `
-  -AppName  "cmcsp" `
-  -AppRg    "rg-cmcsp-app" `
-  -Tag      "1.2.3"
-
-# Also update the Entra identity env vars alongside the new image
-# (use when the app registration TenantId or ClientId has changed)
-.\scripts\deploy-image.ps1 `
-  -AcrName  "<acr-name>" `
-  -AppName  "cmcsp" `
-  -AppRg    "rg-cmcsp-app" `
-  -TenantId "<entra-tenant-id>" `
-  -ClientId "<app-client-id>"
-
-# Skip the cleanup job build (main app only changed)
-.\scripts\deploy-image.ps1 `
-  -AcrName  "<acr-name>" `
-  -AppName  "cmcsp" `
-  -AppRg    "rg-cmcsp-app" `
-  -SkipCleanupJob
-```
-
-The script builds and updates **both** the main Container App and the `cmcsp-cleanup` Container Apps Job in a single run. Pass `-SkipCleanupJob` to update only the main app image.
-
-> **Cleanup job prerequisite:** The `cmcsp-cleanup` Container Apps Job must already exist (created by `deploy.ps1`). `deploy-image.ps1` only updates images on existing resources.
-
-Both scripts support `-WhatIf` to print all commands without executing them.
-
-After a new image is deployed, the app performs a one-time export reconciliation pass at startup for all active subscriptions when `AzureCostManagement:ExportBlob:Enabled=true`. If a subscription already has a compatible Cost Management export targeting the configured storage account, the app reuses it. If not, it creates the canonical `cmcsp-daily-export`. Operators can also open the **Home** page and use **Re-provision Export** for any active subscription to retry that flow manually.
-
-> The manual steps below explain **what the scripts do under the hood** and remain useful
-> for troubleshooting or for environments where PowerShell is not available.
+> The manual steps below explain **what `azd` does under the hood** and remain useful
+> for troubleshooting or for environments where `azd` is not available.
 
 ---
 
@@ -483,7 +393,7 @@ az keyvault secret set --vault-name "$KV_NAME" \
 
 ## Step 11 – Build and push the container image
 
-> **Using the script (recommended):** `scripts/deploy-image.ps1` handles Steps 11 and 12 together —
+> **Using `azd` (recommended):** `azd deploy` handles Steps 11 and 12 together —
 > build, push (no Docker required), digest resolution, and Container App update with SHA-pinned image.
 > See the [Automated deployment](#automated-deployment-recommended) section above.
 
@@ -504,7 +414,7 @@ dotnet publish CmCSP.csproj \
   -p:ContainerImageTags=latest
 ```
 
-To also resolve the digest and pin it (what `deploy-image.ps1` does automatically):
+To also resolve the digest and pin it (what `azd deploy` does automatically):
 
 ```bash
 DIGEST=$(az acr manifest show-metadata \
@@ -632,13 +542,10 @@ For each additional customer subscription:
 
    You can also import a `.csv` or `.txt` file — any GUIDs found are extracted automatically.
 
-   **Alternative – Re-run `deploy.ps1`** (makes the IDs permanent in config):
-   ```powershell
-   .\scripts\deploy.ps1 `
-     -TenantId     "<tenant-id>" `
-     -ClientId     "<client-id>" `
-     -ClientSecret "<secret>" `
-     -SubscriptionIds "<sub-id-1>", "<sub-id-2>", "<new-sub-id>"
+   **Alternative – Re-run `azd provision`** (makes the IDs permanent in config):
+   ```pwsh
+   azd env set CMCSP_SUBSCRIPTION_IDS "<sub-id-1>,<sub-id-2>,<new-sub-id>"
+   azd provision
    ```
 
    **Alternative – Direct `az` command**:
@@ -710,8 +617,8 @@ az containerapp logs show -n cmcsp -g rg-cmcsp-app --follow | grep -E "Home\[|Su
 | Key Vault 403 | Container App MI missing Key Vault Secrets User | Check app.bicep deployment |
 | All chips show ✗ immediately | `ClientSecret` not wired; Query API auth failing | Check Step 12b; confirm KV secret `CmCSP--ClientSecret` exists |
 | All chips show ✗ on startup only | No blobs yet AND `ClientSecret` missing | Either add `ClientSecret` (Step 12b) or wait for first export run |
-| Cleanup job not running | Job not provisioned | Run `deploy.ps1` to provision `cmcsp-cleanup` job |
-| Cleanup job fails (403) | MI missing storage roles | Re-run `deploy.ps1`; `main.bicep` grants Table Contributor + Blob Contributor |
+| Cleanup job not running | Job not provisioned | Run `azd provision` to provision the `cmcsp-cleanup` job |
+| Cleanup job fails (403) | MI missing storage roles | Re-run `azd provision`; `main.bicep` grants Table Contributor + Blob Contributor |
 | Daily refresh not updating data | `ApiDailyRefreshHourUtc` set but `ClientSecret` absent | Set `ClientSecret` via KV ref; without it, `CostManagementService` cannot auth |
 | Budgets page shows “no budgets found” | No subscription-scope budgets exist in Azure | Create a budget in Portal: Cost Management → Budgets, per subscription |
 | Budgets page shows 403 error | Entra app SP missing Cost Management Reader | Same role used for cost data – confirm Step 4 || Budgets page shows 0 current spend | CSP `currentSpend` API field returned null/0 | Expected for CSP — spend is automatically computed from `cm_main` cost rows instead; no action needed |
@@ -722,7 +629,7 @@ az containerapp logs show -n cmcsp -g rg-cmcsp-app --follow | grep -E "Home\[|Su
 | Login page shown before app loads | `TenantId` or `ClientId` not set | Set them via user-secrets (local) or Container App env vars / Key Vault (production) || Tag Chargeback shows no tagged data | No tagged resources, or CSP tag API limitation | Verify tags exist on resources; blob exports are required for reliable tag data |
 | Date range picker shows wrong range | `cm_main` cache empty on first render | Click the “Fit to data” (⊡) button after the loading chips turn ✓ |
 | `SubscriptionStoreService` startup error | DI misconfiguration | Ensure `CostManagementOptions` is registered before hosted services |
-| Dashboard shows data only for current month; older months blank | Export uses `MonthToDate` — no historical blobs exist | Re-run `deploy.ps1 -DeployExports -HistoricalMonths 12` to backfill prior months |
+| Dashboard shows data only for current month; older months blank | Export uses `MonthToDate` — no historical blobs exist | Set `azd env set HISTORICAL_MONTHS 12` (with `EXPORT_SCOPE=subscription`) and re-run `azd provision` to backfill prior months |
 | Currency not normalised correctly in blob mode | CSP export uses `billingCurrency` column instead of `billingCurrencyCode` | Handled automatically — parser checks `billingcurrencycode`, `currency`, `billingcurrency` in order |
 | MTD / YTD figures are inflated (e.g. ~11× expected) | Azure `MonthToDate` exports are cumulative — a new blob is written each day containing all data from day 1; the old code summed across all blobs, counting early days many times | Fixed in `BlobCostManagementService` (merge-with-replacement across blobs). Deploy the latest image; then click **Refresh Data** in the nav sidebar (or restart the revision) to clear the cached inflated values |
 | Need to force-refresh data without waiting 60 min | In-memory cache hasn't expired | Click **Refresh Data** in the nav sidebar — it invalidates the cache and triggers an immediate re-fetch on all open pages |

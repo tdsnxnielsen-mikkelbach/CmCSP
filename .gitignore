@@ -17,6 +17,11 @@ secrets.json
 *.p12
 *.key
 
+# ── Azure Developer CLI (azd) ─────────────────────────────────────────────────
+# Per-environment state, including .env files that may hold non-secret outputs.
+# Never commit – contains environment-specific values and is recreated by azd.
+.azure/
+
 # ── .NET build outputs ────────────────────────────────────────────────────────
 [Bb]in/
 [Oo]bj/

@@ -60,25 +60,24 @@ The main app's Managed Identity is unchanged and retains `Storage Blob Data Read
 
 ## Deployment
 
-### First-time (`deploy.ps1`)
+### First-time (`azd provision`)
 
-`deploy.ps1` provisions the `cmcsp-cleanup` Container Apps Job automatically as part of Phase 3 (`app.bicep`). The job starts with a placeholder image.
+`azd provision` provisions the `cmcsp-cleanup` Container Apps Job automatically via `app.bicep`. The job starts with a placeholder image.
 
-After `deploy.ps1` completes, Phase 4 (`main.bicep`) grants the cleanup job MI the required storage roles using its output principal ID.
+In the same deployment, `main.bicep` grants the cleanup job MI the required storage roles using its output principal ID.
 
-Phase 6 wires the storage endpoints as environment variables on the job.
+The `postprovision` hook wires the storage endpoints as environment variables on the job.
 
-### Image update (`deploy-image.ps1`)
+### Image update (`azd deploy`)
 
-`deploy-image.ps1` builds and pushes both images in a single run:
+`azd deploy` builds and rolls the main app image, and the `postdeploy` hook
+(`infra/hooks/postdeploy.ps1`) builds and updates the cleanup job image:
 
-1. Builds `CmCSP.csproj` → `<acr>/cmcsp:<tag>` → updates Container App.
-2. Builds `CacheCleanupJob/CacheCleanupJob.csproj` → `<acr>/cmcsp-cleanup:<tag>` → updates the Container Apps Job.
+1. Builds `CmCSP.csproj` → `<acr>/cmcsp:<tag>` → updates Container App (`azd deploy`).
+2. Builds `src/CacheCleanupJob/CacheCleanupJob.csproj` → `<acr>/cmcsp-cleanup:<tag>` → updates the Container Apps Job (postdeploy hook).
 
-To skip the cleanup job build (e.g. if only the main app changed):
-
-```powershell
-.\scripts\deploy-image.ps1 -AcrName cmcspacrXXXXXX -AppName cmcsp -AppRg rg-cmcsp-app -SkipCleanupJob
+```pwsh
+azd deploy
 ```
 
 ---

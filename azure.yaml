@@ -1,0 +1,49 @@
+# Azure Developer CLI (azd) configuration for CmCSP.
+# Docs: https://aka.ms/azd
+#
+# `azd up`        → provision infra (infra/main.bicep) + deploy the web app image.
+# `azd provision` → infra only (also re-runs the postprovision hook).
+# `azd deploy`    → build & push the web app container image and roll the revision.
+#
+# The cache cleanup Container Apps Job is NOT an azd service host, so its image is
+# built/pushed by the postdeploy hook. Key Vault secrets, Container App env-var
+# wiring, and Cost Management exports are handled by the postprovision hook.
+name: cmcsp
+metadata:
+  template: cmcsp@1.0.0
+
+# The main app is built with the .NET SDK's container support (no Dockerfile),
+# matching the project's existing `dotnet publish /t:PublishContainer` approach.
+#
+# NOTE: The cache cleanup job (src/CacheCleanupJob) is intentionally NOT listed here.
+# azd `services` only support long-running hosts (containerapp, appservice, function,
+# aks, ...) — there is no host type for a Container Apps *Job* (Microsoft.App/jobs),
+# which is a scheduled, run-to-completion workload. The job's infrastructure is
+# provisioned declaratively by `azd provision` (bicep/app.bicep); its image build,
+# push, and digest update are handled by the postdeploy hook below.
+services:
+  web:
+    project: ./src/CmCSP.csproj
+    language: dotnet
+    host: containerapp
+
+hooks:
+  # Seed Key Vault secrets, wire Container App / cleanup-job env vars, and deploy
+  # the Cost Management export at the scope selected by EXPORT_SCOPE.
+  postprovision:
+    posix:
+      shell: sh
+      run: pwsh -NoProfile -File ./infra/hooks/postprovision.ps1
+    windows:
+      shell: pwsh
+      run: ./infra/hooks/postprovision.ps1
+
+  # Build + push the cache cleanup job image and update the Container Apps Job
+  # (azd has no native job host, so this is done as a post-deploy step).
+  postdeploy:
+    posix:
+      shell: sh
+      run: pwsh -NoProfile -File ./infra/hooks/postdeploy.ps1
+    windows:
+      shell: pwsh
+      run: ./infra/hooks/postdeploy.ps1

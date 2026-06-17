@@ -76,75 +76,87 @@ graph TD
 CmCSP/
 ├── .gitignore
 ├── README.md
-├── appsettings.json                      ← base config (no secrets)
-├── appsettings.Development.json          ← local overrides (git-ignored)
-├── CmCSP.csproj
 ├── CmCSP.sln
-├── GlobalUsings.cs                       ← Color/Align aliases (MudBlazor wins)
-├── Program.cs                            ← DI registrations + HTTP pipeline
-├── Properties/
-│   └── launchSettings.json
-├── Models/
-│   ├── CostManagementOptions.cs          ← strongly-typed config section (incl. CostDetails + BillingAccount)
-│   ├── CostDetailsModels.cs              ← Cost Details API request/response shapes + ReservationRow
-│   ├── CostRow.cs                        ← one normalised cost record
-│   ├── CostApiResponse.cs               ← Azure Cost Management + Consumption Budget + Advisor API response shapes
-│   ├── SubscriptionBudget.cs            ← per-subscription budget record (from Consumption Budgets API)
-│   ├── AdvisorRecommendation.cs         ← one Advisor Cost recommendation (normalised to TargetCurrency)
-│   └── AdvisorCategoryScore.cs          ← one Advisor category health score per subscription
-├── Services/
-│   ├── AzureTokenService.cs              ← MSAL (ClientSecret) or DefaultAzureCredential fallback
-│   ├── ICostManagementService.cs
-│   ├── CostManagementService.cs          ← Query API: fetch / cache / normalise / retry (ActualCost + AmortizedCost)
-│   ├── BlobCostManagementService.cs      ← Blob Export: read CSVs; falls back to API if no blobs
-│   ├── ICostDetailsService.cs            ← interface for Cost Details API (reservation + amortized data)
-│   ├── CostDetailsService.cs             ← async POST→poll→CSV pipeline; billing-account + subscription scope
-│   ├── AzureStorageCacheService.cs       ← Table+Blob distributed cache (wraps IMemoryCache)
-│   ├── DataLoadingStateService.cs        ← tracks per-dataset load phase for the UI
-│   ├── CacheWarmupService.cs             ← background pre-warm on startup
-│   ├── DailyApiRefreshService.cs         ← calls Query API once per day for latest data
-│   ├── ExportProvisioningService.cs      ← reuses or creates subscription export + grants storage role
-│   ├── SubscriptionExportReconcileService.cs ← startup reconciliation for export provisioning on active subscriptions
-│   ├── SubscriptionStoreService.cs       ← persists user-added subscription IDs to Key Vault + disk
-│   └── DashboardStateService.cs         ← shared date-range slicer (Scoped)
-├── Components/
-│   ├── App.razor                         ← HTML shell (MudBlazor + ApexCharts JS)
-│   ├── _Imports.razor                    ← global Razor usings + type aliases
-│   ├── Routes.razor
-│   ├── Layout/
-│   │   ├── MainLayout.razor              ← MudLayout, AppBar, Drawer, dark mode, global date-range picker, subscription chip
-│   │   ├── NavMenu.razor                 ← 9 MudNavLinks + Refresh Data button
-│   │   └── ReconnectModal.razor
-│   ├── Pages/
-│   │   ├── _Imports.razor                ← applies [Authorize] to every page in this folder
-│   │   ├── Home.razor                    ← Page 1: Cost Overview
-│   │   ├── Budgets.razor                 ← Page 2: Budgets
-│   │   ├── SubscriptionBreakdown.razor   ← Page 3: Subscription Breakdown (+ Amortized Cost + RI Savings)
-│   │   ├── ResourceGroupBreakdown.razor  ← Page 4: Resource Group Breakdown
-│   │   ├── TagChargeback.razor           ← Page 5: Tag Chargeback
-│   │   ├── TrendAndForecast.razor        ← Page 6: Trend & Forecast (+ Actual/Amortized toggle)
-│   │   ├── MoMWaterfall.razor            ← Page 7: MoM Waterfall
-│   │   ├── Advisor.razor                 ← Page 8: Advisor Overview (scores + Cost recommendations)
-│   │   ├── Reservations.razor            ← Page 9: Reservations (Used/Unused RI breakdown)
-│   │   ├── Error.razor
-│   │   └── NotFound.razor
-│   └── Shared/
-│       ├── LoadingStatus.razor           ← data-load progress banner
-│       ├── SubscriptionScopeBadge.razor  ← selected vs with-data subscription scope indicator
-│       └── RedirectToLogin.razor         ← forces unauthenticated users to /login outside SignalR
+├── azure.yaml                                ← Azure Developer CLI (azd) config
+├── src/                                      ← application code & projects
+│   ├── appsettings.json                      ← base config (no secrets)
+│   ├── appsettings.Development.json          ← local overrides (git-ignored)
+│   ├── CmCSP.csproj
+│   ├── GlobalUsings.cs                       ← Color/Align aliases (MudBlazor wins)
+│   ├── Program.cs                            ← DI registrations + HTTP pipeline
+│   ├── Properties/
+│   │   └── launchSettings.json
+│   ├── Models/
+│   │   ├── CostManagementOptions.cs          ← strongly-typed config section (incl. CostDetails + BillingAccount)
+│   │   ├── CostDetailsModels.cs              ← Cost Details API request/response shapes + ReservationRow
+│   │   ├── CostRow.cs                        ← one normalised cost record
+│   │   ├── CostApiResponse.cs                ← Azure Cost Management + Consumption Budget + Advisor API response shapes
+│   │   ├── SubscriptionBudget.cs             ← per-subscription budget record (from Consumption Budgets API)
+│   │   ├── AdvisorRecommendation.cs          ← one Advisor Cost recommendation (normalised to TargetCurrency)
+│   │   └── AdvisorCategoryScore.cs           ← one Advisor category health score per subscription
+│   ├── Services/
+│   │   ├── AzureTokenService.cs              ← MSAL (ClientSecret) or DefaultAzureCredential fallback
+│   │   ├── ICostManagementService.cs
+│   │   ├── CostManagementService.cs          ← Query API: fetch / cache / normalise / retry (ActualCost + AmortizedCost)
+│   │   ├── BlobCostManagementService.cs      ← Blob Export: read CSVs; falls back to API if no blobs
+│   │   ├── ICostDetailsService.cs            ← interface for Cost Details API (reservation + amortized data)
+│   │   ├── CostDetailsService.cs             ← async POST→poll→CSV pipeline; billing-account + subscription scope
+│   │   ├── AzureStorageCacheService.cs       ← Table+Blob distributed cache (wraps IMemoryCache)
+│   │   ├── DataLoadingStateService.cs        ← tracks per-dataset load phase for the UI
+│   │   ├── CacheWarmupService.cs             ← background pre-warm on startup
+│   │   ├── DailyApiRefreshService.cs         ← calls Query API once per day for latest data
+│   │   ├── ExportProvisioningService.cs      ← reuses or creates subscription export + grants storage role
+│   │   ├── SubscriptionExportReconcileService.cs ← startup reconciliation for export provisioning on active subscriptions
+│   │   ├── SubscriptionStoreService.cs       ← persists user-added subscription IDs to Key Vault + disk
+│   │   └── DashboardStateService.cs          ← shared date-range slicer (Scoped)
+│   ├── Components/
+│   │   ├── App.razor                         ← HTML shell (MudBlazor + ApexCharts JS)
+│   │   ├── _Imports.razor                    ← global Razor usings + type aliases
+│   │   ├── Routes.razor
+│   │   ├── Layout/
+│   │   │   ├── MainLayout.razor              ← MudLayout, AppBar, Drawer, dark mode, global date-range picker, subscription chip
+│   │   │   ├── NavMenu.razor                 ← 9 MudNavLinks + Refresh Data button
+│   │   │   └── ReconnectModal.razor
+│   │   ├── Pages/
+│   │   │   ├── _Imports.razor                ← applies [Authorize] to every page in this folder
+│   │   │   ├── Home.razor                    ← Page 1: Cost Overview
+│   │   │   ├── Budgets.razor                 ← Page 2: Budgets
+│   │   │   ├── SubscriptionBreakdown.razor   ← Page 3: Subscription Breakdown (+ Amortized Cost + RI Savings)
+│   │   │   ├── ResourceGroupBreakdown.razor  ← Page 4: Resource Group Breakdown
+│   │   │   ├── TagChargeback.razor           ← Page 5: Tag Chargeback
+│   │   │   ├── TrendAndForecast.razor        ← Page 6: Trend & Forecast (+ Actual/Amortized toggle)
+│   │   │   ├── MoMWaterfall.razor            ← Page 7: MoM Waterfall
+│   │   │   ├── Advisor.razor                 ← Page 8: Advisor Overview (scores + Cost recommendations)
+│   │   │   ├── Reservations.razor            ← Page 9: Reservations (Used/Unused RI breakdown)
+│   │   │   ├── Error.razor
+│   │   │   └── NotFound.razor
+│   │   └── Shared/
+│   │       ├── LoadingStatus.razor           ← data-load progress banner
+│   │       ├── SubscriptionScopeBadge.razor  ← selected vs with-data subscription scope indicator
+│   │       └── RedirectToLogin.razor         ← forces unauthenticated users to /login outside SignalR
+│   ├── wwwroot/
+│   │   ├── app.css
+│   │   └── apexcharts-theme.js               ← propagates MudBlazor dark/light toggle to ApexCharts
+│   └── CacheCleanupJob/                      ← cache cleanup Container Apps Job (separate project)
+│       ├── CacheCleanupJob.csproj
+│       └── Program.cs
 ├── bicep/
-│   ├── main.bicep                        ← export storage account + Table Storage + role assignments
-│   ├── app.bicep                         ← Container App, ACR, Key Vault, Log Analytics (app RG)
-│   ├── export-sub.bicep                  ← subscription-scope export (managed identity)
-│   └── export-billing.bicep             ← billing-account-scope export (SAS token)
-├── docs/
-│   ├── azure-roles.md                   ← RBAC guide for all identities
-│   ├── csp-deployment-guide.md         ← step-by-step deployment guide for CSPs
-│   ├── cache-cleanup.md                ← cache cleanup job documentation
-│   └── cost-details-api.md             ← Cost Details API: reservations, amortized cost, billing-account scope
-└── wwwroot/
-    ├── app.css
-    └── apexcharts-theme.js               ← propagates MudBlazor dark/light toggle to ApexCharts
+│   ├── main.bicep                            ← export storage account + Table Storage + role assignments
+│   ├── app.bicep                             ← Container App, ACR, Key Vault, Log Analytics (app RG)
+│   ├── export-sub.bicep                      ← subscription-scope export (managed identity)
+│   └── export-billing.bicep                  ← billing-account-scope export (SAS token)
+├── infra/                                    ← azd entry-point template + hooks
+│   ├── main.bicep                            ← subscription-scope composition of bicep/ modules
+│   ├── main.parameters.json
+│   └── hooks/
+│       ├── postprovision.ps1                 ← KV secrets, env wiring, Cost Management exports
+│       └── postdeploy.ps1                    ← builds & updates the cleanup job image
+└── docs/
+    ├── azure-roles.md                        ← RBAC guide for all identities
+    ├── azd-deployment-guide.md               ← Azure Developer CLI deployment walkthrough
+    ├── csp-deployment-guide.md               ← step-by-step deployment guide for CSPs
+    ├── cache-cleanup.md                      ← cache cleanup job documentation
+    └── cost-details-api.md                   ← Cost Details API: reservations, amortized cost, billing-account scope
 ```
 
 ---
@@ -188,7 +200,7 @@ dotnet restore
 **Step 1 – Initialise the secrets store** (one-time per project):
 
 ```bash
-cd CmCSP
+cd src
 dotnet user-secrets init
 ```
 
@@ -351,7 +363,7 @@ Under **Platform configurations**, click **Add a platform → Web**.
 | Local dev (HTTP) | `http://localhost:5106/signin-oidc` |
 | Azure (Container Apps) | `https://<container-app-fqdn>/signin-oidc` |
 
-> The FQDN is the output of `deploy.ps1` (`containerAppFqdn`) and looks like  
+> The FQDN is the `CONTAINER_APP_FQDN` output of `azd provision` (`containerAppFqdn`) and looks like  
 > `cmcsp.<random>.swedencentral.azurecontainerapps.io`.
 
 #### 3 – Add a front-channel logout URL (optional but recommended)
@@ -699,10 +711,12 @@ Azure Cost Management exports for CSP billing accounts use the column name `bill
 
 ### Bootstrapping historical data
 
-A fresh export deployment only covers the **current calendar month** (`timeframe=MonthToDate`). To pre-populate the full 12-month rolling window, pass `-HistoricalMonths` to `deploy.ps1` (requires `-DeployExports`):
+A fresh export deployment only covers the **current calendar month** (`timeframe=MonthToDate`). To pre-populate the full 12-month rolling window, set `HISTORICAL_MONTHS` (requires `EXPORT_SCOPE=subscription`):
 
-```powershell
-.\scripts\deploy.ps1 ... -DeployExports -HistoricalMonths 12
+```pwsh
+azd env set EXPORT_SCOPE       subscription
+azd env set HISTORICAL_MONTHS  12
+azd provision
 ```
 
 This creates one inactive Custom-timeframe export per prior calendar month (named `<ExportName>-hist-yyyy-MM`) and immediately triggers each via the Cost Management API. Once all have run, the blobs appear under the `exports/` prefix and the app loads the full history on its next cache refresh.
@@ -1004,7 +1018,7 @@ Each browser tab has its own SignalR circuit. Scoping the state service to the c
 
 ## Resource Tags
 
-All Azure resources created by the Bicep templates (`app.bicep`, `main.bicep`) receive tags via the shared `param tags object = {}` parameter. The `deploy.ps1` script applies this default tag set — override at call time with `-Tags @{...}`:
+All Azure resources created by the Bicep templates (`app.bicep`, `main.bicep`) receive tags via the shared `param tags object = {}` parameter. The `azd` deployment applies this default tag set (plus the `azd-env-name` tag) — override via the `tags` parameter in `infra/main.parameters.json`:
 
 | Tag | Default value | Purpose |
 |---|---|---|
@@ -1063,8 +1077,8 @@ EXPOSE 8080
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-COPY ["CmCSP.csproj", "."]
-RUN dotnet restore
+COPY ["src/CmCSP.csproj", "src/"]
+RUN dotnet restore src/CmCSP.csproj
 COPY . .
 RUN dotnet publish -c Release -o /app/publish
 
@@ -1090,7 +1104,7 @@ az containerapp update -n cmcsp -g rg-cmcsp-app \
   --set-env-vars "AzureCostManagement__ClientSecret=secretref:client-secret"
 ```
 
-The `app.bicep` template already includes this wiring and the `Key Vault Secrets User` role assignment for the Container App's SystemAssigned Managed Identity. The `deploy.ps1` script (Phase 5–6) creates the Key Vault secret and wires it automatically.
+The `app.bicep` template already includes this wiring and the `Key Vault Secrets User` role assignment for the Container App's SystemAssigned Managed Identity. The `postprovision` hook (`infra/hooks/postprovision.ps1`) creates the Key Vault secret and wires it automatically.
 
 **Note on authentication modes in Container Apps:**  
 - The Container App's Managed Identity is used for blob storage and distributed cache access (`DefaultAzureCredential`)  

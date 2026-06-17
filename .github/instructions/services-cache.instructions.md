@@ -1,5 +1,5 @@
 ---
-applyTo: "Services/**/*.cs"
+applyTo: "src/Services/**/*.cs"
 ---
 ## Hybrid Cache Architecture — Always Read Before Editing
 

@@ -22,7 +22,7 @@ param location string = 'swedencentral'
 @description('Container image to deploy, e.g. cmcspacr.azurecr.io/cmcsp:latest. Leave empty for first-time deploy (placeholder image used).')
 param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
-@description('Container image for the cache cleanup job. Defaults to placeholder on first deploy; updated by deploy-image.ps1.')
+@description('Container image for the cache cleanup job. Defaults to placeholder on first deploy; updated by the azd postdeploy hook.')
 param cleanupJobImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
 @description('CPU allocation for the Container App (vCPU).')
@@ -39,6 +39,9 @@ param maxReplicas int = 2
 
 @description('Tags to apply to all resources.')
 param tags object = {}
+
+@description('When set, stamps the Container App with the azd-service-name tag so `azd deploy` can locate it. Leave empty for script-based deploys.')
+param azdServiceName string = ''
 
 // ── Log Analytics Workspace ──────────────────────────────────────────────────
 
@@ -104,7 +107,7 @@ resource caEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
 resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: appName
   location: location
-  tags: tags
+  tags: union(tags, empty(azdServiceName) ? {} : { 'azd-service-name': azdServiceName })
   identity: {
     type: 'SystemAssigned'
   }
@@ -117,19 +120,21 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         transport: 'http'
         allowInsecure: false
       }
-      // Only configure ACR registry auth when the image is actually from this ACR.
-      // On the initial deploy (MCR placeholder), leave registries empty so Azure
-      // does not attempt to validate ACR access before the AcrPull role is assigned.
-      registries: contains(containerImage, acr.properties.loginServer) ? [
+      // Always register this ACR for system-identity pulls. `azd provision` runs
+      // with the public MCR placeholder image (so no ACR validation happens on the
+      // initial deploy), but the registry entry must already be present so that the
+      // later `azd deploy` image swap to <acr>/cmcsp/web-csp-cost can authenticate
+      // via the SystemAssigned identity (granted AcrPull below).
+      registries: [
         {
           server: acr.properties.loginServer
           identity: 'system'   // pull image using the SystemAssigned identity
         }
-      ] : []
+      ]
       secrets: [
         // ClientSecret is stored in Key Vault and fetched at runtime via the
         // Container App's SystemAssigned managed identity (kvSecretsRole below).
-        // The Key Vault secret is created by deploy.ps1 Phase 5 before this is used.
+        // The Key Vault secret is created by the azd postprovision hook before this is used.
         {
           name: 'client-secret'
           keyVaultUrl: '${kv.properties.vaultUri}secrets/CmCSP--ClientSecret'
@@ -168,11 +173,11 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             // TenantId and ClientId are plain strings; ClientSecret comes from Key Vault.
             {
               name: 'AzureCostManagement__TenantId'
-              value: '' // set via az containerapp update (deploy.ps1 Phase 6)
+              value: '' // set via az containerapp update (postprovision hook)
             }
             {
               name: 'AzureCostManagement__ClientId'
-              value: '' // set via az containerapp update (deploy.ps1 Phase 6)
+              value: '' // set via az containerapp update (postprovision hook)
             }
             {
               name: 'AzureCostManagement__ClientSecret'
@@ -292,12 +297,14 @@ resource cleanupJob 'Microsoft.App/jobs@2024-03-01' = {
         parallelism: 1
         replicaCompletionCount: 1
       }
-      registries: contains(cleanupJobImage, acr.properties.loginServer) ? [
+      // Always register this ACR for system-identity pulls (see Container App note
+      // above). The job image is swapped to <acr>/cmcsp-cleanup by the postdeploy hook.
+      registries: [
         {
           server: acr.properties.loginServer
           identity: 'system'
         }
-      ] : []
+      ]
     }
     template: {
       containers: [
@@ -311,11 +318,11 @@ resource cleanupJob 'Microsoft.App/jobs@2024-03-01' = {
           env: [
             {
               name: 'CACHE_TABLE_ENDPOINT'
-              value: '' // set via az containerapp job update (deploy.ps1 Phase 6)
+              value: '' // set via az containerapp job update (postprovision hook)
             }
             {
               name: 'CACHE_BLOB_ENDPOINT'
-              value: '' // set via az containerapp job update (deploy.ps1 Phase 6)
+              value: '' // set via az containerapp job update (postprovision hook)
             }
             {
               name: 'CACHE_TABLE_NAME'
