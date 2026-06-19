@@ -439,16 +439,26 @@ if ($dataPlatformEnabled) {
             $redisHost = Get-Env 'REDIS_HOST_NAME'
             $redisPort = Get-Env 'REDIS_PORT' '10000'
             $dataEnv = @()
-            if ($sqlConn)   { $dataEnv += "ConnectionStrings__Sql=$sqlConn" }
+            if ($sqlConn) {
+                $dataEnv += "ConnectionStrings__Sql=$sqlConn"
+            }
+            else {
+                Write-Host "  SQL_CONNECTION_STRING empty – SQL durable store NOT wired (audit/cache fall back)." -ForegroundColor Yellow
+            }
             if ($redisHost) {
-                # Redis options bind under the AzureCostManagement section.
+                # Redis options bind under the AzureCostManagement section. Without these the
+                # app's ICacheService degrades to in-memory-only (per-replica, no shared L2),
+                # so Redis sits provisioned-but-unused. Keep this wiring independent of SQL.
                 $dataEnv += "AzureCostManagement__Redis__Enabled=true"
                 $dataEnv += "AzureCostManagement__Redis__HostName=$redisHost"
                 $dataEnv += "AzureCostManagement__Redis__Port=$redisPort"
             }
+            else {
+                Write-Host "  REDIS_HOST_NAME empty – Redis L2 NOT wired; cache degrades to in-memory only." -ForegroundColor Yellow
+            }
 
             if ($dataEnv.Count -gt 0) {
-                Write-Host "  Wiring SQL + Redis connection settings into the app + collect job..."
+                Write-Host "  Wiring SQL + Redis connection settings into the app + collect job (SQL=$([bool]$sqlConn), Redis=$([bool]$redisHost))..."
                 az containerapp update --name $containerAppName --resource-group $appRg `
                     --set-env-vars @dataEnv --only-show-errors | Out-Null
                 az containerapp job update --name $collectJobName --resource-group $appRg `

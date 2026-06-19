@@ -31,11 +31,14 @@ param containerCpu string = '0.5'
 @description('Memory allocation for the Container App.')
 param containerMemory string = '1Gi'
 
-@description('Minimum replica count (0 = scale to zero when idle).')
-param minReplicas int = 0
+@description('Minimum replica count. Keep at 1 for Blazor Server: scale-to-zero drops SignalR circuits and forces cold container + SQL-serverless resume on the next visit.')
+param minReplicas int = 1
 
 @description('Maximum replica count.')
-param maxReplicas int = 2
+param maxReplicas int = 4
+
+@description('HTTP concurrent-requests threshold per replica before scaling out.')
+param scaleHttpConcurrentRequests int = 50
 
 @description('Tags to apply to all resources.')
 param tags object = {}
@@ -278,6 +281,20 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       scale: {
         minReplicas: minReplicas
         maxReplicas: maxReplicas
+        // Explicit HTTP scale rule. Default autoscale only reacts to CPU (~4 cores),
+        // which a SignalR/IO-bound dashboard rarely hits, so it would never scale out.
+        // Concurrency-based scaling matches the workload; Container Apps provides the
+        // session affinity Blazor Server needs across replicas.
+        rules: [
+          {
+            name: 'http-concurrency'
+            http: {
+              metadata: {
+                concurrentRequests: '${scaleHttpConcurrentRequests}'
+              }
+            }
+          }
+        ]
       }
     }
   }

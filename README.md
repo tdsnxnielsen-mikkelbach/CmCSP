@@ -2,7 +2,7 @@
 
 A **Blazor Server** web application that replaces a Power BI report with a live, interactive cost dashboard for Cloud Solution Provider (CSP) scenarios. It queries the **Azure Cost Management REST API** directly across multiple subscriptions, normalises costs to a configurable target currency, and caches results to respect API rate limits.
 
-The dashboard mirrors the seven pages from the [TD SYNNEX tds_cc reference report](https://github.com/tdsnxnielsen-mikkelbach/tds_cc) and adds an eighth page for **Azure Advisor Overview** (health scores for all five Advisor categories plus detailed Cost recommendations), implemented with **MudBlazor** for the UI shell and **Blazor-ApexCharts** for charts.
+The dashboard provides nine pages of cost analytics — Cost Overview, Budgets, Subscription Breakdown, Resource Group Breakdown, Tag Chargeback, Trend & Forecast, MoM Waterfall, Reservations, and an **Azure Advisor Overview** (health scores for all five Advisor categories plus detailed Cost recommendations) — implemented with **MudBlazor** for the UI shell and **Blazor-ApexCharts** for charts.
 
 Subscriptions can be added and removed at runtime from the **Home** page, with automatic cache invalidation and cross-page refresh. In blob-export mode, the app also reconciles export provisioning on startup for all active subscriptions and exposes a manual **Re-provision Export** action on the Home page for operator recovery. Every analytics page now includes a compact **subscription scope badge** showing selected subscriptions vs subscriptions with data for the current view.
 

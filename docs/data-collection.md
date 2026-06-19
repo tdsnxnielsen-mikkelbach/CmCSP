@@ -2,7 +2,7 @@
 
 ## Overview
 
-Nightly cost-data collection runs **outside the web app** in a dedicated Azure Container Apps **Job** (`cmcsp-collect`). The job refreshes the shared two-tier cache (Table + Blob Storage) that every dashboard page reads, so figures stay current independently of the web app's lifecycle (which scales to zero when idle) and the first user of the day never pays the cold-fetch cost.
+Nightly cost-data collection runs **outside the web app** in a dedicated Azure Container Apps **Job** (`cmcsp-collect`). The job refreshes the durable `CostFact` store (Azure SQL serverless) and the shared Redis L2 cache that every dashboard page reads, so figures stay current independently of the web app's lifecycle and the first user of the day never pays the cold-fetch cost.
 
 A **Job** (not a second Container App) is the right primitive: collection is run-to-completion, isolated from web traffic, and billed per execution.
 
@@ -84,10 +84,29 @@ In the production blob-export path there is **no API rate limit** (the job reads
 ## Idempotency & Concurrency
 
 - **Idempotent by design.** Each run does `InvalidateCache()` then a full repopulate. Running it twice produces the same cache state; there is no incremental/append behaviour to corrupt.
-- **`parallelism = 1` (single replica).** The cache keys (`cm_main`, `cm_rg`, `cm_tag`, `cm_main_amort`) are **aggregated across all subscriptions**. A second concurrent replica would race to write the same keys, so collection runs as one replica refreshing the aggregate datasets.
+- **`parallelism = 1` (single replica) by default.** The aggregate cache keys (`cm_main`, `cm_rg`, `cm_tag`, `cm_main_amort`) are computed across all subscriptions, so the default single replica refreshes the aggregate datasets without races.
 - **Coalescing for UI callers.** `JobControlService.StartOrCoalesceAsync` checks for an in-flight execution first; if one is already `Running`/`Processing`, it **joins that execution** instead of starting another. Many users clicking *Collect now* at once all observe the single in-progress run.
 
-> **Follow-up (P3):** true per-replica **per-subscription partitioning** (`parallelism > 1`) would require introducing per-subscription cache keys first. Tracked in [todo.md](todo.md).
+### Fan-out (per-subscription partitioning)
+
+Since the Phase 4 data platform, every parsed row is **upserted into SQL `CostFact` by a natural key that includes `SubscriptionId`**, so disjoint per-subscription writes never conflict. The collector honours two env vars:
+
+- `COLLECT_PARTITION_COUNT` — total number of partitions.
+- `COLLECT_PARTITION_INDEX` — this execution's slice; it collects only subscriptions where `index % count == COLLECT_PARTITION_INDEX` and restricts blob parsing via `BlobCostManagementService.SubscriptionFilter`.
+
+Container Apps Jobs have **no native task-index fan-out**, so to parallelize you start *N* distinct scheduled executions, each with a fixed `COLLECT_PARTITION_INDEX` (0..N-1) and the same `COLLECT_PARTITION_COUNT`. Example for two partitions:
+
+```pwsh
+az containerapp job start -n cmcsp-collect -g rg-cmcsp-cost `
+  --env-vars COLLECT_PARTITION_COUNT=2 COLLECT_PARTITION_INDEX=0
+az containerapp job start -n cmcsp-collect -g rg-cmcsp-cost `
+  --env-vars COLLECT_PARTITION_COUNT=2 COLLECT_PARTITION_INDEX=1
+```
+
+Enable this only as the subscription count grows; with a handful of subscriptions the single nightly replica completes well within `replicaTimeout` (30 min).
+
+> **Heavy historical reloads** run in the separate run-once `CostBackfillJob`, which reads *every* export CSV (no 365-day window) and upserts into `CostFact`. Keep it as its own execution so a large reload never competes with the nightly collector or the web tier — the web app only ever *reads* pre-aggregated `CostFact`, so there is no compute to offload from it.
+
 
 ---
 

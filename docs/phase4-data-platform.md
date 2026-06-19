@@ -158,6 +158,18 @@ storage Table/Blob cache (`AzureCostManagement__AzureCache__Enabled=false`) so R
 sole L2 cache; SQL `CostFact` is the durable store. With the platform off, the app falls back
 to the storage cache and parses exports directly (no SQL).
 
+### SQL serverless auto-pause (performance note)
+
+The database is `GP_S_Gen5_2` serverless with `autoPauseDelay = 60 min` and `minCapacity 0.5`.
+After 60 min idle the DB auto-pauses; the first query then pays a resume penalty (seconds).
+The worst case is a **cold cache and a paused DB at the same time**. In practice this is
+hidden once Phase 5 is in effect — the web app keeps `minReplicas: 1` (warm L1 + warm Redis
+connection) and Redis L2 serves most reads, so SQL is hit rarely (cold replica / new revision /
+nightly collector). **Decision (2026-06-19):** keep auto-pause at 60 min for cost — the resume
+penalty is acceptable given how seldom SQL is on the request path. Revisit `autoPauseDelay` /
+`minCapacity` only if cold-start latency becomes user-visible.
+
+
 ## Cost data flow (source feed → durable store → cache)
 
 `BlobCostManagementService` separates three concerns:
