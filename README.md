@@ -153,8 +153,28 @@ CmCSP/
     ├── azure-roles.md                        ← RBAC guide for all identities
     ├── azd-deployment-guide.md               ← Azure Developer CLI deployment walkthrough
     ├── csp-deployment-guide.md               ← step-by-step deployment guide for CSPs
-    └── cost-details-api.md                   ← Cost Details API: reservations, amortized cost, billing-account scope
+    ├── cost-details-api.md                   ← Cost Details API: reservations, amortized cost, billing-account scope
+    ├── data-collection.md                    ← nightly + on-demand collection job, fan-out runbook
+    ├── phase4-data-platform.md               ← serverless SQL + Managed Redis data platform
+    ├── phase9-multitenancy.md                ← CSP multi-tenancy design (GDAP, per-tenant scoping)
+    ├── phases/                               ← per-phase detail pages (phase3–phase9)
+    └── todo.md                               ← roadmap & development backlog (phases index)
 ```
+
+---
+
+## Documentation
+
+| Doc | What it covers |
+|---|---|
+| [Roadmap & backlog](docs/todo.md) | Phased plan index — shipped work and the Phase 6–9 backlog (detail in [docs/phases/](docs/phases/)) |
+| [Azure role assignments](docs/azure-roles.md) | RBAC for every identity (app, collector, exports) |
+| [azd deployment guide](docs/azd-deployment-guide.md) | Azure Developer CLI deployment walkthrough |
+| [CSP deployment guide](docs/csp-deployment-guide.md) | Step-by-step deployment for CSPs |
+| [Cost Details API](docs/cost-details-api.md) | Reservations, amortized cost, billing-account scope |
+| [Data collection](docs/data-collection.md) | Nightly + on-demand collection job, collector fan-out runbook |
+| [Phase 4 — SQL + Redis data platform](docs/phase4-data-platform.md) | Durable `CostFact` store + shared Redis cache, MI-only |
+| [Phase 9 — CSP multi-tenancy (design)](docs/phase9-multitenancy.md) | Customer→tenant→subscription model, GDAP, tenant-isolated reads |
 
 ---
 
