@@ -1,0 +1,130 @@
+@page "/sustainability"
+@inject SustainabilityService Carbon
+
+<PageTitle>Sustainability – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-1 fw-bold">Sustainability</MudText>
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+    Estimated Azure carbon emissions (kg CO₂e, scopes 1–3) from the Carbon Optimization API.
+    Data covers a rolling ~12-month window with roughly a one-month lag.
+</MudText>
+
+@if (!_loading && Carbon.LastAccessDenied)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4" Icon="@Icons.Material.Outlined.Lock">
+        This page reads the <strong>Carbon Optimization</strong> emissions API, which requires the app
+        identity to have <strong>Reader</strong> (or the dedicated <strong>Carbon Optimization Reader</strong>)
+        role on the target subscriptions. Grant it to populate this page.
+    </MudAlert>
+}
+
+@* ── KPI summary ────────────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3" Class="mb-4">
+    <KpiCard Label="@($"Latest Month ({_latestLabel})")"
+             Value="@($"{_latest:N2} kg")" Md="4" />
+    <KpiCard Label="Previous Month" Value="@($"{_previous:N2} kg")" Md="4" />
+    <KpiCard Label="Month-over-Month"
+             Value="@($"{(_momPercent >= 0 ? "+" : "")}{_momPercent:F1}%")"
+             ValueColor="@(_momPercent > 0 ? Color.Error : Color.Success)" Md="4" />
+</MudGrid>
+
+@* ── Monthly trend ──────────────────────────────────────────────────────────── *@
+<MudPaper Class="pa-4 mb-4" Elevation="2">
+    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Emissions Trend (kg CO₂e)</MudText>
+    @if (!_loading && _monthly.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Dense>
+            No emissions data was returned. Carbon Optimization data is unavailable for these
+            subscriptions, or the app identity lacks emissions access.
+        </MudAlert>
+    }
+    else
+    {
+        <ApexChart TItem="CarbonEmissionMonth" Options="_lineOpts">
+            <ApexPointSeries TItem="CarbonEmissionMonth"
+                             Items="_monthly"
+                             Name="Emissions"
+                             XValue="@(e => e.Month.ToString("MMM yyyy"))"
+                             YValue="@(e => (decimal?)Math.Round(e.Emissions, 3))"
+                             SeriesType="SeriesType.Line" />
+        </ApexChart>
+    }
+</MudPaper>
+
+@* ── Emissions by resource type ─────────────────────────────────────────────── *@
+@if (_byType.Count > 0)
+{
+    <MudPaper Class="pa-4 mb-4" Elevation="2">
+        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Emissions by Resource Type (latest month)</MudText>
+        <ApexChart TItem="CarbonEmissionByType" Options="_barOpts">
+            <ApexPointSeries TItem="CarbonEmissionByType"
+                             Items="_byType"
+                             Name="kg CO₂e"
+                             XValue="@(e => ShortType(e.ItemName))"
+                             YValue="@(e => (decimal?)Math.Round(e.LatestMonthEmissions, 3))"
+                             SeriesType="SeriesType.Bar" />
+        </ApexChart>
+    </MudPaper>
+}
+
+@code {
+    private bool    _loading = true;
+    private string? _error;
+
+    private double _latest;
+    private double _previous;
+    private double _momPercent;
+    private string _latestLabel = "—";
+    private List<CarbonEmissionMonth>  _monthly = [];
+    private List<CarbonEmissionByType> _byType  = [];
+
+    private readonly ApexChartOptions<CarbonEmissionMonth>  _lineOpts = ApexChartPresets.SmoothLine<CarbonEmissionMonth>();
+    private readonly ApexChartOptions<CarbonEmissionByType> _barOpts  = ApexChartPresets.HorizontalBar<CarbonEmissionByType>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            var summaryTask = Carbon.GetEmissionSummaryAsync();
+            var monthlyTask = Carbon.GetMonthlyEmissionsAsync();
+            var byTypeTask  = Carbon.GetEmissionsByTypeAsync();
+
+            var summary = await summaryTask;
+            _monthly    = await monthlyTask;
+            _byType     = await byTypeTask;
+
+            if (summary is not null)
+            {
+                _latest      = summary.LatestMonthEmissions;
+                _previous    = summary.PreviousMonthEmissions;
+                _momPercent  = summary.MonthOverMonthChangePercent;
+                _latestLabel = summary.LatestMonthLabel;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load sustainability data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string ShortType(string type)
+    {
+        var slash = type.LastIndexOf('/');
+        return slash >= 0 && slash < type.Length - 1 ? type[(slash + 1)..] : type;
+    }
+}

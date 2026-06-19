@@ -54,6 +54,14 @@ deployment subscription — for other target subscriptions deploy ./modules/read
 (see docs/azure-roles.md) or assign Reader once at a management group.''')
 param grantReaderOnSubscription bool = true
 
+@description('''Phase 8: when true, grants the Container App + collector managed identities the built-in
+'Security Reader' and 'Carbon Optimization Reader' roles on THIS subscription, for the Security Posture
+(Defender for Cloud secure score) and Sustainability (Carbon Optimization emissions) pages. NOTE: the
+'Reader' grant above already covers both feeds (Microsoft.Security/*/read and emissions viewing), so this
+is only needed for least-privilege deployments where grantReaderOnSubscription is false. Default false to
+avoid redundant assignments. Only covers the deployment subscription.''')
+param grantSecurityCarbonRolesOnSubscription bool = false
+
 @description('''Phase 4: when true, provisions the managed-identity-only data platform — an Azure SQL
 serverless database and an Azure Managed Redis (Balanced_B0 / "Basic") cache. Cost-incurring. Requires
 the SQL Entra admin params below. The contained-DB users and schema are applied by the postprovision hook.''')
@@ -207,6 +215,51 @@ resource collectReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if
   name: guid(subscription().id, appName, 'collect', readerRoleId)
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', readerRoleId)
+    principalId: app.outputs.collectJobPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ── Phase 8: least-privilege Security Reader + Carbon Optimization Reader ───────
+// The Reader grant above already covers Defender for Cloud secure score reads and Carbon
+// Optimization emissions viewing. These narrower roles are offered for deployments that prefer
+// not to grant full Reader (set grantReaderOnSubscription=false and this param=true). Both roles
+// are read-only and scoped to the deployment subscription.
+
+var securityReaderRoleId = '39bc4728-0917-49c7-9d2c-d95423bc2eb4' // Security Reader (built-in)
+var carbonReaderRoleId   = 'fa0d39e6-28e5-40cf-8521-1eb320653a4c' // Carbon Optimization Reader (built-in)
+
+resource appSecurityReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantSecurityCarbonRolesOnSubscription) {
+  name: guid(subscription().id, appName, 'app', securityReaderRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', securityReaderRoleId)
+    principalId: app.outputs.containerAppPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource collectSecurityReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantSecurityCarbonRolesOnSubscription) {
+  name: guid(subscription().id, appName, 'collect', securityReaderRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', securityReaderRoleId)
+    principalId: app.outputs.collectJobPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource appCarbonReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantSecurityCarbonRolesOnSubscription) {
+  name: guid(subscription().id, appName, 'app', carbonReaderRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', carbonReaderRoleId)
+    principalId: app.outputs.containerAppPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource collectCarbonReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantSecurityCarbonRolesOnSubscription) {
+  name: guid(subscription().id, appName, 'collect', carbonReaderRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', carbonReaderRoleId)
     principalId: app.outputs.collectJobPrincipalId
     principalType: 'ServicePrincipal'
   }

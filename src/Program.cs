@@ -149,6 +149,13 @@ else
 // purchase recommendations + expiry). Singleton — stateless ARM reads with an in-process TTL memo.
 builder.Services.AddSingleton<OptimizationService>();
 
+// SecurityPostureService (Phase 8): Defender for Cloud secure score + top control findings per
+// subscription (Microsoft.Security/secureScores). SustainabilityService (Phase 8): Carbon
+// Optimization emissions (Microsoft.Carbon/carbonEmissionReports). Both are read-only ARM reads
+// with an in-process TTL memo, covered by the existing Reader grant.
+builder.Services.AddSingleton<SecurityPostureService>();
+builder.Services.AddSingleton<SustainabilityService>();
+
 // CollectionAuditService reads the cost-collector job's audit trail (last-run status,
 // row counts, trigger, duration) from Table Storage so the dashboard can surface it.
 builder.Services.AddSingleton<CollectionAuditService>();

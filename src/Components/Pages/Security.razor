@@ -1,0 +1,149 @@
+@page "/security"
+@inject SecurityPostureService Sec
+
+<PageTitle>Security Posture – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-1 fw-bold">Security Posture</MudText>
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+    Microsoft Defender for Cloud secure score per subscription and the top control gaps to fix.
+    Azure security posture only — not Microsoft 365 Secure Score.
+</MudText>
+
+@if (!_loading && Sec.LastAccessDenied)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4" Icon="@Icons.Material.Outlined.Lock">
+        This page reads <strong>Microsoft Defender for Cloud</strong> secure scores, which require the app
+        identity to have the <strong>Security Reader</strong> (or Reader) role on the target subscriptions.
+        Grant it via the Phase 7 Reader assignment or assign Security Reader to populate this page.
+    </MudAlert>
+}
+
+@* ── KPI summary ────────────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3" Class="mb-4">
+    <KpiCard Label="Average Secure Score" Value="@($"{_avgPercent:F0}%")"
+             ValueColor="@ScoreColor(_avgPercent)" Md="3" />
+    <KpiCard Label="Subscriptions Scored" Value="@_scores.Count.ToString("N0")" Md="3" />
+    <KpiCard Label="Findings to Address" Value="@_findings.Count.ToString("N0")"
+             ValueColor="@(_findings.Count > 0 ? Color.Warning : Color.Success)" Md="3" />
+    <KpiCard Label="Unhealthy Resources" Value="@_totalUnhealthy.ToString("N0")"
+             ValueColor="@(_totalUnhealthy > 0 ? Color.Error : Color.Success)" Md="3" />
+</MudGrid>
+
+@* ── Secure score per subscription ──────────────────────────────────────────── *@
+<MudPaper Class="pa-4 mb-4" Elevation="2">
+    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Secure Score by Subscription</MudText>
+    @if (!_loading && _scores.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Dense>
+            No secure scores were returned. Defender for Cloud may not be enabled on these subscriptions,
+            or the app identity lacks Security Reader access.
+        </MudAlert>
+    }
+    else
+    {
+        <MudDataGrid T="SecureScoreSummary" Items="_scores" SortMode="SortMode.Multiple" Dense>
+            <Columns>
+                <PropertyColumn Property="s => s.DisplayName" Title="Subscription" />
+                <TemplateColumn Title="Secure Score" SortBy="s => s.Percentage">
+                    <CellTemplate>
+                        <div class="d-flex align-center" style="gap:12px; min-width:220px;">
+                            <MudProgressLinear Value="context.Item.Percentage" Color="@ScoreColor(context.Item.Percentage)"
+                                               Class="flex-grow-1" Style="height:8px;" Rounded />
+                            <MudText Typo="Typo.body2" Class="fw-bold">@($"{context.Item.Percentage:F0}%")</MudText>
+                        </div>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Points" SortBy="s => s.Current">
+                    <CellTemplate>@($"{context.Item.Current:F1} / {context.Item.Max}")</CellTemplate>
+                </TemplateColumn>
+            </Columns>
+        </MudDataGrid>
+    }
+</MudPaper>
+
+@* ── Top findings ───────────────────────────────────────────────────────────── *@
+<MudPaper Class="pa-4 mb-4" Elevation="2">
+    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top Security Findings</MudText>
+    @if (!_loading && _findings.Count == 0)
+    {
+        <MudAlert Severity="Severity.Success" Dense>
+            No controls with unhealthy resources were found. Your tracked recommendations are healthy.
+        </MudAlert>
+    }
+    else
+    {
+        <MudDataGrid T="SecurityControlFinding" Items="_findings" SortMode="SortMode.Multiple"
+                     Filterable FilterMode="DataGridFilterMode.ColumnFilterRow" Dense>
+            <Columns>
+                <PropertyColumn Property="f => f.ControlName" Title="Recommendation" />
+                <TemplateColumn Title="Unhealthy" SortBy="f => f.Unhealthy">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Error">@context.Item.Unhealthy</MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="f => f.Healthy"   Title="Healthy" />
+                <PropertyColumn Property="f => f.Weight"    Title="Weight" />
+                <TemplateColumn Title="Subscription">
+                    <CellTemplate>@SubName(context.Item.SubscriptionId)</CellTemplate>
+                </TemplateColumn>
+            </Columns>
+        </MudDataGrid>
+    }
+</MudPaper>
+
+@code {
+    private bool    _loading = true;
+    private string? _error;
+
+    private double _avgPercent;
+    private int    _totalUnhealthy;
+    private List<SecureScoreSummary>     _scores   = [];
+    private List<SecurityControlFinding> _findings = [];
+    private Dictionary<string, string>   _subNames = new(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            var scoresTask   = Sec.GetSecureScoresAsync();
+            var findingsTask = Sec.GetTopFindingsAsync();
+            var namesTask    = Sec.GetSubscriptionNamesAsync();
+
+            _scores   = await scoresTask;
+            _findings = await findingsTask;
+            _subNames = await namesTask;
+
+            _avgPercent     = _scores.Count > 0 ? _scores.Average(s => s.Percentage) : 0;
+            _totalUnhealthy = _findings.Sum(f => f.Unhealthy);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load security posture data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string SubName(string subscriptionId) =>
+        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
+
+    private static Color ScoreColor(double percent) => percent switch
+    {
+        >= 70 => Color.Success,
+        >= 40 => Color.Warning,
+        _     => Color.Error
+    };
+}

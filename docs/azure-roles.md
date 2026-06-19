@@ -277,6 +277,43 @@ propagated (allow up to ~5 minutes) on every subscription in `SubscriptionIds`.
 
 ---
 
+## 4c – Security posture & sustainability (Phase 8)
+
+The **Security Posture** page (`/security`) and the **Sustainability** page (`/sustainability`) read
+two more Azure-only feeds as the Container App / collector managed identities:
+
+- **Microsoft Defender for Cloud** (`Microsoft.Security/secureScores` + `secureScoreControls`) — the
+  Azure secure-score percentage per subscription and the top control gaps. *Azure security posture
+  only — not the Microsoft 365 Secure Score.*
+- **Carbon Optimization** (`Microsoft.Carbon/carbonEmissionReports`) — estimated emissions
+  (kg CO₂e, scopes 1–3) per month and per resource type.
+
+**The Phase 7 `Reader` grant already covers both** — `Microsoft.Security/*/read` is part of `*/read`,
+and a subscription **Reader** can view Carbon emissions data per Microsoft's documentation. So no new
+role assignment is required on subscriptions that already have the Reader grant above.
+
+For **least-privilege** deployments that prefer *not* to grant full Reader, assign these narrower
+read-only roles instead:
+
+| Role | Role ID | Scope | Why |
+|---|---|---|---|
+| **Security Reader** | `39bc4728-0917-49c7-9d2c-d95423bc2eb4` | Each target subscription | `Microsoft.Security/*/read` → Defender for Cloud secure score + controls |
+| **Carbon Optimization Reader** | `fa0d39e6-28e5-40cf-8521-1eb320653a4c` | Each target subscription | View emissions data (Carbon Optimization API) — assignable at subscription scope only |
+
+### Assigned by Bicep
+
+- **Default (Reader already granted):** nothing to do — both pages work off the Phase 7 Reader grant.
+- **Least-privilege:** set `grantReaderOnSubscription = false` and `grantSecurityCarbonRolesOnSubscription = true`
+  in `infra/main.bicep` to assign **Security Reader** + **Carbon Optimization Reader** to both managed
+  identities on the deployment subscription. For other target subscriptions, grant the same two roles
+  (or Reader) manually / via your own per-subscription module.
+
+> If the Security or Sustainability page shows the "needs role" banner, confirm the assignment has
+> propagated and that Defender for Cloud (Security) / Carbon Optimization data exists for the
+> subscription. Carbon data covers a rolling ~12-month window with roughly a one-month lag.
+
+---
+
 ## 5 – Summary table
 
 | Identity | Role | Scope | Assigned by |
@@ -285,6 +322,8 @@ propagated (allow up to ~5 minutes) on every subscription in `SubscriptionIds`.
 | Entra App SP | Reader | Each subscription | `az role assignment create` (Advisor page) |
 | Container App MI | Reader | Each subscription | `infra/main.bicep` (deploy sub) + `infra/modules/reader-sub.bicep` (other subs) — Phase 7 inventory/optimization |
 | Collector job MI | Reader | Each subscription | `infra/main.bicep` (deploy sub) + `infra/modules/reader-sub.bicep` (other subs) — Phase 7 inventory/optimization |
+| Container App MI | Security Reader *(optional)* | Each subscription | `infra/main.bicep` `grantSecurityCarbonRolesOnSubscription` — Phase 8 secure score (least-privilege alt to Reader) |
+| Collector job MI | Carbon Optimization Reader *(optional)* | Each subscription | `infra/main.bicep` `grantSecurityCarbonRolesOnSubscription` — Phase 8 emissions (least-privilege alt to Reader) |
 | Entra App SP | Billing Account Reader | Billing account | Partner Center / Billing API |
 | *(CSP admin)* | IndirectCostEnabled | Customer subscription | Partner Center UI |
 | Export resource MI | Storage Blob Data Contributor | Export storage account | `infra/modules/storage.bicep` |
