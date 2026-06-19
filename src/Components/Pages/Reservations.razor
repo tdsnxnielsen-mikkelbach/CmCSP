@@ -1,6 +1,7 @@
 @page "/reservations"
 @inject ICostDetailsService CostDetails
 @inject ICostManagementService CostService
+@inject OptimizationService Optimization
 @inject CostManagementOptions Options
 @inject SubscriptionStoreService SubStore
 @implements IDisposable
@@ -142,6 +143,29 @@ else
     </MudPaper>
 }
 
+@* ── Utilisation trend (last 6 months) ──────────────────────────────────────── *@
+@if (_trendLoading || _trendData.Count > 0)
+{
+    <MudPaper Class="pa-4 mb-4" Elevation="2">
+        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Utilisation Trend (last 6 months)</MudText>
+        @if (_trendLoading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-4" />
+        }
+        else
+        {
+            <ApexChart TItem="TrendPoint" Options="_trendOpts">
+                <ApexPointSeries TItem="TrendPoint"
+                                 Items="_trendData"
+                                 Name="Utilisation %"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.UtilPct)"
+                                 SeriesType="SeriesType.Line" />
+            </ApexChart>
+        }
+    </MudPaper>
+}
+
 @* ── Detail table ──────────────────────────────────────────────────────────── *@
 <MudPaper Class="pa-4" Elevation="2">
     <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">
@@ -200,12 +224,99 @@ else
     }
 </MudPaper>
 
+@* ── Phase 7: purchase recommendations + expiry (Reader / Consumption read) ──── *@
+@if (Optimization.LastAccessDenied)
+{
+    <MudAlert Severity="Severity.Warning" Class="mt-4" Icon="@Icons.Material.Outlined.Lock">
+        Reservation purchase recommendations and expiry need the app identity to have the
+        <strong>Reader</strong> role (and <code>Microsoft.Consumption</code> read) on the target
+        subscriptions. Deploy the Phase 7 Bicep role assignment to populate these sections.
+    </MudAlert>
+}
+
+<MudPaper Class="pa-4 mt-4" Elevation="2">
+    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Purchase Recommendations</MudText>
+    @if (_recommendations.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Dense>
+            No reservation or savings-plan purchase recommendations were returned. This is normal
+            when usage is already well covered, or when the identity lacks Reader / Consumption read.
+        </MudAlert>
+    }
+    else
+    {
+        <MudDataGrid T="ReservationPurchaseRecommendation"
+                     Items="_recommendations"
+                     SortMode="SortMode.Multiple"
+                     Filterable
+                     FilterMode="DataGridFilterMode.ColumnFilterRow"
+                     Dense>
+            <Columns>
+                <PropertyColumn Property="r => r.Sku"           Title="SKU" />
+                <PropertyColumn Property="r => r.ResourceType"  Title="Resource Type" />
+                <PropertyColumn Property="r => r.Term"          Title="Term" />
+                <PropertyColumn Property="r => r.Scope"         Title="Scope" />
+                <TemplateColumn Title="Subscription">
+                    <CellTemplate>@SubName(context.Item.SubscriptionId)</CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="r => r.RecommendedQuantity" Title="Qty" Format="N0" />
+                <PropertyColumn Property="r => r.NormalizedNetSavings"
+                                Title=@($"Est. Savings ({Options.TargetCurrency})")
+                                Format="N0" />
+            </Columns>
+        </MudDataGrid>
+    }
+</MudPaper>
+
+@if (_orders.Count > 0)
+{
+    <MudPaper Class="pa-4 mt-4" Elevation="2">
+        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Reservation Expiry</MudText>
+        <MudDataGrid T="ReservationOrderInfo"
+                     Items="_orders"
+                     SortMode="SortMode.Multiple"
+                     Dense>
+            <Columns>
+                <PropertyColumn Property="o => o.DisplayName" Title="Reservation" />
+                <PropertyColumn Property="o => o.Term"        Title="Term" />
+                <PropertyColumn Property="o => o.Quantity"    Title="Qty" Format="N0" />
+                <PropertyColumn Property="o => o.ProvisioningState" Title="State" />
+                <TemplateColumn Title="Expires">
+                    <CellTemplate>
+                        @(context.Item.ExpiryDate?.ToString("yyyy-MM-dd") ?? "—")
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Days Left">
+                    <CellTemplate>
+                        @if (context.Item.DaysUntilExpiry is { } d)
+                        {
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(d < 0 ? Color.Error : d <= 30 ? Color.Warning : Color.Success)">
+                                @(d < 0 ? "Expired" : $"{d} d")
+                            </MudChip>
+                        }
+                        else
+                        {
+                            <text>—</text>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+        </MudDataGrid>
+    </MudPaper>
+}
+
 @code {
     private record ChartPoint(string Label, decimal UsedCost, decimal UnusedCost);
+    private record TrendPoint(string Label, decimal UtilPct, decimal TotalCost);
 
     private bool    _loading  = true;
     private bool    _enabling = false;
     private string? _error;
+
+    // Phase 7: reservation purchase recommendations + expiry (Microsoft.Consumption / Capacity).
+    private List<ReservationPurchaseRecommendation> _recommendations = [];
+    private List<ReservationOrderInfo>              _orders          = [];
 
     private DateTime? _selectedMonth = new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1);
     private string    _selectedScope = "billing";
@@ -213,6 +324,9 @@ else
 
     private List<ReservationRow> _rows      = [];
     private List<ChartPoint>     _chartData = [];
+
+    private bool             _trendLoading;
+    private List<TrendPoint> _trendData = [];
 
     private decimal _totalCost;
     private decimal _usedCost;
@@ -226,6 +340,13 @@ else
         Yaxis       = [new YAxis { Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(0) : ''; }" } }]
     };
 
+    private readonly ApexChartOptions<TrendPoint> _trendOpts = new()
+    {
+        Chart  = new Chart { Toolbar = new Toolbar { Show = false } },
+        Stroke = new Stroke { Curve = Curve.Smooth, Width = 3 },
+        Yaxis  = [new YAxis { Min = 0, Max = 100, Labels = new YAxisLabels { Formatter = "function(val) { return val != null ? val.toFixed(0) + '%' : ''; }" } }]
+    };
+
     protected override void OnInitialized()
     {
         // Default scope: billing if available, else subscription
@@ -234,10 +355,37 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        // Purchase recommendations + expiry come from Resource Graph / Consumption / Capacity and
+        // are independent of the Cost Details API, so load them regardless of that toggle.
+        _ = LoadOptimizationAsync();
+
         if (Options.CostDetails.Enabled)
             await LoadAsync();
         else
             _loading = false;
+    }
+
+    private async Task LoadOptimizationAsync()
+    {
+        try
+        {
+            var recsTask   = Optimization.GetReservationRecommendationsAsync();
+            var ordersTask = Optimization.GetReservationOrdersAsync();
+            var namesTask  = Optimization.GetSubscriptionNamesAsync();
+            _recommendations = await recsTask;
+            _orders          = await ordersTask;
+            _subNames        = await namesTask;
+        }
+        catch
+        {
+            // Non-fatal — the recommendation / expiry sections simply stay empty.
+            _recommendations = [];
+            _orders          = [];
+        }
+        finally
+        {
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private async Task OnMonthChanged(DateTime? date)
@@ -296,6 +444,10 @@ else
                     g.Sum(r => r.NormalizedUnusedCost)))
                 .OrderByDescending(x => x.UsedCost + x.UnusedCost)
                 .ToList();
+
+            // Kick off the 6-month trend separately so it doesn't delay the month view.
+            // CostDetails caches per month (4h TTL), so repeat refreshes are cheap.
+            _ = LoadTrendAsync();
         }
         catch (Exception ex)
         {
@@ -304,6 +456,45 @@ else
         finally
         {
             _loading = false;
+        }
+    }
+
+    private async Task LoadTrendAsync()
+    {
+        _trendLoading = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var anchor = _selectedMonth ?? DateTime.UtcNow;
+            var points = new List<TrendPoint>();
+            for (var i = 5; i >= 0; i--)
+            {
+                var month = new DateTime(anchor.Year, anchor.Month, 1).AddMonths(-i);
+                var from  = DateOnly.FromDateTime(month);
+                var to    = from.AddMonths(1).AddDays(-1);
+
+                var rows = _selectedScope == "billing" && CostDetails.HasBillingAccountAccess
+                    ? await CostDetails.GetAllCustomerReservationsAsync(from, to)
+                    : await CostDetails.GetAllSubscriptionReservationsAsync(from, to);
+
+                var total = rows.Sum(r => r.NormalizedTotalCost);
+                var used  = rows.Sum(r => r.NormalizedUsedCost);
+                var pct   = total > 0 ? Math.Round(used / total * 100m, 1) : 0m;
+                points.Add(new TrendPoint(month.ToString("MMM yy"), pct, total));
+            }
+
+            // Only surface periods that actually have reservation spend.
+            _trendData = points.Any(p => p.TotalCost > 0) ? points : [];
+        }
+        catch
+        {
+            // Non-fatal — the trend chart simply stays hidden.
+            _trendData = [];
+        }
+        finally
+        {
+            _trendLoading = false;
+            await InvokeAsync(StateHasChanged);
         }
     }
 
@@ -328,6 +519,11 @@ else
 
     private string Fmt(decimal value) =>
         $"{Options.TargetCurrency} {value:N0}";
+
+    private string SubName(string subscriptionId) =>
+        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
+
+    private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
 
     private static Color UtilColor(decimal pct) =>
         pct >= 80 ? Color.Success : pct >= 50 ? Color.Warning : Color.Error;

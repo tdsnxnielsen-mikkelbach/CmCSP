@@ -47,6 +47,13 @@ deployment subscription. For multi-subscription / future-subscription coverage, 
 management group instead. Leave false to keep onboarding a manual step (scripts/onboard-subscription.ps1).''')
 param grantMiRbacAdminOnSubscription bool = false
 
+@description('''Phase 7: when true, grants the Container App + collector managed identities the built-in
+'Reader' role on THIS subscription so the app can read live Azure resource inventory (Azure Resource Graph),
+orphaned-resource queries and reservation recommendations for the Optimization page. Only covers the
+deployment subscription — for other target subscriptions deploy ./modules/reader-sub.bicep per subscription
+(see docs/azure-roles.md) or assign Reader once at a management group.''')
+param grantReaderOnSubscription bool = true
+
 @description('''Phase 4: when true, provisions the managed-identity-only data platform — an Azure SQL
 serverless database and an Azure Managed Redis (Balanced_B0 / "Basic") cache. Cost-incurring. Requires
 the SQL Entra admin params below. The contained-DB users and schema are applied by the postprovision hook.''')
@@ -176,6 +183,32 @@ resource miRbacAdmin 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (
     principalType: 'ServicePrincipal'
     conditionVersion: '2.0'
     condition: rbacAdminCondition
+  }
+}
+
+// ── Phase 7: Reader for live inventory / optimization ──────────────────────────
+// Grants the app + collector managed identities the built-in 'Reader' role on this
+// subscription so the Optimization page can query Azure Resource Graph (inventory,
+// orphaned resources) and Microsoft.Consumption reservation recommendations. Reader is
+// purely read-only. Other target subscriptions need ./modules/reader-sub.bicep.
+
+var readerRoleId = 'acdd72a7-3385-48ef-bd42-f606fba81ae7' // Reader (built-in)
+
+resource appReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantReaderOnSubscription) {
+  name: guid(subscription().id, appName, 'app', readerRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', readerRoleId)
+    principalId: app.outputs.containerAppPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource collectReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantReaderOnSubscription) {
+  name: guid(subscription().id, appName, 'collect', readerRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', readerRoleId)
+    principalId: app.outputs.collectJobPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 

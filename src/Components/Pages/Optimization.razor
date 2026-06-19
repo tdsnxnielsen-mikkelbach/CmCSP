@@ -1,0 +1,166 @@
+@page "/optimization"
+@inject OptimizationService Opt
+@inject ICostManagementService CostService
+@inject CostManagementOptions Options
+@inject SubscriptionStoreService SubStore
+
+<PageTitle>Optimization – CSP Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+}
+
+<MudText Typo="Typo.h5" Class="mb-1 fw-bold">Optimization</MudText>
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+    Live Azure inventory joined to cost data — orphaned resources to remove and tag-governance gaps.
+</MudText>
+
+@if (!_loading && Opt.LastAccessDenied)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4" Icon="@Icons.Material.Outlined.Lock">
+        This page reads <strong>live Azure resource inventory</strong> via Azure Resource Graph, which
+        requires the app identity to have the <strong>Reader</strong> role on the target subscriptions.
+        Deploy the Phase 7 Bicep role assignment (or grant Reader manually) to populate it.
+    </MudAlert>
+}
+
+@* ── KPI summary ────────────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3" Class="mb-4">
+    <KpiCard Label="Total Resources" Value="@_totalResources.ToString("N0")" Md="3" />
+    <KpiCard Label="Orphaned Resources" Value="@_orphans.Count.ToString("N0")"
+             ValueColor="@(_orphans.Count > 0 ? Color.Error : Color.Success)" Md="3" />
+    <KpiCard Label="Untagged Resources" Value="@_untaggedCount.ToString("N0")"
+             ValueColor="@(_untaggedCount > 0 ? Color.Warning : Color.Success)" Md="3" />
+    <KpiCard Label="Tagged %" Value="@($"{_taggedPct:F1}%")"
+             ValueColor="@(_taggedPct >= 80 ? Color.Success : Color.Warning)" Md="3" />
+</MudGrid>
+
+@* ── Orphaned resources ─────────────────────────────────────────────────────── *@
+<MudPaper Class="pa-4 mb-4" Elevation="2">
+    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Orphaned &amp; Idle Resources</MudText>
+    @if (!_loading && _orphans.Count == 0)
+    {
+        <MudAlert Severity="Severity.Success" Dense>
+            No unattached disks, idle public IPs, orphaned NICs, empty App Service plans or
+            stopped-but-allocated VMs were found. Nice and tidy.
+        </MudAlert>
+    }
+    else
+    {
+        <MudDataGrid T="OrphanedResource"
+                     Items="_orphans"
+                     SortMode="SortMode.Multiple"
+                     Filterable
+                     FilterMode="DataGridFilterMode.ColumnFilterRow"
+                     Dense>
+            <Columns>
+                <PropertyColumn Property="r => r.Name"          Title="Name" />
+                <TemplateColumn Title="Reason">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small" Color="@ReasonColor(context.Item.Reason)">
+                            @context.Item.Reason
+                        </MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="r => r.Type"          Title="Type" />
+                <PropertyColumn Property="r => r.ResourceGroup" Title="Resource Group" />
+                <PropertyColumn Property="r => r.Location"      Title="Region" />
+                <TemplateColumn Title="Subscription">
+                    <CellTemplate>@SubName(context.Item.SubscriptionId)</CellTemplate>
+                </TemplateColumn>
+            </Columns>
+        </MudDataGrid>
+    }
+</MudPaper>
+
+@* ── Untagged resources by type ─────────────────────────────────────────────── *@
+@if (_untaggedByType.Count > 0)
+{
+    <MudPaper Class="pa-4 mb-4" Elevation="2">
+        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Untagged Resources by Type</MudText>
+        <ApexChart TItem="TypeCount" Options="_barOpts">
+            <ApexPointSeries TItem="TypeCount"
+                             Items="_untaggedByType"
+                             Name="Untagged"
+                             XValue="@(e => e.Type)"
+                             YValue="@(e => (decimal?)e.Count)"
+                             SeriesType="SeriesType.Bar" />
+        </ApexChart>
+    </MudPaper>
+}
+
+@code {
+    private record TypeCount(string Type, int Count);
+
+    private bool    _loading = true;
+    private string? _error;
+
+    private int _totalResources;
+    private int _untaggedCount;
+    private double _taggedPct;
+    private List<OrphanedResource> _orphans = [];
+    private List<TypeCount>        _untaggedByType = [];
+    private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly ApexChartOptions<TypeCount> _barOpts = ApexChartPresets.HorizontalBar<TypeCount>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _loading = true;
+        _error   = null;
+        try
+        {
+            var inventoryTask = Opt.GetInventoryAsync();
+            var coverageTask  = Opt.GetTagCoverageAsync();
+            var orphansTask   = Opt.GetOrphanedResourcesAsync();
+            var namesTask     = Opt.GetSubscriptionNamesAsync();
+
+            var inventory = await inventoryTask;
+            var coverage  = await coverageTask;
+            _orphans      = await orphansTask;
+            _subNames     = await namesTask;
+
+            _totalResources = coverage.TotalResources;
+            _untaggedCount  = coverage.UntaggedResources;
+            _taggedPct      = coverage.TaggedPercent;
+
+            _untaggedByType = inventory
+                .Where(r => r.IsUntagged)
+                .GroupBy(r => ShortType(r.Type))
+                .Select(g => new TypeCount(g.Key, g.Count()))
+                .OrderByDescending(t => t.Count)
+                .Take(15)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load optimization data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string SubName(string subscriptionId) =>
+        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
+
+    private static string ShortType(string type)
+    {
+        var slash = type.LastIndexOf('/');
+        return slash >= 0 && slash < type.Length - 1 ? type[(slash + 1)..] : type;
+    }
+
+    private static Color ReasonColor(string reason) => reason switch
+    {
+        "Unattached managed disk"        => Color.Error,
+        "Stopped but allocated VM"       => Color.Error,
+        "Empty App Service plan (no sites)" => Color.Warning,
+        _                                 => Color.Warning
+    };
+}

@@ -227,12 +227,64 @@ If the Advisor page shows an empty state with no recommendations, confirm that:
 
 ---
 
+## 4b – Azure Resource Graph inventory & optimization (Phase 7)
+
+The **Optimization** page (`/optimization`), the live tag-coverage panel on **Tag Chargeback**, and
+the **purchase recommendations / expiry** sections on **Reservations** join cost data to live Azure
+inventory. They call:
+
+- **Azure Resource Graph** (`Microsoft.ResourceGraph/resources`) — full inventory + orphaned/idle
+  resource finder.
+- **Microsoft.Consumption** (`reservationRecommendations`) — reservation / savings-plan purchase
+  recommendations.
+- **Microsoft.Capacity** (`reservationOrders`) — existing reservation orders + expiry dates.
+
+These run as the **Container App** and **collector** managed identities (or the Entra App SP). The
+built-in **Reader** role covers all of them — Resource Graph and `Microsoft.Consumption/.../read`
+are both included in `*/read`.
+
+| Role | Role ID | Scope | Why |
+|---|---|---|---|
+| **Reader** | `acdd72a7-3385-48ef-bd42-f606fba81ae7` | Each target subscription | Grants `*/read` → Resource Graph, Consumption reservation recommendations, resource inventory |
+
+> Reservation **expiry** (`Microsoft.Capacity/reservationOrders`) is tenant-scoped and may
+> additionally require **Reservations Reader** at the tenant root. When it is missing the
+> Reservations page simply hides the expiry table — the rest of the page still works.
+
+### Assigned by Bicep
+
+- **Deployment subscription:** `infra/main.bicep` assigns **Reader** to both the Container App and
+  collector managed identities when `grantReaderOnSubscription = true` (the default).
+- **Other target subscriptions:** deploy `infra/modules/reader-sub.bicep` once per subscription:
+
+```bash
+APP_MI=$(az deployment sub show -n cmcsp \
+  --query "properties.outputs.CONTAINER_APP_PRINCIPAL_ID.value" -o tsv)   # or read from the portal
+COLLECT_MI=<collector job principal id>
+
+az deployment sub create \
+  --subscription "<targetSubscriptionId>" \
+  --location "<region>" \
+  --template-file infra/modules/reader-sub.bicep \
+  --parameters appPrincipalId="$APP_MI" collectPrincipalId="$COLLECT_MI"
+```
+
+If the Optimization page shows the "needs Reader role" banner, confirm the Reader assignment has
+propagated (allow up to ~5 minutes) on every subscription in `SubscriptionIds`.
+
+> **Scope note:** like the Advisor grant, `Reader` is broader than `Cost Management Reader` — it
+> exposes resource metadata across the subscription. Inform customers before assigning it.
+
+---
+
 ## 5 – Summary table
 
 | Identity | Role | Scope | Assigned by |
 |---|---|---|---|
 | Entra App SP | Cost Management Contributor | Each subscription | `az role assignment create` |
 | Entra App SP | Reader | Each subscription | `az role assignment create` (Advisor page) |
+| Container App MI | Reader | Each subscription | `infra/main.bicep` (deploy sub) + `infra/modules/reader-sub.bicep` (other subs) — Phase 7 inventory/optimization |
+| Collector job MI | Reader | Each subscription | `infra/main.bicep` (deploy sub) + `infra/modules/reader-sub.bicep` (other subs) — Phase 7 inventory/optimization |
 | Entra App SP | Billing Account Reader | Billing account | Partner Center / Billing API |
 | *(CSP admin)* | IndirectCostEnabled | Customer subscription | Partner Center UI |
 | Export resource MI | Storage Blob Data Contributor | Export storage account | `infra/modules/storage.bicep` |

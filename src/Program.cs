@@ -144,6 +144,11 @@ else
     builder.Services.AddHostedService<CacheWarmupService>();
 }
 
+// OptimizationService (Phase 7): joins cost data to live Azure inventory via Azure Resource
+// Graph (inventory + orphaned-resource finder) and Microsoft.Consumption/Capacity (reservation
+// purchase recommendations + expiry). Singleton — stateless ARM reads with an in-process TTL memo.
+builder.Services.AddSingleton<OptimizationService>();
+
 // CollectionAuditService reads the cost-collector job's audit trail (last-run status,
 // row counts, trigger, duration) from Table Storage so the dashboard can surface it.
 builder.Services.AddSingleton<CollectionAuditService>();
