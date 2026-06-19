@@ -188,17 +188,17 @@ STORAGE_NAME="cmcspexports$(openssl rand -hex 3)"
 
 az deployment group create \
   -g rg-cmcsp-app \
-  --template-file bicep/main.bicep \
+  --template-file infra/modules/storage.bicep \
   --parameters \
     storageAccountName="$STORAGE_NAME" \
     location=swedencentral \
     tags='{"project":"cmcsp","application":"csp-cost-dashboard","environment":"production","managed-by":"bicep","owner":"platform-engineering","cost-center":"cloud-ops"}'
 
 # Save the storage account resource ID for later steps
-STORAGE_ID=$(az deployment group show -g rg-cmcsp-app -n main \
+STORAGE_ID=$(az deployment group show -g rg-cmcsp-app -n storage \
   --query "properties.outputs.storageAccountResourceId.value" -o tsv)
 
-STORAGE_URI=$(az deployment group show -g rg-cmcsp-app -n main \
+STORAGE_URI=$(az deployment group show -g rg-cmcsp-app -n storage \
   --query "properties.outputs.storageAccountUri.value" -o tsv)
 
 echo "Storage account ID:  $STORAGE_ID"
@@ -217,7 +217,7 @@ EXPORT_START=$(date -u -d "+5 minutes" '+%Y-%m-%dT%H:%M:%SZ')
 
 az deployment sub create \
   --location swedencentral \
-  --template-file bicep/export-sub.bicep \
+  --template-file infra/modules/export-sub.bicep \
   --parameters \
     exportName="daily-cost-export" \
     storageAccountResourceId="$STORAGE_ID" \
@@ -237,7 +237,7 @@ echo "Export MI principal ID: $EXPORT_MI"
 ```bash
 az deployment group create \
   -g rg-cmcsp-app \
-  --template-file bicep/main.bicep \
+  --template-file infra/modules/storage.bicep \
   --parameters \
     storageAccountName="$STORAGE_NAME" \
     exportManagedIdentityPrincipalId="$EXPORT_MI"
@@ -262,7 +262,7 @@ SAS=$(az storage container generate-sas \
 
 az deployment tenant create \
   --location swedencentral \
-  --template-file bicep/export-billing.bicep \
+  --template-file infra/modules/export-billing.bicep \
   --parameters \
     billingAccountId="$BILLING_ACCOUNT_ID" \
     exportName="daily-billing-export" \
@@ -295,7 +295,7 @@ KV_NAME="kv-cmcsp-$(openssl rand -hex 3)"
 
 az deployment group create \
   -g rg-cmcsp-app \
-  --template-file bicep/app.bicep \
+  --template-file infra/modules/app.bicep \
   --parameters \
     appName=cmcsp \
     acrName="$ACR_NAME" \
@@ -348,13 +348,13 @@ az role assignment create --assignee "$APP_MI" \
   --scope "/subscriptions/<subscription-id>"
 ```
 
-Also re-deploy `main.bicep` with the Container App MI principal ID so Bicep manages the
+Also re-deploy `storage.bicep` with the Container App MI principal ID so Bicep manages the
 role assignments declaratively (avoids drift):
 
 ```bash
 az deployment group create \
   -g rg-cmcsp-app \
-  --template-file bicep/main.bicep \
+  --template-file infra/modules/storage.bicep \
   --parameters \
     storageAccountName="$STORAGE_NAME" \
     exportManagedIdentityPrincipalId="$EXPORT_MI" \
@@ -453,6 +453,15 @@ az containerapp update \
     "AzureCostManagement__AzureCache__CacheContainerName=cmcspcache" \
     "AzureCostManagement__ApiDailyRefreshHourUtc=1" \
     "KeyVaultUri=$KV_URI"
+
+# NOTE (Phase 4 data platform): when SQL + Azure Managed Redis are provisioned, the
+# `azd` postprovision hook DISABLES the storage cache above
+# (`AzureCostManagement__AzureCache__Enabled=false`) and instead wires Redis + SQL:
+#     "AzureCostManagement__Redis__Enabled=true" \
+#     "AzureCostManagement__Redis__HostName=<name>.<region>.redis.azure.net" \
+#     "AzureCostManagement__Redis__Port=10000" \
+#     "ConnectionStrings__Sql=Server=tcp:<srv>.database.windows.net,1433;Database=cmcsp;Authentication=Active Directory Default;Encrypt=True;"
+# Both Redis and SQL authenticate with the Container App managed identity (no keys/secrets).
 
 # 12b. Wire the ClientSecret from Key Vault as a Container App secret
 #      The Container App's Managed Identity must have Key Vault Secrets User (granted by app.bicep).
@@ -567,8 +576,8 @@ For each additional customer subscription:
 │  │  ├── blob: cost-exports/        │◄── Container App reads CSVs       │
 │  │  ├── blob: cmcspcache/          │◄── Container App writes/reads     │
 │  │                              │    large cache blobs               │
-│  │                              │◄── Cleanup Job deletes expired     │
-│  └── table: cmcspcache         │    entries (runs every 30 min)     │
+│  │                              │◄── Collect Job writes cost facts  │
+│  └── table: cmcspcache         │    + cache (nightly 02:00 UTC)     │
 │  └──────────────────────────────────┘                                   │
 │                                                                         │
 │  Microsoft.CostManagement/exports  ──► (subscription scope, per sub)   │
@@ -581,12 +590,12 @@ For each additional customer subscription:
 │  │  ACR        │   │  Key Vault   │   │  Container Apps Env      │    │
 │  │  cmcsp:*    │   │  secrets     │   │  ┌────────────────────┐  │    │
 │  │  cmcsp-     │   └──────┬───────┘   │  │  Container App     │  │    │
-│  │  cleanup:*  │          │  KV       │  │  cmcsp             │  │    │
+│  │  collect:* │          │  KV       │  │  cmcsp             │  │    │
 │  └──────┬──────┘          │  Secrets  │  │  SystemAssigned MI │  │    │
 │         │  AcrPull        │  User     │  └────────────────────┘  │    │
 │         └────────────┬────┘           │  ┌────────────────────┐  │    │
-│                      └──────────────► │  │  Job (*/30 cron)   │  │    │
-│                                       │  │  cmcsp-cleanup     │  │    │
+│                      └──────────────► │  │  Job (0 2 cron)    │  │    │
+│                                       │  │  cmcsp-collect     │  │    │
 │                                       │  │  SystemAssigned MI │  │    │
 │                                       │  └────────────────────┘  │    │
 │                                       └──────────────────────────┘    │
@@ -617,8 +626,8 @@ az containerapp logs show -n cmcsp -g rg-cmcsp-app --follow | grep -E "Home\[|Su
 | Key Vault 403 | Container App MI missing Key Vault Secrets User | Check app.bicep deployment |
 | All chips show ✗ immediately | `ClientSecret` not wired; Query API auth failing | Check Step 12b; confirm KV secret `CmCSP--ClientSecret` exists |
 | All chips show ✗ on startup only | No blobs yet AND `ClientSecret` missing | Either add `ClientSecret` (Step 12b) or wait for first export run |
-| Cleanup job not running | Job not provisioned | Run `azd provision` to provision the `cmcsp-cleanup` job |
-| Cleanup job fails (403) | MI missing storage roles | Re-run `azd provision`; `main.bicep` grants Table Contributor + Blob Contributor |
+| Collector job not running | Job not provisioned | Run `azd provision` to provision the `cmcsp-collect` job |
+| Collector job fails (403) | MI missing storage roles | Re-run `azd provision`; `main.bicep` grants Table Contributor + Blob Contributor |
 | Daily refresh not updating data | `ApiDailyRefreshHourUtc` set but `ClientSecret` absent | Set `ClientSecret` via KV ref; without it, `CostManagementService` cannot auth |
 | Budgets page shows “no budgets found” | No subscription-scope budgets exist in Azure | Create a budget in Portal: Cost Management → Budgets, per subscription |
 | Budgets page shows 403 error | Entra app SP missing Cost Management Reader | Same role used for cost data – confirm Step 4 || Budgets page shows 0 current spend | CSP `currentSpend` API field returned null/0 | Expected for CSP — spend is automatically computed from `cm_main` cost rows instead; no action needed |

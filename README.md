@@ -17,18 +17,17 @@ Subscriptions can be added and removed at runtime from the **Home** page, with a
 5. [Configuration Reference](#configuration-reference)
 6. [Azure Role Assignments](docs/azure-roles.md)
 7. [CSP Deployment Guide](docs/csp-deployment-guide.md)
-8. [Cache Cleanup Job](docs/cache-cleanup.md)
-9. [Cost Details API – Reservations & Amortized Cost](docs/cost-details-api.md)
-10. [User Authentication](#user-authentication)
-11. [Authentication & Security](#authentication--security)
-12. [Data Flow](#data-flow)
-13. [Caching & Rate Limiting](#caching--rate-limiting)
-14. [Blob Exports (Production)](#blob-exports-production)
-15. [Currency Normalisation](#currency-normalisation)
-16. [Dashboard Pages](#dashboard-pages)
-17. [Advisor Overview](#advisor-overview)
-18. [Service Registration](#service-registration)
-19. [Deployment Notes](#deployment-notes)
+8. [Cost Details API – Reservations & Amortized Cost](docs/cost-details-api.md)
+9. [User Authentication](#user-authentication)
+10. [Authentication & Security](#authentication--security)
+11. [Data Flow](#data-flow)
+12. [Caching & Rate Limiting](#caching--rate-limiting)
+13. [Blob Exports (Production)](#blob-exports-production)
+14. [Currency Normalisation](#currency-normalisation)
+15. [Dashboard Pages](#dashboard-pages)
+16. [Advisor Overview](#advisor-overview)
+17. [Service Registration](#service-registration)
+18. [Deployment Notes](#deployment-notes)
 
 ---
 
@@ -76,7 +75,7 @@ graph TD
 CmCSP/
 ├── .gitignore
 ├── README.md
-├── CmCSP.sln
+├── CmCSP.slnx                                ← solution (XML .slnx format)
 ├── azure.yaml                                ← Azure Developer CLI (azd) config
 ├── src/                                      ← application code & projects
 │   ├── appsettings.json                      ← base config (no secrets)
@@ -137,25 +136,23 @@ CmCSP/
 │   ├── wwwroot/
 │   │   ├── app.css
 │   │   └── apexcharts-theme.js               ← propagates MudBlazor dark/light toggle to ApexCharts
-│   └── CacheCleanupJob/                      ← cache cleanup Container Apps Job (separate project)
-│       ├── CacheCleanupJob.csproj
-│       └── Program.cs
-├── bicep/
-│   ├── main.bicep                            ← export storage account + Table Storage + role assignments
-│   ├── app.bicep                             ← Container App, ACR, Key Vault, Log Analytics (app RG)
-│   ├── export-sub.bicep                      ← subscription-scope export (managed identity)
-│   └── export-billing.bicep                  ← billing-account-scope export (SAS token)
-├── infra/                                    ← azd entry-point template + hooks
-│   ├── main.bicep                            ← subscription-scope composition of bicep/ modules
+├── infra/                                    ← azd entry-point template, modules & hooks
+│   ├── main.bicep                            ← subscription-scope composition of infra/modules
 │   ├── main.parameters.json
+│   ├── modules/
+│   │   ├── app.bicep                         ← Container App, ACR, Key Vault, Log Analytics
+│   │   ├── storage.bicep                     ← export storage account + Table Storage + role assignments
+│   │   ├── data.bicep                        ← Phase 4 Azure SQL serverless + Azure Managed Redis
+│   │   ├── export-sub.bicep                  ← subscription-scope export (managed identity)
+│   │   └── export-billing.bicep              ← billing-account-scope export (SAS token)
+│   ├── sql/                                  ← schema.sql applied by the postprovision hook
 │   └── hooks/
 │       ├── postprovision.ps1                 ← KV secrets, env wiring, Cost Management exports
-│       └── postdeploy.ps1                    ← builds & updates the cleanup job image
+│       └── postdeploy.ps1                    ← builds & updates the collector job image
 └── docs/
     ├── azure-roles.md                        ← RBAC guide for all identities
     ├── azd-deployment-guide.md               ← Azure Developer CLI deployment walkthrough
     ├── csp-deployment-guide.md               ← step-by-step deployment guide for CSPs
-    ├── cache-cleanup.md                      ← cache cleanup job documentation
     └── cost-details-api.md                   ← Cost Details API: reservations, amortized cost, billing-account scope
 ```
 
@@ -168,8 +165,8 @@ CmCSP/
 | .NET SDK | 10.0 |
 | Azure subscription(s) | With `Cost Management Contributor` assigned to the service principal (enables export auto-provisioning; `Cost Management Reader` is sufficient for Query API–only mode) |
 | Microsoft Entra ID | App registration with a client secret |
-| *(Blob mode only)* Azure Storage account | Created by `bicep/main.bicep` |
-| *(Blob mode only)* Cost Management Export | Created or reused automatically by the app, reconciled on startup for active subscriptions, or created manually via `bicep/export-sub.bicep` |
+| *(Blob mode only)* Azure Storage account | Created by `infra/modules/storage.bicep` |
+| *(Blob mode only)* Cost Management Export | Created or reused automatically by the app, reconciled on startup for active subscriptions, or created manually via `infra/modules/export-sub.bicep` |
 
 See [docs/azure-roles.md](docs/azure-roles.md) for the exact role assignments required for each mode.
 
@@ -292,16 +289,26 @@ All settings live under the `AzureCostManagement` section in `appsettings.json`.
 | `ExportBlob:ContainerName` | string | `cost-exports` | Blob container that receives the export files |
 | `ExportBlob:BlobPrefix` | string | `exports` | Root folder path inside the container |
 | `ExportBlob:StorageAccountResourceId` | string | — | ARM resource ID of the storage account (e.g. `/subscriptions/{id}/resourceGroups/{rg}/providers/Microsoft.Storage/storageAccounts/{name}`). Required for `ExportProvisioningService` to automatically grant the export managed identity write access when a subscription is added via the UI. |
-| `AzureCache:Enabled` | bool | `false` | `true` = persist cache in Azure Table + Blob Storage (multi-replica safe) |
+| `AzureCache:Enabled` | bool | `false` | `true` = persist cache in Azure Table + Blob Storage (multi-replica safe). **Legacy fallback** — only wired when Redis is disabled (see `Redis` below). |
 | `AzureCache:StorageAccountUri` | string | — | Base URI of the storage account used for the distributed cache |
 | `AzureCache:TableName` | string | `cmcspcache` | Azure Table used for small cache payloads (≤ 64 KB) |
 | `AzureCache:CacheContainerName` | string | `cmcspcache` | Blob container used for large cache payloads (> 64 KB) |
+| `Redis:Enabled` | bool | `false` | `true` = use Azure Managed Redis as the L2 cache (Phase 4 data platform). Preferred over `AzureCache`; native TTL eviction, managed-identity auth (no keys). |
+| `Redis:HostName` | string | — | Redis cluster host (`<name>.<region>.redis.azure.net`) |
+| `Redis:Port` | int | `10000` | SSL port for Azure Managed Redis |
+| `Redis:KeyPrefix` | string | `cmcsp:` | Key namespace prefix |
 
-The following key lives at the **root** of the configuration (not under `AzureCostManagement`):
+The following keys live at the **root** of the configuration (not under `AzureCostManagement`):
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `ConnectionStrings:Sql` | string | — | Azure SQL connection string for the durable `CostFact` store (Phase 4). Use `Authentication=Active Directory Default` (managed-identity, no secret). When set, `AddDbContextFactory<CmcspDbContext>` is registered and cost rows persist to SQL. |
 | `KeyVaultUri` | string | — | URI of the Azure Key Vault (e.g. `https://<vault>.vault.azure.net/`). When set, `SubscriptionStoreService` persists user-added subscription IDs to Key Vault secret `CmCSP--UserSubscriptionIds`, ensuring they survive container restarts and scale-out. Requires the Container App MI to have **Key Vault Secrets Officer** on the vault. |
+
+The collector job (`CostCollectorJob`) also reads two optional environment variables for
+per-subscription fan-out: `COLLECT_PARTITION_COUNT` (default `1`) and `COLLECT_PARTITION_INDEX`
+(default `0`). Set count `> 1` and run distinct scheduled executions, each with its own index
+(`0 .. count-1`), to split the subscription set across runs.
 
 Default exchange rates (override in `appsettings.json` or user-secrets):
 
@@ -595,7 +602,7 @@ The Blob Export mode is an alternative to the Query API that eliminates rate lim
 flowchart LR
     subgraph Azure["Azure (scheduled)"]
         direction TB
-        Export["CostManagement/exports\n(bicep/export-sub.bicep)"]
+        Export["CostManagement/exports\n(infra/modules/export-sub.bicep)"]
         Blob["Azure Blob Storage\ncost-exports/{date}/*.csv"]
         Export -->|"daily CSV drop"| Blob
     end
@@ -650,14 +657,14 @@ A **Refresh Data** button in the navigation sidebar calls `ICostManagementServic
    ```bash
    az deployment group create \
      --resource-group rg-cmcsp-app \
-     --template-file bicep/main.bicep \
+     --template-file infra/modules/storage.bicep \
      --parameters storageAccountName=cmcspcostexports
    ```
 2. Deploy the export schedule per subscription (or let the UI do it automatically — see below):
    ```bash
    az deployment sub create \
      --location swedencentral \
-     --template-file bicep/export-sub.bicep \
+     --template-file infra/modules/export-sub.bicep \
      --parameters exportName=daily-cost-export \
        storageAccountResourceId="<id>" \
        recurrenceFrom="2026-01-01T02:00:00Z"
@@ -677,7 +684,7 @@ A **Refresh Data** button in the navigation sidebar calls `ICostManagementServic
 When `ExportBlob:Enabled = true` and `ExportBlob:StorageAccountResourceId` is configured, adding a subscription via the **Manage Subscriptions** panel on the Home page automatically:
 
 1. Creates a `cmcsp-daily-export` Cost Management export on the new subscription (using the Entra App SP — requires `Cost Management Contributor` on the subscription).
-2. Grants `Storage Blob Data Contributor` on the storage account to the export's managed identity (using the Container App MI — requires `User Access Administrator` on the storage account, granted by `bicep/main.bicep`).
+2. Grants `Storage Blob Data Contributor` on the storage account to the export's managed identity (using the Container App MI — requires `User Access Administrator` on the storage account, granted by `infra/modules/storage.bicep`).
 
 The provisioning runs in the background; the subscription is immediately active for Query API while the export is being set up. Errors are logged to the container's application log stream.
 
@@ -716,7 +723,7 @@ The **subscription display name** (e.g. "Contoso Azure") is shown in the chip im
 When `ExportBlob:Enabled = true` and `ExportBlob:StorageAccountResourceId` is configured, adding a subscription via the **Manage Subscriptions** panel on the Home page automatically:
 
 1. Creates a `cmcsp-daily-export` Cost Management export on the new subscription (using the Entra App SP — requires `Cost Management Contributor` on the subscription).
-2. Grants `Storage Blob Data Contributor` on the storage account to the export’s managed identity (using the Container App MI — requires `User Access Administrator` on the storage account, granted by `bicep/main.bicep`).
+2. Grants `Storage Blob Data Contributor` on the storage account to the export’s managed identity (using the Container App MI — requires `User Access Administrator` on the storage account, granted by `infra/modules/storage.bicep`).
 
 The provisioning runs in the background; the subscription is immediately active for Query API while the export is being set up. Errors are logged to the container’s application log stream.
 
@@ -867,7 +874,7 @@ Budget data is cached under `cm_budgets` with the same TTL as other datasets. `I
 
 > **CSP API limitation:** For CSP cross-tenant subscriptions, the `TagKey` dimension from the Cost Management Query API may return empty results even when resources are tagged, because tag metadata ingestion into the billing pipeline is less reliable in CSP scenarios than in EA/MCA. Blob exports are the reliable source for tag data — the `tags` CSV column is sourced directly from Azure Resource Manager metadata at export time and will correctly reflect all tagged resources once exports have run.
 
-> **API mode notice:** When `ExportBlob:Enabled = false` (direct API mode), the Tag Chargeback page shows an informational banner explaining that tag data is only available in blob export mode and directing to `bicep/export-sub.bicep`. The four KPI cards and charts are hidden until blob exports are configured and have run at least once.
+> **API mode notice:** When `ExportBlob:Enabled = false` (direct API mode), the Tag Chargeback page shows an informational banner explaining that tag data is only available in blob export mode and directing to `infra/modules/export-sub.bicep`. The four KPI cards and charts are hidden until blob exports are configured and have run at least once.
 
 ---
 
@@ -1053,13 +1060,13 @@ $tags = '{"project":"cmcsp","application":"csp-cost-dashboard","environment":"pr
 
 # Storage
 az deployment group create -g rg-cmcsp-app --name tag-update-main `
-  --template-file bicep/main.bicep --mode Incremental --only-show-errors `
+  --template-file infra/modules/storage.bicep --mode Incremental --only-show-errors `
   --parameters storageAccountName=<storage-name> tags=$tags
 
 # Container App, ACR, Key Vault, Log Analytics (pass through the current image to avoid reset)
 $img = $(az containerapp show -n cmcsp -g rg-cmcsp-app --query 'properties.template.containers[0].image' -o tsv)
 az deployment group create -g rg-cmcsp-app --name tag-update-app `
-  --template-file bicep/app.bicep --mode Incremental --only-show-errors `
+  --template-file infra/modules/app.bicep --mode Incremental --only-show-errors `
   --parameters acrName=<acr-name> keyVaultName=<kv-name> containerImage=$img tags=$tags
 ```
 

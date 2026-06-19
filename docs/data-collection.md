@@ -4,7 +4,7 @@
 
 Nightly cost-data collection runs **outside the web app** in a dedicated Azure Container Apps **Job** (`cmcsp-collect`). The job refreshes the shared two-tier cache (Table + Blob Storage) that every dashboard page reads, so figures stay current independently of the web app's lifecycle (which scales to zero when idle) and the first user of the day never pays the cold-fetch cost.
 
-A **Job** (not a second Container App) is the right primitive: collection is run-to-completion, isolated from web traffic, and billed per execution. It mirrors the existing `cmcsp-cleanup` pattern.
+A **Job** (not a second Container App) is the right primitive: collection is run-to-completion, isolated from web traffic, and billed per execution.
 
 | Concern | Where | Trigger |
 |---|---|---|
@@ -167,10 +167,9 @@ Coordinates are injected as Container App env vars (`CollectorJob__SubscriptionI
 
 ### Image update (`azd deploy`)
 
-The `postdeploy` hook (`infra/hooks/postdeploy.ps1`) loops over both jobs, sharing one ACR token + Docker-config setup:
+The `postdeploy` hook (`infra/hooks/postdeploy.ps1`) builds the collector job image, sharing one ACR token + Docker-config setup:
 
-1. `src/CacheCleanupJob/CacheCleanupJob.csproj` → `<acr>/cmcsp-cleanup:<tag>`
-2. `src/CostCollectorJob/CostCollectorJob.csproj` → `<acr>/cmcsp-collect:<tag>`
+1. `src/CostCollectorJob/CostCollectorJob.csproj` → `<acr>/cmcsp-collect:<tag>`
 
 Each image is built with `dotnet publish /t:PublishContainer` (no Dockerfile), pushed to ACR, and the job updated to the new digest.
 

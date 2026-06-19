@@ -1,12 +1,14 @@
 using Azure.Identity;
 using Azure.Extensions.AspNetCore.Configuration.Secrets;
 using CmCSP.Components;
+using CmCSP.Data;
 using CmCSP.Models;
 using CmCSP.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using MudBlazor.Services;
 
@@ -59,13 +61,8 @@ builder.Services.Configure<ForwardedHeadersOptions>(opts =>
 });
 
 // ── Caching ─────────────────────────────────────────────────────────────────
-// IMemoryCache is always registered (used as the in-process layer inside AzureStorageCacheService).
+// IMemoryCache is always registered (used as the in-process layer inside the cache service).
 builder.Services.AddMemoryCache();
-
-// AzureStorageCacheService wraps IMemoryCache.
-// When AzureCache:Enabled = true it also persists to Azure Table + Blob Storage so that
-// multiple Container App replicas share the same cache and survive restarts.
-builder.Services.AddSingleton<AzureStorageCacheService>();
 
 // ── Named HttpClient for Azure Management API ────────────────────────────────
 builder.Services.AddHttpClient("AzureMgmt", client =>
@@ -87,6 +84,22 @@ if (ratesFromConfig is { Count: > 0 })
         costOptions.ExchangeRates[k] = v;
 
 builder.Services.AddSingleton(costOptions);
+
+// ── SQL data platform (Phase 4) ──────────────────────────────────────────────
+// Register a DbContext factory when a connection string is configured (set by the azd
+// postprovision hook as ConnectionStrings__Sql). Singleton stores use the factory to
+// create short-lived contexts. When absent, the audit and subscription stores fall back
+// to Azure Table Storage / Key Vault so non-SQL deployments keep working unchanged.
+var sqlConnectionString = builder.Configuration.GetConnectionString("Sql");
+if (!string.IsNullOrWhiteSpace(sqlConnectionString))
+    builder.Services.AddDbContextFactory<CmcspDbContext>(opt => opt.UseSqlServer(sqlConnectionString));
+
+// Cache service: Azure Managed Redis (Phase 4) when Redis:Enabled, else Azure Table/Blob.
+// Both wrap IMemoryCache as the L1 tier and implement ICacheService.
+if (costOptions.Redis.Enabled)
+    builder.Services.AddSingleton<ICacheService, RedisCacheService>();
+else
+    builder.Services.AddSingleton<ICacheService, AzureStorageCacheService>();
 
 // SubscriptionStoreService must be registered immediately after costOptions so that
 // user-persisted subscription IDs are merged into costOptions.SubscriptionIds before

@@ -3,7 +3,9 @@ using System.Text.Json;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using CmCSP.Data;
 using CmCSP.Models;
 
 namespace CmCSP.Services;
@@ -55,6 +57,12 @@ public sealed class BlobCostManagementService : ICostManagementService
     private const string KeyRg   = "cm_rg";
     private const string KeyTag  = "cm_tag";
 
+    // SQL CostFact dataset discriminators (durable persistence of parsed rows).
+    private const string DatasetMain = "main";
+    private const string DatasetRg   = "rg";
+    private const string DatasetTag  = "tag";
+    private const int    SaveBatchSize = 5000;
+
     // Row window: same rolling 365-day window as the Query API service.
     private static DateTime RowCutoff =>
         DateTime.UtcNow.AddDays(-364).Date;
@@ -62,24 +70,44 @@ public sealed class BlobCostManagementService : ICostManagementService
     // Prevent concurrent cold fetches from all three Get*Async callers.
     private readonly SemaphoreSlim _fetchLock = new(1, 1);
 
-    private readonly AzureStorageCacheService             _cache;
+    // When set, only export rows whose SubscriptionId is in this set are parsed/persisted.
+    private HashSet<string>? _subscriptionFilter;
+
+    /// <summary>
+    /// Restricts collection to a subset of subscriptions. Used by the CostCollectorJob to
+    /// partition work across parallel executions (COLLECT_PARTITION_INDEX / COLLECT_PARTITION_COUNT);
+    /// because <c>CostFact</c>'s natural key is per-subscription, disjoint partitions never conflict.
+    /// <c>null</c> (the default, e.g. in the web app) parses every subscription found in the exports.
+    /// </summary>
+    public ISet<string>? SubscriptionFilter
+    {
+        get => _subscriptionFilter;
+        set => _subscriptionFilter = value is null
+            ? null
+            : new HashSet<string>(value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private readonly ICacheService             _cache;
     private readonly CostManagementOptions               _options;
     private readonly DataLoadingStateService             _loadingState;
     private readonly ILogger<BlobCostManagementService>  _logger;
     private readonly CostManagementService?              _apiService;
+    private readonly IDbContextFactory<CmcspDbContext>?  _dbFactory;
 
     public BlobCostManagementService(
-        AzureStorageCacheService             cache,
+        ICacheService             cache,
         CostManagementOptions                options,
         DataLoadingStateService              loadingState,
         ILogger<BlobCostManagementService>   logger,
-        CostManagementService?               apiService = null)
+        CostManagementService?               apiService = null,
+        IDbContextFactory<CmcspDbContext>?   dbFactory  = null)
     {
         _cache        = cache;
         _options      = options;
         _loadingState = loadingState;
         _logger       = logger;
         _apiService   = apiService;
+        _dbFactory    = dbFactory;
     }
 
     // ── Public interface ───────────────────────────────────────────────────────
@@ -202,22 +230,70 @@ public sealed class BlobCostManagementService : ICostManagementService
     }
 
     /// <summary>
-    /// Downloads and parses all relevant export blobs, then populates all three
-    /// cache entries in a single pass. Reading all blobs once and splitting the
-    /// aggregations is more efficient than three separate blob-listing passes.
+    /// Reads the durable cost store (SQL <c>CostFact</c> when the data platform is enabled,
+    /// otherwise the blob exports) and populates the three shared cache entries in one pass.
     /// </summary>
     private async Task PopulateAllCachesAsync(CancellationToken ct)
     {
-        var opts = _options.ExportBlob;
-
         // Signal all three datasets as loading.
         _loadingState.Update(KeyMain, LoadPhase.Loading);
         _loadingState.Update(KeyRg,   LoadPhase.Loading);
         _loadingState.Update(KeyTag,  LoadPhase.Loading);
 
-        var mainAccum = new Dictionary<string, CostRow>(StringComparer.Ordinal);
-        var rgAccum   = new Dictionary<string, CostRow>(StringComparer.Ordinal);
-        var tagAccum  = new Dictionary<string, CostRow>(StringComparer.Ordinal);
+        // Read path: SQL is the durable store of parsed rows when the data platform is on.
+        if (_dbFactory is not null)
+        {
+            var (sm, sr, stg) = await LoadFromSqlAsync(ct);
+            if (sm.Count > 0 || sr.Count > 0 || stg.Count > 0)
+            {
+                SetCaches(sm, sr, stg, anyError: false);
+                return;
+            }
+            // SQL empty (no collection yet) – fall back to a one-off blob parse so the
+            // dashboard still shows data before the first collector run.
+            _logger.LogInformation("CostFact table empty – falling back to a direct blob parse.");
+        }
+
+        var (mainList, rgList, tagList, anyError) = await ParseExportsAsync(ct);
+        SetCaches(mainList, rgList, tagList, anyError);
+    }
+
+    /// <summary>
+    /// Re-parses the export CSVs (the source feed) and, when the SQL data platform is enabled,
+    /// upserts the aggregated rows into <c>CostFact</c> before warming the shared cache. This is
+    /// the collector's write path. Returns the per-dataset row counts.
+    /// </summary>
+    public async Task<CostCollectionResult> RefreshAsync(CancellationToken ct = default)
+    {
+        _loadingState.Update(KeyMain, LoadPhase.Loading);
+        _loadingState.Update(KeyRg,   LoadPhase.Loading);
+        _loadingState.Update(KeyTag,  LoadPhase.Loading);
+
+        var (mainList, rgList, tagList, anyError) = await ParseExportsAsync(ct);
+
+        if (_dbFactory is not null)
+            await UpsertFactsAsync(mainList, rgList, tagList, ct);
+
+        SetCaches(mainList, rgList, tagList, anyError);
+        return new CostCollectionResult(mainList.Count, rgList.Count, tagList.Count);
+    }
+
+    /// <summary>
+    /// Lists and parses every relevant export blob into the three aggregated datasets.
+    /// Falls back to the Query API when no export blobs exist yet.
+    /// </summary>
+    private async Task<(List<CostRow> Main, List<CostRow> Rg, List<CostRow> Tag, bool AnyError)> ParseExportsAsync(CancellationToken ct)
+    {
+        var opts = _options.ExportBlob;
+
+        // Aggregation keys are compared case-insensitively to match both Azure's case-insensitive
+        // resource naming (subscription GUID, meter category, resource group, tag key) and the
+        // SQL CostFact unique index (case-insensitive collation). Using Ordinal here would let a
+        // casing variant (e.g. "rg-devbox" vs "RG-Devbox") survive as two in-memory rows that then
+        // collide as a duplicate key on insert, crashing the whole collection run.
+        var mainAccum = new Dictionary<string, CostRow>(StringComparer.OrdinalIgnoreCase);
+        var rgAccum   = new Dictionary<string, CostRow>(StringComparer.OrdinalIgnoreCase);
+        var tagAccum  = new Dictionary<string, CostRow>(StringComparer.OrdinalIgnoreCase);
 
         bool anyError = false;
 
@@ -262,10 +338,10 @@ public sealed class BlobCostManagementService : ICostManagementService
                     _logger.LogInformation(
                         "No export blobs available – falling back to Cost Management Query API.");
                     // Run sequentially to respect the per-subscription rate limit (5 req/min).
-                    await _apiService.GetMainCostDataAsync(ct);
-                    await _apiService.GetRgCostDataAsync(ct);
-                    await _apiService.GetTagCostDataAsync(ct);
-                    return; // cache is now populated by the API service
+                    var apiMain = await _apiService.GetMainCostDataAsync(ct);
+                    var apiRg   = await _apiService.GetRgCostDataAsync(ct);
+                    var apiTag  = await _apiService.GetTagCostDataAsync(ct);
+                    return (apiMain, apiRg, apiTag, false);
                 }
             }
 
@@ -280,10 +356,11 @@ public sealed class BlobCostManagementService : ICostManagementService
                     using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
 
                     // Parse into a per-blob accumulator (rows with the same key within
-                    // one blob are summed as normal).
-                    var blobMain = new Dictionary<string, CostRow>(StringComparer.Ordinal);
-                    var blobRg   = new Dictionary<string, CostRow>(StringComparer.Ordinal);
-                    var blobTag  = new Dictionary<string, CostRow>(StringComparer.Ordinal);
+                    // one blob are summed as normal). Case-insensitive to match the SQL
+                    // unique index so casing variants aggregate instead of colliding.
+                    var blobMain = new Dictionary<string, CostRow>(StringComparer.OrdinalIgnoreCase);
+                    var blobRg   = new Dictionary<string, CostRow>(StringComparer.OrdinalIgnoreCase);
+                    var blobTag  = new Dictionary<string, CostRow>(StringComparer.OrdinalIgnoreCase);
 
                     await ParseCsvIntoAccumulatorsAsync(
                         reader, blobMain, blobRg, blobTag, blob.Name, ct);
@@ -323,6 +400,13 @@ public sealed class BlobCostManagementService : ICostManagementService
         var rgList   = rgAccum.Values.ToList();
         var tagList  = tagAccum.Values.ToList();
 
+        return (mainList, rgList, tagList, anyError);
+    }
+
+    // ── Durable SQL store (parsed-row persistence) ────────────────────────────
+
+    private void SetCaches(List<CostRow> mainList, List<CostRow> rgList, List<CostRow> tagList, bool anyError)
+    {
         var expiry = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
         _cache.Set(KeyMain, mainList, expiry);
         _cache.Set(KeyRg,   rgList,   expiry);
@@ -334,9 +418,105 @@ public sealed class BlobCostManagementService : ICostManagementService
         _loadingState.Update(KeyTag,  phase, anyError && tagList.Count  == 0 ? "fetch failed" : $"{tagList.Count:N0} rows");
 
         _logger.LogInformation(
-            "Blob cache populated. Main={Main}, RG={Rg}, Tag={Tag} rows.",
+            "Blob cost cache populated. Main={Main}, RG={Rg}, Tag={Tag} rows.",
             mainList.Count, rgList.Count, tagList.Count);
     }
+
+    /// <summary>Loads the rolling-window <c>CostFact</c> rows from SQL and maps them to <see cref="CostRow"/>.</summary>
+    private async Task<(List<CostRow> Main, List<CostRow> Rg, List<CostRow> Tag)> LoadFromSqlAsync(CancellationToken ct)
+    {
+        var cutoff = DateOnly.FromDateTime(RowCutoff);
+        await using var db = await _dbFactory!.CreateDbContextAsync(ct);
+
+        var facts = await db.CostFacts
+            .AsNoTracking()
+            .Where(f => f.UsageDate >= cutoff &&
+                        (f.Dataset == DatasetMain || f.Dataset == DatasetRg || f.Dataset == DatasetTag))
+            .ToListAsync(ct);
+
+        var main = facts.Where(f => f.Dataset == DatasetMain).Select(Map).ToList();
+        var rg   = facts.Where(f => f.Dataset == DatasetRg).Select(Map).ToList();
+        var tag  = facts.Where(f => f.Dataset == DatasetTag).Select(Map).ToList();
+
+        _logger.LogInformation(
+            "Loaded {Main}/{Rg}/{Tag} CostFact row(s) from SQL (since {Cutoff:yyyy-MM-dd}).",
+            main.Count, rg.Count, tag.Count, cutoff);
+
+        return (main, rg, tag);
+    }
+
+    /// <summary>Upserts the parsed rows into <c>CostFact</c> by natural key (idempotent, latest wins).</summary>
+    private async Task UpsertFactsAsync(
+        List<CostRow> main, List<CostRow> rg, List<CostRow> tag, CancellationToken ct)
+    {
+        var incoming = new Dictionary<string, CostFact>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in main) { var f = ToFact(DatasetMain, r); incoming[NaturalKey(f)] = f; }
+        foreach (var r in rg)   { var f = ToFact(DatasetRg,   r); incoming[NaturalKey(f)] = f; }
+        foreach (var r in tag)  { var f = ToFact(DatasetTag,  r); incoming[NaturalKey(f)] = f; }
+
+        if (incoming.Count == 0) return;
+
+        var cutoff = DateOnly.FromDateTime(RowCutoff);
+        await using var db = await _dbFactory!.CreateDbContextAsync(ct);
+
+        var existing = await db.CostFacts
+            .Where(f => f.UsageDate >= cutoff &&
+                        (f.Dataset == DatasetMain || f.Dataset == DatasetRg || f.Dataset == DatasetTag))
+            .ToDictionaryAsync(NaturalKey, f => f, StringComparer.OrdinalIgnoreCase, ct);
+
+        int inserted = 0, updated = 0, pending = 0;
+        foreach (var (key, inc) in incoming)
+        {
+            if (existing.TryGetValue(key, out var cur))
+            {
+                cur.Cost             = inc.Cost;
+                cur.NormalizedCost   = inc.NormalizedCost;
+                cur.SubscriptionName = inc.SubscriptionName;
+                updated++;
+            }
+            else
+            {
+                db.CostFacts.Add(inc);
+                inserted++;
+            }
+
+            if (++pending >= SaveBatchSize) { await db.SaveChangesAsync(ct); pending = 0; }
+        }
+        if (pending > 0) await db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "CostFact upsert complete — {Inserted} inserted, {Updated} updated.", inserted, updated);
+    }
+
+    private static string NaturalKey(CostFact f) =>
+        $"{f.Dataset}|{f.UsageDate:yyyyMMdd}|{f.SubscriptionId}|{f.ServiceName}|{f.ResourceGroupName}|{f.Tag}|{f.Currency}";
+
+    private static CostFact ToFact(string dataset, CostRow r) => new()
+    {
+        Dataset           = dataset,
+        UsageDate         = DateOnly.FromDateTime(r.Date),
+        SubscriptionId    = r.SubscriptionId,
+        SubscriptionName  = r.SubscriptionName,
+        ServiceName       = dataset == DatasetMain ? r.ServiceName : string.Empty,
+        ResourceGroupName = dataset == DatasetRg   ? r.ResourceGroupName : string.Empty,
+        Tag               = dataset == DatasetTag  ? r.Tag : string.Empty,
+        Cost              = r.Cost,
+        Currency          = r.Currency,
+        NormalizedCost    = r.NormalizedCost
+    };
+
+    private static CostRow Map(CostFact f) => new()
+    {
+        Date              = f.UsageDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
+        Cost              = f.Cost,
+        Currency          = f.Currency,
+        NormalizedCost    = f.NormalizedCost,
+        SubscriptionId    = f.SubscriptionId,
+        SubscriptionName  = f.SubscriptionName,
+        ServiceName       = f.ServiceName,
+        ResourceGroupName = f.ResourceGroupName,
+        Tag               = f.Tag
+    };
 
     private async Task ParseCsvIntoAccumulatorsAsync(
         StreamReader reader,
@@ -396,6 +576,7 @@ public sealed class BlobCostManagementService : ICostManagementService
 
             var currency = GetField(fields, idxCurr).Trim();
             var subId    = GetField(fields, idxSubId).Trim();
+            if (_subscriptionFilter is { Count: > 0 } && !_subscriptionFilter.Contains(subId)) continue;
             var subName  = GetField(fields, idxSubName).Trim();
             var meter    = GetField(fields, idxMeter).Trim();
             var rg       = GetField(fields, idxRg).Trim();

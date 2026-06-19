@@ -194,7 +194,15 @@ purchases skew ActualCost." Arrow>
             var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
             var data  = await dataTask;
             _subNames = await nameTask;
-            var today = DateTime.UtcNow;
+            // Anchor the forecast month to the real current calendar month when it has data.
+            // Azure cost data lags by 1-3 days and a brand-new calendar month often has no rows
+            // yet; in that case fall back to the latest month present in the data so Cost MTD
+            // doesn't read 0. Using the wall clock (rather than data.Max) for the *month* avoids
+            // showing a completed prior month as if it were the current one.
+            var wallToday      = DateTime.UtcNow.Date;
+            var latestDataDate = data.Count > 0 ? data.Max(r => r.Date) : wallToday;
+            var hasCurrentMonth = data.Any(r => r.Date.Year == wallToday.Year && r.Date.Month == wallToday.Month);
+            var today = hasCurrentMonth ? wallToday : latestDataDate;
             _seriesSubIds = GetOrderedSubscriptionIds();
 
             // ── Forecast ──────────────────────────────────────────────────────
@@ -203,9 +211,15 @@ purchases skew ActualCost." Arrow>
                 .ToList();
             _costMtd = curMonthData.Sum(r => r.NormalizedCost);
 
-            var daysElapsed   = today.Day;
             var daysInMonth   = DateTime.DaysInMonth(today.Year, today.Month);
-            var dailyAvg      = daysElapsed > 0 ? _costMtd / daysElapsed : 0m;
+            // How far through the month we actually are. Take the smaller of the wall-clock day
+            // and the latest day that has cost data so that (a) normal data lag still yields an
+            // accurate daily average, and (b) a single stray month-end row can't inflate the
+            // elapsed-day count and collapse the forecast down to exactly Cost MTD before the
+            // month is over.
+            var latestDataDay = curMonthData.Count > 0 ? curMonthData.Max(r => r.Date.Day) : today.Day;
+            var daysElapsed   = Math.Max(1, Math.Min(today.Day, latestDataDay));
+            var dailyAvg      = _costMtd / daysElapsed;
             _forecast         = dailyAvg * daysInMonth;
 
             // Actual daily (current month)

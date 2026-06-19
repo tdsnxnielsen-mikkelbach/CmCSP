@@ -1,10 +1,10 @@
 // CmCSP – azd entry-point template (subscription scope).
 //
 // Composes the existing resource-group-scoped modules into a single deployment:
-//   1. app    (../bicep/app.bicep)   – ACR, Key Vault, Container Apps env,
-//                                        Container App + cache cleanup Job.
-//   2. storage(../bicep/main.bicep)  – Storage Account, containers, table, and
-//                                        the role assignments for the app/cleanup MIs.
+//   1. app    (./modules/app.bicep)     – ACR, Key Vault, Container Apps env,
+//                                          Container App + collector Job.
+//   2. storage(./modules/storage.bicep) – Storage Account, containers, table, and
+//                                          the role assignments for the app/collect MIs.
 //
 // Module ordering replaces the old multi-pass PowerShell flow: `app` is deployed
 // first, then `storage` consumes its managed-identity principal IDs to create the
@@ -25,7 +25,7 @@ param environmentName string
 @description('Primary location for all resources.')
 param location string
 
-@description('Base application name (Container App, cleanup job, resource prefixes).')
+@description('Base application name (Container App, collector job, resource prefixes).')
 param appName string = 'cmcsp'
 
 @description('Resource group name. Defaults to rg-<appName>-<environmentName>.')
@@ -47,6 +47,31 @@ deployment subscription. For multi-subscription / future-subscription coverage, 
 management group instead. Leave false to keep onboarding a manual step (scripts/onboard-subscription.ps1).''')
 param grantMiRbacAdminOnSubscription bool = false
 
+@description('''Phase 4: when true, provisions the managed-identity-only data platform — an Azure SQL
+serverless database and an Azure Managed Redis (Balanced_B0 / "Basic") cache. Cost-incurring. Requires
+the SQL Entra admin params below. The contained-DB users and schema are applied by the postprovision hook.''')
+param deployDataPlatform bool = false
+
+@description('Entra admin login (UPN or group name) for the SQL server. Required when deployDataPlatform is true; typically the deployer running azd.')
+param sqlAdminLogin string = ''
+
+@description('Entra object ID (SID) of the SQL admin login. Required when deployDataPlatform is true.')
+param sqlAdminObjectId string = ''
+
+@description('Principal type of the SQL Entra admin.')
+@allowed([
+  'User'
+  'Group'
+  'Application'
+])
+param sqlAdminPrincipalType string = 'User'
+
+@description('SQL server name. Leave empty to derive a globally-unique name.')
+param sqlServerName string = ''
+
+@description('Azure Managed Redis cluster name. Leave empty to derive a globally-unique name.')
+param redisName string = ''
+
 @description('Tags applied to every resource.')
 param tags object = {
   project: 'cmcsp'
@@ -62,6 +87,8 @@ var rgName = empty(resourceGroupName) ? 'rg-${appName}-${environmentName}' : res
 var resolvedAcr = empty(acrName) ? '${appName}acr${suffix}' : acrName
 var resolvedKv = empty(keyVaultName) ? 'kv-${appName}-${suffix}' : keyVaultName
 var resolvedStorage = empty(storageAccountName) ? '${appName}st${suffix}' : storageAccountName
+var resolvedSqlServer = empty(sqlServerName) ? '${appName}-sql-${suffix}' : sqlServerName
+var resolvedRedis = empty(redisName) ? '${appName}-redis-${suffix}' : redisName
 
 var allTags = union(tags, { 'azd-env-name': environmentName })
 
@@ -75,7 +102,7 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
 
 // ── App infrastructure (ACR, Key Vault, Container Apps env, Container App, Job) ──
 
-module app '../bicep/app.bicep' = {
+module app './modules/app.bicep' = {
   name: 'app'
   scope: rg
   params: {
@@ -89,18 +116,40 @@ module app '../bicep/app.bicep' = {
 }
 
 // ── Export + cache storage (account, containers, table, RBAC role assignments) ──
-// Consumes the app/cleanup managed-identity principal IDs → declarative RBAC,
+// Consumes the app/collect managed-identity principal IDs → declarative RBAC,
 // replacing the old "deploy app, read principalId, re-deploy storage" pass.
 
-module storage '../bicep/main.bicep' = {
+module storage './modules/storage.bicep' = {
   name: 'storage'
   scope: rg
   params: {
     storageAccountName: resolvedStorage
     location: location
     appManagedIdentityPrincipalId: app.outputs.containerAppPrincipalId
-    cleanupJobManagedIdentityPrincipalId: app.outputs.cleanupJobPrincipalId
     collectJobManagedIdentityPrincipalId: app.outputs.collectJobPrincipalId
+    tags: allTags
+  }
+}
+
+// ── Phase 4: data platform (Azure SQL serverless + Azure Managed Redis) ─────────
+// Gated behind deployDataPlatform. Authenticates with managed identity only — the
+// Container App + collect job MIs get Redis data access here; their SQL contained-DB
+// users and the schema are applied by the postprovision hook.
+
+module data './modules/data.bicep' = if (deployDataPlatform) {
+  name: 'data'
+  scope: rg
+  params: {
+    location: location
+    sqlServerName: resolvedSqlServer
+    redisName: resolvedRedis
+    sqlAdminLogin: sqlAdminLogin
+    sqlAdminObjectId: sqlAdminObjectId
+    sqlAdminPrincipalType: sqlAdminPrincipalType
+    redisDataAccessPrincipalIds: [
+      app.outputs.containerAppPrincipalId
+      app.outputs.collectJobPrincipalId
+    ]
     tags: allTags
   }
 }
@@ -113,7 +162,7 @@ module storage '../bicep/main.bicep' = {
 // the UI. Scoped to the deployment subscription only — see param description.
 
 var rbacAdminRoleId = 'f58310d9-a9f6-439a-9e8d-f62e7b41a168' // Role Based Access Control Administrator
-var costMgmtContributorRoleId = '1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40'
+var costMgmtContributorRoleId = '434105ed-43f6-45c7-a02f-909b2ba83430'
 
 // Condition: permit roleAssignments write/delete ONLY when the role being assigned is
 // Cost Management Contributor. All other assignment attempts by this MI are denied.
@@ -148,5 +197,14 @@ output EXPORT_CONTAINER_NAME string = storage.outputs.exportContainerName
 
 output CONTAINER_APP_NAME string = appName
 output CONTAINER_APP_FQDN string = app.outputs.containerAppFqdn
-output CLEANUP_JOB_NAME string = '${appName}-cleanup'
 output COLLECT_JOB_NAME string = app.outputs.collectJobName
+
+// ── Phase 4 data-platform outputs (empty unless deployDataPlatform = true) ──────
+output DATA_PLATFORM_ENABLED bool = deployDataPlatform
+output SQL_SERVER_NAME string = data.?outputs.sqlServerName ?? ''
+output SQL_SERVER_FQDN string = data.?outputs.sqlServerFqdn ?? ''
+output SQL_DATABASE_NAME string = data.?outputs.sqlDatabaseName ?? ''
+output SQL_CONNECTION_STRING string = data.?outputs.sqlConnectionString ?? ''
+output REDIS_NAME string = data.?outputs.redisName ?? ''
+output REDIS_HOST_NAME string = data.?outputs.redisHostName ?? ''
+output REDIS_PORT int = data.?outputs.redisPort ?? 0

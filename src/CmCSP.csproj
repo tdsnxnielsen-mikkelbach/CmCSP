@@ -7,18 +7,19 @@
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
     <UserSecretsId>bb9e6b00-7c45-4ffd-91d6-98b1177930b1</UserSecretsId>
 
+    <!-- Microsoft.Data.SqlClient (SQL data platform) requires ICU; the plain chiseled
+         image runs in globalization-invariant mode and throws on SqlConnection.Open().
+         Use the -extra variant (ships ICU + tzdata) and disable invariant mode. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+
     <!-- dotnet publish /t:PublishContainer defaults -->
     <ContainerRepository>cmcsp</ContainerRepository>
-    <ContainerBaseImage>mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled</ContainerBaseImage>
+    <ContainerBaseImage>mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled-extra</ContainerBaseImage>
     <ContainerPort>80</ContainerPort>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- Exclude sibling projects from this project's implicit globbing -->
-    <Compile Remove="CacheCleanupJob\**" />
-    <Content Remove="CacheCleanupJob\**" />
-    <EmbeddedResource Remove="CacheCleanupJob\**" />
-    <None Remove="CacheCleanupJob\**" />
     <Compile Remove="CmCSP.Core\**" />
     <Content Remove="CmCSP.Core\**" />
     <EmbeddedResource Remove="CmCSP.Core\**" />
@@ -27,6 +28,10 @@
     <Content Remove="CostCollectorJob\**" />
     <EmbeddedResource Remove="CostCollectorJob\**" />
     <None Remove="CostCollectorJob\**" />
+    <Compile Remove="CostBackfillJob\**" />
+    <Content Remove="CostBackfillJob\**" />
+    <EmbeddedResource Remove="CostBackfillJob\**" />
+    <None Remove="CostBackfillJob\**" />
   </ItemGroup>
 
   <ItemGroup>

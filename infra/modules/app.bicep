@@ -22,9 +22,6 @@ param location string = 'swedencentral'
 @description('Container image to deploy, e.g. cmcspacr.azurecr.io/cmcsp:latest. Leave empty for first-time deploy (placeholder image used).')
 param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
-@description('Container image for the cache cleanup job. Defaults to placeholder on first deploy; updated by the azd postdeploy hook.')
-param cleanupJobImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
-
 @description('Container image for the cost collector job. Defaults to placeholder on first deploy; updated by the azd postdeploy hook.')
 param collectJobImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
@@ -315,83 +312,6 @@ resource kvSecretsOfficerRole 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
-// ── Cache Cleanup Job ────────────────────────────────────────────────────────
-// Runs every 30 minutes to delete expired entries from Table + Blob cache storage.
-// Uses its own SystemAssigned managed identity – access to storage is granted in
-// main.bicep via the cleanupJobManagedIdentityPrincipalId parameter.
-
-resource cleanupJob 'Microsoft.App/jobs@2024-03-01' = {
-  name: '${appName}-cleanup'
-  location: location
-  tags: tags
-  identity: {
-    // SystemAssigned: used at runtime for storage access.
-    // UserAssigned (acrPullIdentity): used only to pull the image from ACR.
-    type: 'SystemAssigned, UserAssigned'
-    userAssignedIdentities: {
-      '${acrPullIdentity.id}': {}
-    }
-  }
-  dependsOn: [
-    acrPullUamiRole
-  ]
-  properties: {
-    environmentId: caEnv.id
-    configuration: {
-      triggerType: 'Schedule'
-      replicaTimeout: 300      // 5 min – enough for any realistic table size
-      replicaRetryLimit: 1
-      scheduleTriggerConfig: {
-        cronExpression: '*/30 * * * *'  // every 30 minutes
-        parallelism: 1
-        replicaCompletionCount: 1
-      }
-      // Register this ACR using the dedicated pull identity (see Container App
-      // note above). The job image is swapped to <acr>/cmcsp-cleanup by postdeploy.
-      registries: [
-        {
-          server: acr.properties.loginServer
-          identity: acrPullIdentity.id
-        }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: '${appName}-cleanup'
-          image: cleanupJobImage
-          resources: {
-            cpu: json('0.25')
-            memory: '0.5Gi'
-          }
-          env: [
-            {
-              name: 'CACHE_TABLE_ENDPOINT'
-              value: '' // set via az containerapp job update (postprovision hook)
-            }
-            {
-              name: 'CACHE_BLOB_ENDPOINT'
-              value: '' // set via az containerapp job update (postprovision hook)
-            }
-            {
-              name: 'CACHE_TABLE_NAME'
-              value: 'cmcspcache'
-            }
-            {
-              name: 'CACHE_CONTAINER_NAME'
-              value: 'cmcspcache'
-            }
-            {
-              name: 'CACHE_PARTITION_KEY'
-              value: 'cmcsp'
-            }
-          ]
-        }
-      ]
-    }
-  }
-}
-
 // ── Cost Collector Job ───────────────────────────────────────────────────────
 // Refreshes the shared cost-data cache (the four aggregate datasets every page reads).
 // Two ways to run:
@@ -426,9 +346,13 @@ resource collectJob 'Microsoft.App/jobs@2024-03-01' = {
       replicaRetryLimit: 1
       scheduleTriggerConfig: {
         cronExpression: '0 2 * * *'  // nightly at 02:00 UTC
-        // parallelism: 1 — a single replica refreshes the AGGREGATE datasets (cache keys
-        // cm_main/cm_rg/cm_tag/cm_main_amort span ALL subscriptions). Per-subscription
-        // partitioning (parallelism > 1) would require per-subscription cache keys first.
+        // Default parallelism: 1 — one replica collects every subscription. Per-subscription
+        // partitioning is now data-safe (CostFact's natural key includes SubscriptionId, so
+        // disjoint partitions never conflict). To fan out, set COLLECT_PARTITION_COUNT > 1 and
+        // give each scheduled execution a distinct COLLECT_PARTITION_INDEX (0..count-1); the
+        // collector then handles only `index % count` of the subscription set. Container Apps
+        // Jobs provide no native per-replica task index, so use separate executions (or bump
+        // parallelism only with an index source) rather than relying on replica identity.
         parallelism: 1
         replicaCompletionCount: 1
       }
@@ -585,7 +509,6 @@ resource collectJobOperatorAssignment 'Microsoft.Authorization/roleAssignments@2
 output containerAppFqdn string = containerApp.properties.configuration.ingress.fqdn
 output containerAppName string = containerApp.name
 output containerAppPrincipalId string = containerApp.identity.principalId
-output cleanupJobPrincipalId string = cleanupJob.identity.principalId
 output collectJobName string = collectJob.name
 output collectJobPrincipalId string = collectJob.identity.principalId
 output acrLoginServer string = acr.properties.loginServer

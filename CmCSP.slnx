@@ -1,0 +1,13 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/CmCSP.Core/CmCSP.Core.csproj" />
+    <Project Path="src/CostBackfillJob/CostBackfillJob.csproj" />
+    <Project Path="src/CostCollectorJob/CostCollectorJob.csproj" />
+  </Folder>
+  <Project Path="src/CmCSP.csproj" />
+</Solution>

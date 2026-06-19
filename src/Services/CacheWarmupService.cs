@@ -19,12 +19,12 @@ public sealed class CacheWarmupService : BackgroundService
     // Cache keys owned by the cost services (see services-cache.instructions.md).
     private static readonly string[] DatasetKeys = ["cm_main", "cm_rg", "cm_tag", "cm_main_amort"];
 
-    private readonly AzureStorageCacheService     _cache;
+    private readonly ICacheService     _cache;
     private readonly TimeSpan                      _memoryTtl;
     private readonly ILogger<CacheWarmupService>  _logger;
 
     public CacheWarmupService(
-        AzureStorageCacheService     cache,
+        ICacheService     cache,
         CostManagementOptions        options,
         ILogger<CacheWarmupService>  logger)
     {

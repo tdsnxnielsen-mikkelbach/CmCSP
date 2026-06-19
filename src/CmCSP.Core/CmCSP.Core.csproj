@@ -12,12 +12,19 @@
     <PackageReference Include="Azure.Identity" Version="*" />
     <PackageReference Include="Azure.Security.KeyVault.Secrets" Version="4.11.0" />
     <PackageReference Include="Azure.Storage.Blobs" Version="*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="*">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="*" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="*" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="*" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="*" />
     <PackageReference Include="Microsoft.Identity.Client" Version="*" />
+    <PackageReference Include="Microsoft.Azure.StackExchangeRedis" Version="*" />
+    <PackageReference Include="StackExchange.Redis" Version="*" />
   </ItemGroup>
 
 </Project>

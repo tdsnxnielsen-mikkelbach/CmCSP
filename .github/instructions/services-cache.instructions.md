@@ -1,14 +1,31 @@
 ---
 applyTo: "src/**/Services/**/*.cs"
 ---
-## Hybrid Cache Architecture — Always Read Before Editing
+## Cache & Data Platform Architecture — Always Read Before Editing
 
-This project uses a **three-layer hybrid cache**. Any change to a service file must preserve this contract:
+Cost data flows through three concerns that must be kept distinct. Any change to a
+service file must preserve this contract:
 
-### Layer Order (fastest → slowest)
-1. **`IMemoryCache`** — per-replica, lost on restart, always checked first
-2. **Azure Table Storage** — shared across replicas, for payloads **≤ 60 KB** (`TableSizeLimit` constant)
-3. **Azure Blob Storage** — shared across replicas, for payloads **> 60 KB** (pointer stored in Table row as `__blob:<blobName>`)
+1. **Source feed** — Cost Management **blob exports** (CSV) written daily to the
+   `cost-exports` container. This is the authoritative input; it is parsed, never cached.
+2. **Durable store** — Azure **SQL** `CostFact` table (Phase 4). Parsed/aggregated rows are
+   upserted here so data survives cache eviction and restarts.
+3. **Cache** — `ICacheService` (in-memory **L1** + distributed **L2**) holding the
+   ready-to-serve dataset lists for fast page loads.
+
+### Cache Tiers (`ICacheService`)
+Consumers depend on the `ICacheService` abstraction; the backing store is chosen by config/DI:
+
+| Implementation | L1 | L2 | When |
+|----------------|----|----|------|
+| `RedisCacheService` | `IMemoryCache` | Azure Managed **Redis** (SSL :10000, MI auth) | `AzureCostManagement:Redis:Enabled=true` (data platform) |
+| `AzureStorageCacheService` | `IMemoryCache` | Azure Table/Blob (legacy fallback) | Redis disabled |
+
+- **Redis is preferred** and uses native TTL eviction (no cleanup job). Auth is
+  managed-identity only (`DefaultAzureCredential` → `ConfigureForAzureWithTokenCredentialAsync`);
+  there are no connection-string/access-key secrets. It degrades to L1-only on connect failure.
+- Never call Redis, Table or Blob Storage directly from a service — always go through
+  `ICacheService` (`TryGetValue` / `Set` / `Remove`).
 
 ### Cache Keys
 | Key | Dataset | Owner |
@@ -17,17 +34,38 @@ This project uses a **three-layer hybrid cache**. Any change to a service file m
 | `cm_rg` | Cost by resource group | `BlobCostManagementService` |
 | `cm_tag` | Cost by tag | `BlobCostManagementService` |
 
+### Read / Write Paths (`BlobCostManagementService`)
+- **Read (web app):** when `IDbContextFactory<CmcspDbContext>` is injected (SQL enabled),
+  `PopulateAllCachesAsync` loads rows from `CostFact` (`LoadFromSqlAsync`) and warms the cache.
+  Only on an empty `CostFact` (before the first collection) does it fall back to a one-off
+  blob parse. With no SQL it parses the exports directly.
+- **Write (collector):** `RefreshAsync(ct)` parses the exports and, when SQL is enabled,
+  upserts the aggregated rows into `CostFact` (`UpsertFactsAsync`, batched at `SaveBatchSize`,
+  keyed by `NaturalKey`) before warming the cache. Amortized data stays API-only.
+- The `CostFact` natural key includes `SubscriptionId`, so disjoint per-subscription writes
+  never conflict — this is what makes the collector's `parallelism > 1` partitioning safe.
+
 ### Concurrency Rules
-- `BlobCostManagementService` uses a `SemaphoreSlim(1,1)` (`_fetchLock`) to prevent thundering herd on cold-start — do not remove or bypass this.
-- `CacheWarmupService` is a **rehydrator only**: on startup it repopulates the in-memory tier from the persistent (Table/Blob) cache via `AzureStorageCacheService.TryGetValue` and never issues live API calls. A persistent-cache miss is skipped, not fetched.
-- Fresh data collection is owned by `CostCollectorJob` (nightly + on-demand), which calls `InvalidateCache()` before re-fetching — any new cache key must also be cleared there.
+- `BlobCostManagementService` uses a `SemaphoreSlim(1,1)` (`_fetchLock`) to prevent a
+  thundering herd on cold-start — do not remove or bypass it. When adding `await` inside the
+  double-check pattern, re-check the cache after acquiring the lock.
+- `CacheWarmupService` is a **rehydrator only**: on startup it repopulates L1 from the shared
+  tier via `ICacheService.TryGetValue`; it never issues live API calls. A shared-tier miss is
+  skipped, not fetched.
+- Fresh collection is owned by **`CostCollectorJob`** (nightly + on-demand), which calls
+  `ICostManagementService.RefreshAsync()`. Any new cache key must also be produced there.
 
 ### Configuration
-All TTL and storage settings live in `CostManagementOptions` (`appsettings.json` section `AzureCostManagement`):
-- `CacheExpirationMinutes` — in-memory TTL
-- `AzureCache.Enabled`, `AzureCache.StorageAccountUri`, `AzureCache.TableName`, `AzureCache.CacheContainerName`
+TTL and store settings live in `CostManagementOptions` (`appsettings.json` → `AzureCostManagement`):
+- `CacheExpirationMinutes` — L1 TTL.
+- `Redis.Enabled`, `Redis.HostName`, `Redis.Port` (10000), `Redis.KeyPrefix` (`cmcsp:`).
+- `AzureCache.*` — legacy Table/Blob cache; only wired when Redis is disabled.
+- SQL durable store: top-level `ConnectionStrings:Sql` (Entra-token, no secret). When present,
+  `AddDbContextFactory<CmcspDbContext>` is registered and DI injects it into `BlobCostManagementService`.
 
 ### Do Not
-- Do not add `await` inside the `SemaphoreSlim` double-check pattern in `BlobCostManagementService` without also re-checking the cache after acquiring.
-- Do not store new cache keys without registering them in `DailyApiRefreshService.InvalidateCache()`.
-- Do not call Table or Blob Storage directly from a service — always go through `AzureStorageCacheService`.
+- Do not store new cache keys without producing them in `CostCollectorJob` via `RefreshAsync`.
+- Do not add connection-string or access-key secrets for Redis/SQL/Storage — all are MI-only.
+- Do not call the L2 store directly; always go through `ICacheService`.
+- Do not reintroduce a cache-cleanup job — Redis native TTL handles eviction.
+

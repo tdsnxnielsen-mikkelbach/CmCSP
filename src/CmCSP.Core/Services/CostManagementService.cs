@@ -68,7 +68,7 @@ public sealed class CostManagementService : ICostManagementService
         _lastRequestTime = new();
 
     private readonly IHttpClientFactory            _httpFactory;
-    private readonly AzureStorageCacheService       _cache;
+    private readonly ICacheService       _cache;
     private readonly AzureTokenService              _tokenService;
     private readonly CostManagementOptions          _options;
     private readonly DataLoadingStateService        _loadingState;
@@ -76,7 +76,7 @@ public sealed class CostManagementService : ICostManagementService
 
     public CostManagementService(
         IHttpClientFactory           httpFactory,
-        AzureStorageCacheService      cache,
+        ICacheService      cache,
         AzureTokenService             tokenService,
         CostManagementOptions         options,
         DataLoadingStateService        loadingState,
@@ -135,6 +135,16 @@ public sealed class CostManagementService : ICostManagementService
         _loadingState.Update(KeyRg,   LoadPhase.Idle);
         _loadingState.Update(KeyTag,  LoadPhase.Idle);
         _logger.LogInformation("Cost Management cache invalidated.");
+    }
+
+    public async Task<CostCollectionResult> RefreshAsync(CancellationToken ct = default)
+    {
+        // Query-API path has no durable SQL store: invalidate and re-fetch into the cache.
+        InvalidateCache();
+        var main = await GetMainCostDataAsync(ct);
+        var rg   = await GetRgCostDataAsync(ct);
+        var tag  = await GetTagCostDataAsync(ct);
+        return new CostCollectionResult(main.Count, rg.Count, tag.Count);
     }
 
     public async Task<List<SubscriptionBudget>> GetSubscriptionBudgetsAsync(CancellationToken ct = default)

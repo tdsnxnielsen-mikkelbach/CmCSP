@@ -36,7 +36,7 @@ Group larger efforts into phases so related items ship together.
 | Phase 1 | azd migration & repo restructure | — | ✅ Shipped |
 | Phase 2 | Export provisioning visibility | — | ✅ Shipped |
 | Phase 3 | Externalise data collection to a scheduled + on-demand Container Apps Job | — | ✅ Shipped |
-| Phase 4 | Storage & cache re-platform: Table/Blob → serverless SQL, in-process/Storage cache → Azure Managed Redis (Basic), all via managed identity | — | 📋 Planned |
+| Phase 4 | Storage & cache re-platform: Table/Blob → serverless SQL, in-process/Storage cache → Azure Managed Redis (Basic), all via managed identity | — | ✅ Shipped |
 
 ---
 
@@ -60,14 +60,14 @@ Group larger efforts into phases so related items ship together.
 Container Apps **Job** (`cmcsp-collect`) that runs on a `Schedule` trigger at 02:00 UTC
 and can also be started **on demand** from the UI. A Job (not a second Container App) is
 the right primitive — collection is run-to-completion, isolated from web traffic, and
-billed per execution. Mirrors the existing `cmcsp-cleanup` pattern.
+billed per execution. Mirrors the existing `cmcsp-collect` job pattern.
 
 | Sub-task | Priority | Status | Notes |
 |---|---|---|---|
 | Create `CostCollectorJob` console project that reuses `CostManagementService` + cache services | P1 | ✅ Shipped | Extracted shared `CmCSP.Core` lib; job reuses the exact cost + cache pipeline (cache keys/TTLs/60 KB routing identical) |
 | Collect all four datasets **sequentially** (`cm_main`, `cm_rg`, `cm_tag`, `cm_main_amort`) | P1 | ✅ Shipped | `InvalidateCache()` then the four `Get*` methods; Query-API fallback honours the 5-req/min limit, blob-export path has none |
 | Add `Microsoft.App/jobs` resource `cmcsp-collect` in `bicep/app.bicep` | P1 | ✅ Shipped | `Schedule` trigger `0 2 * * *`; System+UserAssigned identity; KV Secrets User + storage RBAC (`main.bicep`) |
-| Build/push/update `cmcsp-collect` image in `infra/hooks/postdeploy.ps1` | P1 | ✅ Shipped | Hook now loops over both cleanup + collect jobs, sharing the ACR token + docker-config setup |
+| Build/push/update `cmcsp-collect` image in `infra/hooks/postdeploy.ps1` | P1 | ✅ Shipped | Hook builds the collect job image, sharing the ACR token + docker-config setup (cleanup job since retired) |
 | Wire collect job env vars in `infra/hooks/postprovision.ps1` | P1 | ✅ Shipped | Same cost + cache env as the Container App; `client-secret` defined in bicep |
 | Retire `DailyApiRefreshService` from the web app | P1 | ✅ Shipped | Hosted service + file removed; the job now owns nightly refresh |
 | Decide fate of `CacheWarmupService` | P2 | ✅ Shipped | Repurposed as a **rehydrator-only** service: repopulates in-memory cache from persistent Table/Blob storage on startup; no longer issues live API calls (collection owned by `CostCollectorJob`) |
@@ -88,24 +88,40 @@ across replicas and jobs. **Everything authenticates with managed identity** —
 connection strings or access keys in config or Key Vault. This refactor also unblocks the
 collector fan-out (per-subscription cache keys become natural with Redis).
 
-> **Status:** Planned — design only, nothing implemented yet. Sequence the data-model and
-> Redis abstraction work before touching the collector partitioning.
+> **Status:** ✅ Shipped — SQL + Redis data platform implemented, MI-only, gated behind
+> `deployDataPlatform` / `DEPLOY_DATA_PLATFORM`. Collector fan-out enabled via
+> `COLLECT_PARTITION_COUNT`/`COLLECT_PARTITION_INDEX`.
+>
+> **Design doc:** [`docs/phase4-data-platform.md`](phase4-data-platform.md) — schema, MI auth,
+> migrations, and the gated rollout sequence.
+
+> **Finding (2026-06-17) — *no* service principal can write Cost Management exports.**
+> Azure denies **all** service principals (Entra-app SPs *and* managed identities)
+> *write* access to Cost Management exports even with the correct Cost Management
+> Contributor role. Reads/list work; writes return `401 RBACAccessDenied`. Confirmed by
+> three tests on `af701430`: Entra-app SP `PUT` → `401`; Container-App-style **managed
+> identity** `PUT` → `401` (spike, 2026-06-18); identical `PUT` as the deployer **user**
+> → `201`. As the supported flow, `infra/hooks/postprovision.ps1` creates exports for
+> every configured subscription at deploy-time **as the deployer**. The runtime
+> `ExportProvisioningService` SP path remains useful only for detect/reuse.
 
 | Sub-task | Priority | Status | Notes |
 |---|---|---|---|
-| Design the SQL schema for cost rows + audit + cleanup state + subscription store | P1 | 📋 Planned | Decide tables/indexes; map `CostRow`, `CollectionAuditRecord`, subscription list; plan for 365-day rolling window |
-| Provision Azure SQL **serverless** DB in bicep (auto-pause, MI-only auth) | P1 | 📋 Planned | Serverless compute tier; disable SQL auth; add EntraID admin; grant Container App + jobs MI `db_datareader`/`db_datawriter` |
-| Provision Azure **Managed Redis (Basic)** in bicep with Entra (MI) auth | P1 | 📋 Planned | Basic SKU; access-key auth disabled; data-access policy for each MI principal |
-| Introduce a data-access layer (EF Core or Dapper) for SQL persistence | P1 | 📋 Planned | Replace direct `TableClient`/`BlobContainerClient` calls; MI auth via `Microsoft.Data.SqlClient` access token |
-| One-time historical backfill into SQL | P2 | 📋 Planned | Ingest pre-365-day blobs already in `cost-exports` **+** a one-time `Custom`-timeframe export run for the pre-export gap (Azure retains ~13 months at subscription scope); dedupe by natural key `(Date, SubscriptionId, ChargeType, grouping, Currency)` processing blobs oldest→newest so the **latest export wins**. Run-once `CostBackfillJob`; depends on the SQL schema/data-access layer |
-| Replace `AzureStorageCacheService` with a Redis-backed `ICacheService` | P1 | 📋 Planned | `StackExchange.Redis` with `DefaultAzureCredential` token auth; preserve TTL semantics; drop the 60 KB table/blob routing |
-| Migrate `CollectionAuditService` to SQL | P2 | 📋 Planned | Audit rows become a table; keep the same read/write API surface for the UI |
-| Migrate `SubscriptionStoreService` off Key Vault/temp-file to SQL | P2 | 📋 Planned | Single source of truth in SQL; remove the disk + KV dual-write |
-| Retire `CacheCleanupJob` | P2 | 📋 Planned | Its sole job is deleting expired Table/Blob cache rows — obsolete once Redis handles TTL eviction natively and the SQL fact table is durable (not pruned on a cadence). Remove the project, its `bicep/app.bicep` job + RBAC, and `postdeploy`/`postprovision` wiring |
-| Update `BlobCostManagementService` consumption of exports | P2 | 📋 Planned | Cost Management **blob exports** stay (that's the source feed); only the *cache/persistence* of parsed rows moves to SQL/Redis |
-| Wire all MI role assignments + remove secrets from config/KV | P1 | 📋 Planned | SQL Entra roles + Redis data-access policies; delete `client-secret`-style cache/storage secrets; keep MI-only |
-| Update hooks + `appsettings` + cache instructions doc | P2 | 📋 Planned | New `Redis`/`Sql` config sections; rewrite `services-cache.instructions.md` for the Redis contract |
-| **Per-replica per-subscription partitioning for the collector (`parallelism > 1`)** | P3 | 📋 Planned | Now unblocked by per-subscription Redis keys; fan the collect job out across subscriptions for faster runs. (Moved from Phase 3.) |
+| ~~Spike: can the Container App MI create Cost Management exports?~~ | P1 | ✅ Shipped | **Resolved 2026-06-18 — NO.** A managed identity holding Cost Management Contributor on `af701430` got the same `401 RBACAccessDenied` on `PUT` as the app-registration SP (tested via a throwaway `azure-cli` Container Apps job using its system-assigned MI + raw management token). Switching `CreateExportAsync` to MI auth would **not** help. Decision: keep the deploy-time-as-deployer path in `postprovision.ps1` as the supported provisioning flow; the runtime SP path is detect/reuse only |
+| Design the SQL schema for cost rows + audit + cleanup state + subscription store | P1 | ✅ Shipped | `CmCSP.Data.CmcspDbContext` + entities (`CostFact`, `CollectionAudit`, `UserSubscription`, `AppSetting`); natural-key unique index on `CostFact` for upsert. Raw DDL mirror [`infra/sql/schema.sql`](../infra/sql/schema.sql); design [`docs/phase4-data-platform.md`](phase4-data-platform.md). Cleanup-state table dropped (CacheCleanupJob now retired) |
+| Provision Azure SQL **serverless** DB in bicep (auto-pause, MI-only auth) | P1 | ✅ Shipped | [`infra/modules/data.bicep`](../infra/modules/data.bicep) — `GP_S_Gen5_2`, auto-pause 60 min, `minCapacity 0.5`; Entra-only auth (deployer as AD admin, `azureADOnlyAuthentication`). Gated behind `deployDataPlatform` in [`infra/main.bicep`](../infra/main.bicep) |
+| Provision Azure **Managed Redis (Basic)** in bicep with Entra (MI) auth | P1 | ✅ Shipped | [`infra/modules/data.bicep`](../infra/modules/data.bicep) — `Balanced_B0` (no HA), `accessKeysAuthentication Disabled`, `VolatileLRU` eviction (native TTL → retires CacheCleanupJob); Entra `default` access-policy assignment per MI (Container App + collect job) |
+| Introduce a data-access layer (EF Core or Dapper) for SQL persistence | P1 | ✅ Shipped | **EF Core** chosen (migrations + MI token auth via `Authentication=Active Directory Default`). `CmcspDbContext` added to `CmCSP.Core`; wired into DI in both [`src/Program.cs`](../src/Program.cs) and [`src/CostCollectorJob/Program.cs`](../src/CostCollectorJob/Program.cs) via `AddDbContextFactory<CmcspDbContext>` when `ConnectionStrings:Sql` is configured (set by the postprovision hook) |
+| Postprovision hook: apply schema + create MI contained-DB users | P1 | ✅ Shipped | Phase 8 in [`infra/hooks/postprovision.ps1`](../infra/hooks/postprovision.ps1) (runs only when `DATA_PLATFORM_ENABLED=true`): applies [`infra/sql/schema.sql`](../infra/sql/schema.sql) and runs `CREATE USER ... FROM EXTERNAL PROVIDER` + `db_datareader`/`db_datawriter` for the Container App + collect job MIs, as the deployer (SQL Entra admin). Prefers `Invoke-Sqlcmd` w/ az token, falls back to go-sqlcmd `ActiveDirectoryAzCli` |
+| One-time historical backfill into SQL | P2 | ✅ Shipped | Run-once [`CostBackfillJob`](../src/CostBackfillJob/Program.cs) + [`CostBackfillService`](../src/CmCSP.Core/Services/CostBackfillService.cs) read **every** export CSV (no 365-day window), aggregate into the `main`/`rg`/`tag` datasets and **upsert** into `CostFact` by natural key (latest export wins, idempotent re-runs) in 5k-row batches. Requires `DEPLOY_DATA_PLATFORM=true` (`ConnectionStrings:Sql`) |
+| Replace `AzureStorageCacheService` with a Redis-backed `ICacheService` | P1 | ✅ Shipped | New [`ICacheService`](../src/CmCSP.Core/Services/ICacheService.cs) abstraction (same `TryGetValue`/`Set`/`Remove`/`IsAzureEnabled` surface); [`RedisCacheService`](../src/CmCSP.Core/Services/RedisCacheService.cs) uses `StackExchange.Redis` + `Microsoft.Azure.StackExchangeRedis` `DefaultAzureCredential` token auth (no keys), IMemoryCache L1, native TTL. `AzureStorageCacheService` also implements `ICacheService`; DI picks Redis when `AzureCostManagement:Redis:Enabled`, else Table/Blob (web app + collect job). Consumers depend on the interface |
+| Migrate `CollectionAuditService` to SQL | P2 | ✅ Shipped | [`CollectionAuditService`](../src/CmCSP.Core/Services/CollectionAuditService.cs) writes/reads the `CollectionAudit` SQL table via the `IDbContextFactory<CmcspDbContext>` when SQL is configured; same `WriteAsync`/`GetRecentAsync`/`GetLatestAsync` surface for the UI. Falls back to the `cmcspcollectaudit` Table Storage table when SQL is absent |
+| Migrate `SubscriptionStoreService` off Key Vault/temp-file to SQL | P2 | ✅ Shipped | [`SubscriptionStoreService`](../src/CmCSP.Core/Services/SubscriptionStoreService.cs) uses the `UserSubscription` SQL table as the single source of truth (reconcile on save) + `AppSetting` for the runtime `CostDetails.Enabled` flag when SQL is configured; KV + temp-file dual-write retained only as the non-SQL fallback |
+| Retire `CacheCleanupJob` | P2 | ✅ Shipped | Removed the project, its `bicep/app.bicep` job + `bicep/main.bicep` storage RBAC, the `infra/main.bicep` wiring/output, and the `postdeploy`/`postprovision` hooks. Redis does TTL eviction natively and `CostFact` is durable (not pruned on a cadence), so the job is obsolete. Deleted `docs/cache-cleanup.md` |
+| Update `BlobCostManagementService` consumption of exports | P2 | ✅ Shipped | Blob exports remain the **source feed**; parsed/aggregated rows now persist to SQL `CostFact` and read back from it. New [`ICostManagementService.RefreshAsync`](../src/CmCSP.Core/Services/ICostManagementService.cs) (write path: parse → `UpsertFactsAsync` by natural key in 5k batches → warm cache); read path `PopulateAllCachesAsync` loads from `CostFact` (`LoadFromSqlAsync`) with a one-off blob-parse fallback when empty. DI injects `IDbContextFactory<CmcspDbContext>` (optional ctor param) when SQL is configured; amortized data stays API-only. [`CostCollectorJob`](../src/CostCollectorJob/Program.cs) now calls `RefreshAsync` |
+| Wire all MI role assignments + remove secrets from config/KV | P1 | ✅ Shipped | Already MI-only: SQL `azureADOnlyAuthentication` + contained-DB users; Redis `accessKeysAuthentication Disabled` + per-MI access policies; SQL conn string `Authentication=Active Directory Default` (no secret). [`postprovision.ps1`](../infra/hooks/postprovision.ps1) Phase 6 now **gates the storage Table/Blob cache off** when the data platform is on (`AzureCache__Enabled=false`; Redis takes over). No cache/storage connection-string secrets exist. The Entra `CmCSP--ClientSecret` is **retained** (OIDC sign-in + Query API fallback — not a cache secret) and documented as such |
+| Update hooks + `appsettings` + cache instructions doc | P2 | ✅ Shipped | Added top-level `ConnectionStrings:Sql` to [`appsettings.json`](../src/appsettings.json) (Redis section already present); rewrote [`services-cache.instructions.md`](../.github/instructions/services-cache.instructions.md) for the Redis contract (L1 IMemoryCache + L2 Redis native-TTL MI auth, SQL `CostFact` durable store, `RefreshAsync` write path, `_fetchLock` herd protection, no cleanup job). Hook Phase 6 cache gating updated (see row above) |
+| **Per-subscription partitioning for the collector (`parallelism > 1`)** | P3 | ✅ Shipped | [`CostCollectorJob`](../src/CostCollectorJob/Program.cs) honours `COLLECT_PARTITION_COUNT` / `COLLECT_PARTITION_INDEX` — each execution collects only `index % count` of the subscription set and restricts blob parsing via [`BlobCostManagementService.SubscriptionFilter`](../src/CmCSP.Core/Services/BlobCostManagementService.cs). Data-safe because `CostFact`'s natural key includes `SubscriptionId` (disjoint writes never conflict). Default `parallelism: 1`; [`infra/modules/app.bicep`](../infra/modules/app.bicep) documents fan-out via distinct scheduled executions (Container Apps Jobs have no native task index) |
 
 ---
 

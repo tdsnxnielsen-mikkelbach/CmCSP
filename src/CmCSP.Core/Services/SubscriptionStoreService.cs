@@ -1,14 +1,22 @@
 using System.Text.Json;
 using Azure.Identity;
 using Azure.Security.KeyVault.Secrets;
+using CmCSP.Data;
 using CmCSP.Models;
+using Microsoft.EntityFrameworkCore;
 
 namespace CmCSP.Services;
 
 /// <summary>
-/// Persists user-added subscription IDs to Key Vault (primary) and a local temp file
-/// (fallback/backup) and merges them into the live <see cref="CostManagementOptions.SubscriptionIds"/>
-/// list so that all cost services pick them up without a restart.
+/// Persists user-added subscription IDs and merges them into the live
+/// <see cref="CostManagementOptions.SubscriptionIds"/> list so that all cost services pick
+/// them up without a restart.
+///
+/// Phase 4: when a <see cref="CmcspDbContext"/> factory is registered (i.e. the SQL data
+/// platform is provisioned), the <c>UserSubscription</c> SQL table is the single source of
+/// truth and the runtime <c>CostDetails.Enabled</c> flag is stored in the <c>AppSetting</c>
+/// table. When SQL is not configured the service falls back to the legacy Key Vault secret
+/// (primary) + local temp file (backup) so existing deployments keep working unchanged.
 ///
 /// Config-provided IDs (from appsettings / user-secrets / env vars) cannot be removed
 /// at runtime; they are only tracked so the UI can distinguish them.
@@ -17,17 +25,19 @@ public sealed class SubscriptionStoreService
 {
     private const string KvSecretName                  = "CmCSP--UserSubscriptionIds";
     private const string KvCostDetailsEnabledSecretName = "CmCSP--CostDetails--Enabled";
+    private const string CostDetailsEnabledSettingKey   = "CostDetails.Enabled";
 
     private readonly CostManagementOptions _options;
     private readonly string _storePath;
     private readonly ILogger<SubscriptionStoreService> _logger;
     private readonly SecretClient? _kvClient;
     private readonly ExportProvisioningService? _provisioner;
+    private readonly IDbContextFactory<CmcspDbContext>? _dbFactory;
 
     // IDs present in config at startup — not removable at runtime
     private readonly HashSet<string> _configIds;
 
-    // IDs added by the user via the UI — persisted to disk and Key Vault
+    // IDs added by the user via the UI — persisted to SQL (or Key Vault/disk when SQL absent)
     private readonly HashSet<string> _userIds = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -39,10 +49,12 @@ public sealed class SubscriptionStoreService
         IHostEnvironment env,
         IConfiguration configuration,
         ILogger<SubscriptionStoreService> logger,
-        ExportProvisioningService? provisioner = null)
+        ExportProvisioningService? provisioner = null,
+        IDbContextFactory<CmcspDbContext>? dbFactory = null)
     {
         _options   = options;
         _logger    = logger;
+        _dbFactory = dbFactory;
         // ContentRootPath (/app) is root-owned in the .NET SDK container image;
         // use the OS temp directory (/tmp on Linux) which is always writable.
         _storePath = Path.Combine(Path.GetTempPath(), "cmcsp-data", "subscriptions.json");
@@ -50,17 +62,26 @@ public sealed class SubscriptionStoreService
         // Snapshot the IDs that came from config so we can mark them as non-removable
         _configIds = new HashSet<string>(options.SubscriptionIds, StringComparer.OrdinalIgnoreCase);
 
+        // Key Vault is only used for the legacy fallback path (no SQL data platform).
         var kvUri = configuration["KeyVaultUri"];
-        if (!string.IsNullOrWhiteSpace(kvUri))
+        if (_dbFactory is null && !string.IsNullOrWhiteSpace(kvUri))
         {
             _kvClient = new SecretClient(new Uri(kvUri), new DefaultAzureCredential());
         }
 
         _provisioner = provisioner;
 
-        // Load from disk first (fast, synchronous), then layer KV on top (KV wins on conflict).
-        LoadFromDisk();
-        LoadFromKeyVault();
+        if (_dbFactory is not null)
+        {
+            // SQL is the single source of truth.
+            LoadFromSql();
+        }
+        else
+        {
+            // Load from disk first (fast, synchronous), then layer KV on top (KV wins on conflict).
+            LoadFromDisk();
+            LoadFromKeyVault();
+        }
     }
 
     // ── Public read surfaces ─────────────────────────────────────────────────
@@ -83,6 +104,29 @@ public sealed class SubscriptionStoreService
     public async Task EnableCostDetailsAsync()
     {
         _options.CostDetails.Enabled = true;
+
+        if (_dbFactory is not null)
+        {
+            try
+            {
+                await using var db = await _dbFactory.CreateDbContextAsync();
+                var setting = await db.AppSettings.FindAsync(CostDetailsEnabledSettingKey);
+                if (setting is null)
+                    db.AppSettings.Add(new AppSettingEntity { Key = CostDetailsEnabledSettingKey, Value = "true", UpdatedUtc = DateTimeOffset.UtcNow });
+                else
+                {
+                    setting.Value = "true";
+                    setting.UpdatedUtc = DateTimeOffset.UtcNow;
+                }
+                await db.SaveChangesAsync();
+                _logger.LogInformation("Cost Details API enabled and persisted to SQL.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to persist CostDetails.Enabled to SQL.");
+            }
+            return;
+        }
 
         if (_kvClient is null)
             return;
@@ -246,6 +290,13 @@ public sealed class SubscriptionStoreService
 
     private async Task SaveAsync()
     {
+        // SQL is the single source of truth when the data platform is provisioned.
+        if (_dbFactory is not null)
+        {
+            await SaveToSqlAsync();
+            return;
+        }
+
         var json = JsonSerializer.Serialize(
             _userIds.OrderBy(x => x).ToList(),
             new JsonSerializerOptions { WriteIndented = true });
@@ -274,6 +325,70 @@ public sealed class SubscriptionStoreService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to persist subscription IDs to {Path}", _storePath);
+        }
+    }
+
+    // ── SQL persistence (Phase 4 system of record) ───────────────────────────
+
+    private void LoadFromSql()
+    {
+        try
+        {
+            using var db = _dbFactory!.CreateDbContext();
+
+            foreach (var row in db.UserSubscriptions.AsNoTracking().ToList())
+            {
+                var normalized = row.SubscriptionId.Trim().ToLowerInvariant();
+                if (!Guid.TryParse(normalized, out _))
+                    continue;
+
+                _userIds.Add(normalized);
+                if (!_options.SubscriptionIds.Any(s => s.Equals(normalized, StringComparison.OrdinalIgnoreCase)))
+                    _options.SubscriptionIds.Add(normalized);
+            }
+
+            _logger.LogInformation("Loaded {Count} user-added subscription IDs from SQL", _userIds.Count);
+
+            // Restore the persisted CostDetails.Enabled flag.
+            var setting = db.AppSettings.AsNoTracking().FirstOrDefault(s => s.Key == CostDetailsEnabledSettingKey);
+            if (setting is not null && bool.TryParse(setting.Value, out var enabled) && enabled)
+            {
+                _options.CostDetails.Enabled = true;
+                _logger.LogInformation("CostDetails.Enabled restored to true from SQL.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not load subscription state from SQL — starting with config IDs only");
+        }
+    }
+
+    /// <summary>Reconciles the <c>UserSubscription</c> table to match the in-memory user set.</summary>
+    private async Task SaveToSqlAsync()
+    {
+        try
+        {
+            await using var db = await _dbFactory!.CreateDbContextAsync();
+
+            var existing = await db.UserSubscriptions.ToListAsync();
+            var existingIds = existing.Select(e => e.SubscriptionId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // Add new IDs.
+            foreach (var id in _userIds)
+                if (!existingIds.Contains(id))
+                    db.UserSubscriptions.Add(new UserSubscriptionEntity { SubscriptionId = id, AddedUtc = DateTimeOffset.UtcNow });
+
+            // Remove IDs no longer present in the user set.
+            foreach (var row in existing)
+                if (!_userIds.Contains(row.SubscriptionId))
+                    db.UserSubscriptions.Remove(row);
+
+            await db.SaveChangesAsync();
+            _logger.LogDebug("Persisted {Count} subscription IDs to SQL", _userIds.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to persist subscription IDs to SQL");
         }
     }
 

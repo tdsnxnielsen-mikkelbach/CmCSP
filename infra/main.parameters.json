@@ -25,6 +25,24 @@
     },
     "grantMiRbacAdminOnSubscription": {
       "value": "${GRANT_MI_RBAC_ADMIN=false}"
+    },
+    "deployDataPlatform": {
+      "value": "${DEPLOY_DATA_PLATFORM=false}"
+    },
+    "sqlAdminLogin": {
+      "value": "${SQL_ADMIN_LOGIN=}"
+    },
+    "sqlAdminObjectId": {
+      "value": "${SQL_ADMIN_OBJECT_ID=}"
+    },
+    "sqlAdminPrincipalType": {
+      "value": "${SQL_ADMIN_PRINCIPAL_TYPE=User}"
+    },
+    "sqlServerName": {
+      "value": "${SQL_SERVER_NAME=}"
+    },
+    "redisName": {
+      "value": "${REDIS_NAME=}"
     }
   }
 }

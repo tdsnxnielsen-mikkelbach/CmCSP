@@ -53,7 +53,7 @@ Audits Bicep templates for IAM correctness, export configuration, and Azure best
 
 **Example prompts:**
 ```
-@Bicep Reviewer Audit bicep/main.bicep for IAM completeness.
+@Bicep Reviewer Audit infra/modules/storage.bicep for IAM completeness.
 @Bicep Reviewer Are there any security issues with the storage account config in main.bicep?
 @Bicep Reviewer Check export-sub.bicep against current Bicep best practices.
 @Bicep Reviewer Does app.bicep assign all the roles the Container App needs?

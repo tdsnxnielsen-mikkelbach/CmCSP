@@ -2,6 +2,9 @@ using CmCSP.Models;
 
 namespace CmCSP.Services;
 
+/// <summary>Per-dataset row counts returned by a collection run.</summary>
+public readonly record struct CostCollectionResult(int Main, int Rg, int Tag);
+
 public interface ICostManagementService
 {
     /// <summary>Daily costs grouped by SubscriptionName + MeterCategory (service).</summary>
@@ -22,6 +25,15 @@ public interface ICostManagementService
 
     /// <summary>Removes all cached results so the next call re-fetches from the API.</summary>
     void InvalidateCache();
+
+    /// <summary>
+    /// Ingests the latest cost data from the source feed into the durable store and warms the
+    /// shared cache. For blob-export mode with the SQL data platform enabled this re-parses the
+    /// export CSVs and upserts the aggregated rows into <c>CostFact</c>; otherwise it invalidates
+    /// and re-fetches from the Query API. Returns the per-dataset row counts. Called by the
+    /// CostCollectorJob (nightly + on-demand).
+    /// </summary>
+    Task<CostCollectionResult> RefreshAsync(CancellationToken ct = default);
 
     /// <summary>
     /// Returns budgets defined at the subscription scope for all configured subscriptions.

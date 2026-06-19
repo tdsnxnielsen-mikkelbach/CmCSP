@@ -43,7 +43,7 @@ public sealed class CostDetailsService : ICostDetailsService
 
     private readonly IHttpClientFactory         _httpFactory;
     private readonly AzureTokenService          _tokenService;
-    private readonly AzureStorageCacheService   _cache;
+    private readonly ICacheService   _cache;
     private readonly CostManagementOptions      _options;
     private readonly ILogger<CostDetailsService> _logger;
 
@@ -54,7 +54,7 @@ public sealed class CostDetailsService : ICostDetailsService
     public CostDetailsService(
         IHttpClientFactory           httpFactory,
         AzureTokenService            tokenService,
-        AzureStorageCacheService     cache,
+        ICacheService     cache,
         CostManagementOptions        options,
         ILogger<CostDetailsService>  logger)
     {

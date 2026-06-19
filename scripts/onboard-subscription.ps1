@@ -59,7 +59,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # Cost Management Contributor – built-in role definition ID (stable across tenants).
-$CostManagementContributorRoleId = '1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40'
+$CostManagementContributorRoleId = '434105ed-43f6-45c7-a02f-909b2ba83430'
 
 function Write-Step([string]$msg) {
     Write-Host ""

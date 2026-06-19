@@ -7,14 +7,27 @@
     legacy scripts/deploy.ps1:
 
       5. Seed Key Vault secrets (identity + optional Cost Details settings).
-      6. Wire Container App + cache cleanup Job + cost collector Job environment
+      6. Wire Container App + cost collector Job environment
          variables, including the Key Vault reference for the client secret.
       6b. Assign Cost Management Contributor to the Entra App SP on every
           configured subscription (required for export auto-provisioning).
       7. Deploy the Cost Management export at the scope selected by EXPORT_SCOPE:
-            subscription → bicep/export-sub.bicep    (managed-identity auth)
-            billing      → bicep/export-billing.bicep (SAS-token auth, tenant scope)
+            subscription → infra/modules/export-sub.bicep    (managed-identity auth)
+            billing      → infra/modules/export-billing.bicep (SAS-token auth, tenant scope)
             none         → skip (default)
+
+         Subscription-scope exports are created here for EVERY configured
+         subscription, running as the deployer (the signed-in user). This is the
+         reliable path: Azure Cost Management denies *service principals* write
+         access to exports even when they hold Cost Management Contributor, so the
+         runtime SP path in ExportProvisioningService cannot create them. Doing it
+         at deploy-time as the deployer side-steps that restriction.
+
+      8. Phase 4 data platform (only when DATA_PLATFORM_ENABLED=true): apply the
+         SQL schema (infra/sql/schema.sql) and create contained-DB users for the
+         Container App + collect job managed identities (db_datareader/writer),
+         then wire the SQL + Redis connection settings. Runs as the deployer, who
+         is the SQL Entra admin (set in infra/modules/data.bicep).
 
     All inputs come from azd: bicep outputs and `azd env set` values are exposed
     to hooks as environment variables.
@@ -62,6 +75,39 @@ function Require-Env([string]$name) {
     return $val
 }
 
+# Run a T-SQL script/query against Azure SQL using the deployer's Entra credential.
+# Prefers Invoke-Sqlcmd (SqlServer module) with an az-issued access token; falls back
+# to go-sqlcmd's ActiveDirectoryAzCli auth. The deployer is the SQL Entra admin.
+function Invoke-SqlScript {
+    param(
+        [Parameter(Mandatory)][string]$ServerFqdn,
+        [Parameter(Mandatory)][string]$Database,
+        [string]$Query,
+        [string]$InputFile
+    )
+
+    if (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue) {
+        $token = az account get-access-token --resource https://database.windows.net/ `
+            --query accessToken -o tsv --only-show-errors
+        if (-not $token) { Write-Error 'Could not acquire an Azure SQL access token (az account get-access-token).' }
+        $params = @{ ServerInstance = $ServerFqdn; Database = $Database; AccessToken = $token; ErrorAction = 'Stop' }
+        if ($InputFile) { $params['InputFile'] = $InputFile } else { $params['Query'] = $Query }
+        Invoke-Sqlcmd @params | Out-Null
+        return
+    }
+
+    $sqlcmd = Get-Command sqlcmd -ErrorAction SilentlyContinue
+    if ($sqlcmd) {
+        $cmdArgs = @('-S', "tcp:$ServerFqdn,1433", '-d', $Database, '--authentication-method', 'ActiveDirectoryAzCli', '-b')
+        if ($InputFile) { $cmdArgs += @('-i', $InputFile) } else { $cmdArgs += @('-Q', $Query) }
+        & $sqlcmd.Source @cmdArgs
+        if ($LASTEXITCODE -ne 0) { Write-Error "sqlcmd failed (exit $LASTEXITCODE)." }
+        return
+    }
+
+    Write-Error "No SQL client found. Install the 'SqlServer' PowerShell module (Install-Module SqlServer -Scope CurrentUser) or go-sqlcmd."
+}
+
 # Backfill N prior calendar months of subscription-scope cost data (one-time exports).
 function Invoke-HistoricalBackfill([string]$PrimarySub) {
     Write-Host ""
@@ -102,7 +148,7 @@ function Invoke-HistoricalBackfill([string]$PrimarySub) {
 # Repo root = parent of infra/ (azd runs hooks from the azure.yaml directory,
 # but resolve relative to this script so manual invocation also works).
 $repoRoot  = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$bicepRoot = Join-Path $repoRoot 'bicep'
+$bicepRoot = Join-Path (Join-Path $repoRoot 'infra') 'modules'
 
 # ── Resolve inputs from azd (bicep outputs + `azd env set` values) ─────────────
 
@@ -110,7 +156,6 @@ $subscriptionId   = Require-Env 'AZURE_SUBSCRIPTION_ID'
 $location         = Get-Env    'AZURE_LOCATION' 'swedencentral'
 $appRg            = Require-Env 'AZURE_RESOURCE_GROUP'
 $containerAppName = Require-Env 'CONTAINER_APP_NAME'
-$cleanupJobName   = Get-Env    'CLEANUP_JOB_NAME' "$containerAppName-cleanup"
 $collectJobName   = Get-Env    'COLLECT_JOB_NAME' "$containerAppName-collect"
 $keyVaultName     = Require-Env 'AZURE_KEY_VAULT_NAME'
 $keyVaultUri      = Require-Env 'AZURE_KEY_VAULT_URI'
@@ -166,12 +211,25 @@ foreach ($name in $secrets.Keys) {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Phase 6 – Container App + cleanup job environment variables
+# Phase 6 – Container App + collector job environment variables
 # ──────────────────────────────────────────────────────────────────────────────
 
 Write-Step "Phase 6 – Container App environment variables"
 
+# When the Phase 4 data platform is provisioned, Redis (L2) + SQL (durable store)
+# replace the storage Table/Blob cache, so we must NOT wire the AzureCache section
+# (Redis takes precedence and the storage cache stays disabled). Computed here so
+# Phase 6 can gate the cache vars; Phase 8 reuses the same value.
+$dataPlatformEnabled = (Get-Env 'DATA_PLATFORM_ENABLED' 'false').ToLowerInvariant() -eq 'true'
+if (-not $dataPlatformEnabled) {
+    $dataPlatformEnabled = (Get-Env 'DEPLOY_DATA_PLATFORM' 'false').ToLowerInvariant() -eq 'true'
+}
+
 # Key Vault reference consumed as a Container App secret (resolved via the app MI).
+# NOTE: 'client-secret' (CmCSP--ClientSecret) is the Entra App credential used for
+# OIDC sign-in + the Cost Management Query API fallback — it is NOT a cache/storage
+# secret and is retained under MI-only operation. All cache, storage and SQL access
+# is managed-identity based (no connection-string secrets).
 Write-Host "  Adding Key Vault secret reference 'client-secret'..."
 az containerapp secret set --name $containerAppName --resource-group $appRg `
     --secrets "client-secret=keyvaultref:${keyVaultUri}secrets/CmCSP--ClientSecret,identityref:system" `
@@ -191,24 +249,26 @@ $envPairs = @(
     "AzureCostManagement__ExportBlob__StorageAccountResourceId=$storageId"
     "AzureCostManagement__ExportBlob__ContainerName=$exportContainer"
     "AzureCostManagement__ExportBlob__BlobPrefix=exports"
-    "AzureCostManagement__AzureCache__Enabled=true"
-    "AzureCostManagement__AzureCache__StorageAccountUri=$storageUri"
-    "AzureCostManagement__AzureCache__TableName=cmcspcache"
-    "AzureCostManagement__AzureCache__CacheContainerName=cmcspcache"
 ) + $subIdsEnv
+
+if ($dataPlatformEnabled) {
+    # Redis + SQL are the cache/durable store; keep the storage cache off.
+    Write-Host "  Data platform enabled – Redis/SQL cache; storage Table/Blob cache disabled." -ForegroundColor DarkGray
+    $envPairs += "AzureCostManagement__AzureCache__Enabled=false"
+}
+else {
+    # No data platform: fall back to the managed-identity storage Table/Blob cache.
+    $envPairs += "AzureCostManagement__AzureCache__Enabled=true"
+    $envPairs += "AzureCostManagement__AzureCache__StorageAccountUri=$storageUri"
+    $envPairs += "AzureCostManagement__AzureCache__TableName=cmcspcache"
+    $envPairs += "AzureCostManagement__AzureCache__CacheContainerName=cmcspcache"
+}
 
 Write-Host "  Updating Container App with $($envPairs.Count) environment variables..."
 az containerapp update --name $containerAppName --resource-group $appRg --set-env-vars @envPairs --only-show-errors | Out-Null
 
-# Cleanup job storage endpoints (table endpoint shares the account, different sub-domain).
-$tableStorageUri = $storageUri -replace '\.blob\.core\.windows\.net', '.table.core.windows.net'
-Write-Host "  Wiring cleanup job storage endpoints ($cleanupJobName)..."
-az containerapp job update --name $cleanupJobName --resource-group $appRg `
-    --set-env-vars "CACHE_TABLE_ENDPOINT=$tableStorageUri" "CACHE_BLOB_ENDPOINT=$storageUri" `
-    --only-show-errors 2>$null | Out-Null
-
 # Collect job runs the same data pipeline as the web app, so it takes the same
-# cost + cache env vars (its 'client-secret' secret is defined in bicep/app.bicep).
+# cost + cache env vars (its 'client-secret' secret is defined in infra/modules/app.bicep).
 Write-Host "  Wiring collect job environment variables ($collectJobName)..."
 az containerapp job update --name $collectJobName --resource-group $appRg `
     --set-env-vars @envPairs --only-show-errors 2>$null | Out-Null
@@ -216,14 +276,15 @@ az containerapp job update --name $collectJobName --resource-group $appRg `
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 6b – Cost Management Contributor for the Entra App SP
 # ──────────────────────────────────────────────────────────────────────────────
-# The app creates Cost Management exports as the Entra App SP, which requires
-# 'Cost Management Contributor' on each target subscription. Assign it here (as the
-# deployer) so multi-subscription deployments work out of the box. Runtime UI-added
-# subscriptions are handled best-effort by ExportProvisioningService.
+# Grants the Entra App SP 'Cost Management Contributor' on each target
+# subscription. NOTE: Azure denies service principals *write* access to Cost
+# Management exports even with this role, so the SP cannot create exports — that
+# is done at deploy-time as the deployer (Phase 7). This grant still lets the SP
+# READ/list and reuse exports at runtime (ExportProvisioningService.DetectAsync).
 
 Write-Step "Phase 6b – Cost Management role for service principal"
 
-$costMgmtContributorRoleId = '1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40'
+$costMgmtContributorRoleId = '434105ed-43f6-45c7-a02f-909b2ba83430'
 $spObjectId = az ad sp show --id $clientId --query id -o tsv --only-show-errors 2>$null
 
 if (-not $spObjectId) {
@@ -257,41 +318,44 @@ $recurrenceFrom = (Get-Date).AddDays(1).ToString('yyyy-MM-ddT00:00:00Z')
 switch ($exportScope) {
 
     # ── Subscription scope: managed-identity auth, sub-level deployment ───────
+    # Created for every configured subscription as the deployer (signed-in user),
+    # because service principals are denied Cost Management export writes.
     'subscription' {
-        $primarySub = $subscriptionIds[0]
-        az account set --subscription $primarySub --only-show-errors | Out-Null
+        foreach ($sub in $subscriptionIds) {
+            az account set --subscription $sub --only-show-errors | Out-Null
 
-        Write-Host "  Deploying subscription-scope export '$exportName'..."
-        $exportOut = az deployment sub create `
-            --location $location `
-            --template-file (Join-Path $bicepRoot 'export-sub.bicep') `
-            --only-show-errors `
-            --parameters `
-                "exportName=$exportName" `
-                "storageAccountResourceId=$storageId" `
-                "containerName=$exportContainer" `
-                'rootFolderPath=exports' `
-                "location=$location" `
-                "recurrenceFrom=$recurrenceFrom" `
-            -o json | ConvertFrom-Json
-
-        $exportMiId = $exportOut.properties.outputs.managedIdentityPrincipalId.value
-        if ($exportMiId) {
-            Write-Host "  Granting Storage Blob Data Contributor to export MI ($exportMiId)..."
-            # Re-run storage module with the export MI principal → declarative RBAC.
-            az deployment group create `
-                --resource-group $appRg `
-                --template-file (Join-Path $bicepRoot 'main.bicep') `
-                --mode Incremental --only-show-errors `
+            Write-Host "  [$sub] Deploying subscription-scope export '$exportName'..."
+            $exportOut = az deployment sub create `
+                --location $location `
+                --template-file (Join-Path $bicepRoot 'export-sub.bicep') `
+                --only-show-errors `
                 --parameters `
-                    "storageAccountName=$storageName" `
+                    "exportName=$exportName" `
+                    "storageAccountResourceId=$storageId" `
+                    "containerName=$exportContainer" `
+                    'rootFolderPath=exports' `
                     "location=$location" `
-                    "exportManagedIdentityPrincipalId=$exportMiId" `
-                | Out-Null
-        }
+                    "recurrenceFrom=$recurrenceFrom" `
+                -o json | ConvertFrom-Json
 
-        if ($historicalMonths -gt 0) {
-            Invoke-HistoricalBackfill -PrimarySub $primarySub
+            $exportMiId = $exportOut.properties.outputs.managedIdentityPrincipalId.value
+            if ($exportMiId) {
+                Write-Host "  [$sub] Granting Storage Blob Data Contributor to export MI ($exportMiId)..."
+                # Re-run storage module with the export MI principal → declarative RBAC.
+                az deployment group create `
+                    --resource-group $appRg `
+                    --template-file (Join-Path $bicepRoot 'storage.bicep') `
+                    --mode Incremental --only-show-errors `
+                    --parameters `
+                        "storageAccountName=$storageName" `
+                        "location=$location" `
+                        "exportManagedIdentityPrincipalId=$exportMiId" `
+                    | Out-Null
+            }
+
+            if ($historicalMonths -gt 0) {
+                Invoke-HistoricalBackfill -PrimarySub $sub
+            }
         }
 
         az account set --subscription $subscriptionId --only-show-errors | Out-Null
@@ -339,6 +403,94 @@ switch ($exportScope) {
     default {
         Write-Host "  EXPORT_SCOPE='$exportScope' – skipping export deployment." -ForegroundColor Yellow
         Write-Host "  Set one of: azd env set EXPORT_SCOPE subscription | billing" -ForegroundColor Yellow
+    }
+}
+
+# ──────────────────────────────────────────────────────────────
+# Phase 8 – Data platform (Azure SQL contained-DB users + schema)
+# ──────────────────────────────────────────────────────────────
+# Only when the data platform was provisioned (bicep deployDataPlatform=true).
+# Applies the schema and grants each managed identity db_datareader/db_datawriter
+# as a contained-database user. Runs as the deployer (the SQL Entra admin).
+# $dataPlatformEnabled was computed before Phase 6 (used there to gate the storage cache).
+
+if ($dataPlatformEnabled) {
+    Write-Step "Phase 8 – Data platform (SQL users + schema)"
+
+    $sqlServerFqdn = Get-Env 'SQL_SERVER_FQDN'
+    $sqlDatabase   = Get-Env 'SQL_DATABASE_NAME' 'cmcsp'
+    $schemaFile    = Join-Path (Join-Path (Join-Path $repoRoot 'infra') 'sql') 'schema.sql'
+
+    if (-not $sqlServerFqdn) {
+        Write-Host "  DATA_PLATFORM_ENABLED set but SQL_SERVER_FQDN is empty – skipping." -ForegroundColor Yellow
+    }
+    elseif (-not (Test-Path $schemaFile)) {
+        Write-Host "  Schema file not found: $schemaFile – skipping." -ForegroundColor Yellow
+    }
+    else {
+        # Wire the no-secret SQL + Redis settings into the app + collect job FIRST, independently
+        # of schema application. The container apps need ConnectionStrings__Sql to use SQL as the
+        # cache/durable/audit store; if this step is skipped (e.g. because the schema apply below
+        # fails) the apps fall back to NO backend — Phase 6 already disabled the storage cache —
+        # which silently breaks the collection-audit trail and shared cache. Keep it in its own
+        # try/catch so a SQL-client/permission problem during schema apply can't strand the config.
+        try {
+            $sqlConn   = Get-Env 'SQL_CONNECTION_STRING'
+            $redisHost = Get-Env 'REDIS_HOST_NAME'
+            $redisPort = Get-Env 'REDIS_PORT' '10000'
+            $dataEnv = @()
+            if ($sqlConn)   { $dataEnv += "ConnectionStrings__Sql=$sqlConn" }
+            if ($redisHost) {
+                # Redis options bind under the AzureCostManagement section.
+                $dataEnv += "AzureCostManagement__Redis__Enabled=true"
+                $dataEnv += "AzureCostManagement__Redis__HostName=$redisHost"
+                $dataEnv += "AzureCostManagement__Redis__Port=$redisPort"
+            }
+
+            if ($dataEnv.Count -gt 0) {
+                Write-Host "  Wiring SQL + Redis connection settings into the app + collect job..."
+                az containerapp update --name $containerAppName --resource-group $appRg `
+                    --set-env-vars @dataEnv --only-show-errors | Out-Null
+                az containerapp job update --name $collectJobName --resource-group $appRg `
+                    --set-env-vars @dataEnv --only-show-errors 2>$null | Out-Null
+            }
+            else {
+                Write-Host "  SQL_CONNECTION_STRING/REDIS_HOST_NAME not available – skipping connection-string wiring." -ForegroundColor Yellow
+            }
+        }
+        catch {
+            Write-Host "  Wiring SQL/Redis connection settings failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+
+        # Apply the schema + create contained-DB users. A failure here does NOT undo the
+        # connection-string wiring above; the schema can be re-applied later by re-running azd provision.
+        try {
+            Write-Host "  Applying schema (infra/sql/schema.sql) to $sqlServerFqdn/$sqlDatabase..."
+            Invoke-SqlScript -ServerFqdn $sqlServerFqdn -Database $sqlDatabase -InputFile $schemaFile
+
+            # Each system-assigned MI's Entra display name equals its resource name.
+            $miNames = @($containerAppName, $collectJobName) | Where-Object { $_ } | Select-Object -Unique
+            $userTsql = ($miNames | ForEach-Object {
+@"
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$_')
+BEGIN
+    CREATE USER [$_] FROM EXTERNAL PROVIDER;
+    ALTER ROLE db_datareader ADD MEMBER [$_];
+    ALTER ROLE db_datawriter ADD MEMBER [$_];
+END
+"@
+            }) -join "`nGO`n"
+
+            Write-Host "  Creating contained-DB users: $($miNames -join ', ')..."
+            Invoke-SqlScript -ServerFqdn $sqlServerFqdn -Database $sqlDatabase -Query $userTsql
+
+            Write-Host "  Data platform configured." -ForegroundColor Green
+        }
+        catch {
+            Write-Host "  Data-platform schema setup failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "  Ensure a SQL client is available (Install-Module SqlServer -Scope CurrentUser) and that" -ForegroundColor Yellow
+            Write-Host "  the deployer is the SQL Entra admin, then re-run: azd provision" -ForegroundColor Yellow
+        }
     }
 }
 

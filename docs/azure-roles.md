@@ -30,7 +30,7 @@ Used when `AzureCostManagement:ExportBlob:Enabled = false`, and also needed in b
 
 | Role | Role ID | Scope | Why |
 |---|---|---|---|
-| **Cost Management Contributor** | `1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40` | Each target subscription | Read cost data via the Query API **and** auto-create exports when subscriptions are added via the UI |
+| **Cost Management Contributor** | `434105ed-43f6-45c7-a02f-909b2ba83430` | Each target subscription | Read cost data via the Query API **and** auto-create exports when subscriptions are added via the UI |
 
 ```bash
 az role assignment create \
@@ -78,9 +78,9 @@ which needs write access to the storage account where CSVs are dropped.
 |---|---|---|---|
 | **Storage Blob Data Contributor** | `ba92f5b4-2d11-453d-a403-e96b0029c9fe` | Storage account (app RG) | Export resource MI |
 
-This role assignment is created automatically by `bicep/main.bicep` when you pass
+This role assignment is created automatically by `infra/modules/storage.bicep` when you pass
 `exportManagedIdentityPrincipalId`. The value is available as the `managedIdentityPrincipalId`
-output from `bicep/export-sub.bicep`.
+output from `infra/modules/export-sub.bicep`.
 
 The person **deploying** the export must have at minimum:
 
@@ -138,7 +138,7 @@ The Container App runs with a **SystemAssigned managed identity**. It needs the 
 | **Storage Blob Data Reader** | `2a2b9908-6ea1-4ae2-8e65-a410df84e7d1` | Export storage account | Read cost export CSVs + read large cache blobs |
 | **Storage Table Data Contributor** | `0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3` | Export storage account | Read and write small cache entries in Table Storage |
 
-Both assignments are created automatically by `bicep/main.bicep` when `appManagedIdentityPrincipalId` is provided.
+Both assignments are created automatically by `infra/modules/storage.bicep` when `appManagedIdentityPrincipalId` is provided.
 
 ```bash
 APP_MI=$(az deployment group show -g rg-cmcsp-app -n app \
@@ -160,7 +160,7 @@ az role assignment create --assignee "$APP_MI" \
 |---|---|---|---|
 | **AcrPull** | `7f951dda-4ed3-4680-a7ca-43fe172d538d` | Azure Container Registry | Pull the CmCSP container image without admin credentials |
 
-Created automatically by `bicep/app.bicep`.
+Created automatically by `infra/modules/app.bicep`.
 
 ### 3c – Persist user-added subscriptions in Key Vault
 
@@ -169,7 +169,7 @@ Created automatically by `bicep/app.bicep`.
 | **Key Vault Secrets User** | `4633458b-17de-408a-b874-0445c86b69e6` | Key Vault | Read `ClientSecret` and other runtime secrets at startup |
 | **Key Vault Secrets Officer** | `b86a8fe4-44ce-4948-aee5-eccb2c155cd7` | Key Vault | Write the `CmCSP--UserSubscriptionIds` secret when subscriptions are added or removed via the UI |
 
-Both are created automatically by `bicep/app.bicep`.
+Both are created automatically by `infra/modules/app.bicep`.
 
 ### 3d – Grant Storage Blob Data Contributor to export MIs (blob mode only)
 
@@ -177,7 +177,7 @@ Both are created automatically by `bicep/app.bicep`.
 |---|---|---|---|
 | **User Access Administrator** | `18d7d88d-d35e-4fb5-a5c3-7773c20a72d9` | Export storage account | Allows `ExportProvisioningService` to assign `Storage Blob Data Contributor` to the export resource MI for each new subscription added via the UI |
 
-Created automatically by `bicep/main.bicep` when `appManagedIdentityPrincipalId` is provided.
+Created automatically by `infra/modules/storage.bicep` when `appManagedIdentityPrincipalId` is provided.
 
 `ash
 az role assignment create --assignee "$APP_MI" \
@@ -235,13 +235,13 @@ If the Advisor page shows an empty state with no recommendations, confirm that:
 | Entra App SP | Reader | Each subscription | `az role assignment create` (Advisor page) |
 | Entra App SP | Billing Account Reader | Billing account | Partner Center / Billing API |
 | *(CSP admin)* | IndirectCostEnabled | Customer subscription | Partner Center UI |
-| Export resource MI | Storage Blob Data Contributor | Export storage account | `bicep/main.bicep` |
-| Container App MI | Storage Blob Data Reader | Export storage account | `bicep/main.bicep` |
-| Container App MI | Storage Table Data Contributor | Export storage account | `bicep/main.bicep` |
-| Container App MI | AcrPull | Container Registry | `bicep/app.bicep` |
-| Container App MI | Key Vault Secrets User | Key Vault | `bicep/app.bicep` |
-| Container App MI | Key Vault Secrets Officer | Key Vault | `bicep/app.bicep` |
-| Container App MI | User Access Administrator | Export storage account | `bicep/main.bicep` (blob mode) |
+| Export resource MI | Storage Blob Data Contributor | Export storage account | `infra/modules/storage.bicep` |
+| Container App MI | Storage Blob Data Reader | Export storage account | `infra/modules/storage.bicep` |
+| Container App MI | Storage Table Data Contributor | Export storage account | `infra/modules/storage.bicep` |
+| Container App MI | AcrPull | Container Registry | `infra/modules/app.bicep` |
+| Container App MI | Key Vault Secrets User | Key Vault | `infra/modules/app.bicep` |
+| Container App MI | Key Vault Secrets Officer | Key Vault | `infra/modules/app.bicep` |
+| Container App MI | User Access Administrator | Export storage account | `infra/modules/storage.bicep` (blob mode) |
 | Container App MI | Cost Management Contributor | Each subscription | Manual (Query API mode only) |
 | Deployer | Cost Management Contributor | Subscription | Pre-requisite |
 | Deployer | Contributor | Resource groups | Pre-requisite |
@@ -256,7 +256,7 @@ This is the development / out-of-the-box mode. A service principal (Entra app re
 
 | Scope | Role | Role ID | Who needs it |
 |---|---|---|---|
-| Each target subscription | **Cost Management Contributor** | `1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40` | The Entra app service principal |
+| Each target subscription | **Cost Management Contributor** | `434105ed-43f6-45c7-a02f-909b2ba83430` | The Entra app service principal |
 
 ### How to assign in the Azure Portal
 
@@ -294,13 +294,13 @@ This mode involves two separate identities with different roles: one that **writ
 
 ### Identity 1 – Export Managed Identity (writer)
 
-The `Microsoft.CostManagement/exports` resource in `bicep/export-sub.bicep` is deployed with a `SystemAssigned` managed identity. This identity needs write access to the storage account.
+The `Microsoft.CostManagement/exports` resource in `infra/modules/export-sub.bicep` is deployed with a `SystemAssigned` managed identity. This identity needs write access to the storage account.
 
 | Scope | Role | Role ID | Who needs it |
 |---|---|---|---|
 | Storage account | **Storage Blob Data Contributor** | `ba92f5b4-2d11-453d-a403-e96b0029c9fe` | The export resource's managed identity |
 
-This role assignment is handled automatically by `bicep/main.bicep` when you pass `exportManagedIdentityPrincipalId`. The principal ID is available as an output from `export-sub.bicep` (`managedIdentityPrincipalId`).
+This role assignment is handled automatically by `infra/modules/storage.bicep` when you pass `exportManagedIdentityPrincipalId`. The principal ID is available as an output from `export-sub.bicep` (`managedIdentityPrincipalId`).
 
 **Typical two-step Bicep deploy:**
 
@@ -308,26 +308,26 @@ This role assignment is handled automatically by `bicep/main.bicep` when you pas
 # Step 1: Deploy storage account (no principal ID yet)
 az deployment group create \
   --resource-group rg-cmcsp \
-  --template-file bicep/main.bicep \
+  --template-file infra/modules/storage.bicep \
   --parameters storageAccountName=cmcspcostexports
 
 # Step 2: Deploy the export (this creates the managed identity)
 az deployment sub create \
   --location swedencentral \
-  --template-file bicep/export-sub.bicep \
+  --template-file infra/modules/export-sub.bicep \
   --parameters \
     exportName=daily-cost-export \
     storageAccountResourceId="<storage-account-resource-id>" \
     recurrenceFrom="2026-01-01T02:00:00Z"
 
-# Step 3: Re-deploy main.bicep with the principal ID to grant the write role
+# Step 3: Re-deploy storage.bicep with the principal ID to grant the write role
 PRINCIPAL_ID=$(az deployment sub show \
   --name export-sub \
   --query "properties.outputs.managedIdentityPrincipalId.value" -o tsv)
 
 az deployment group create \
   --resource-group rg-cmcsp \
-  --template-file bicep/main.bicep \
+  --template-file infra/modules/storage.bicep \
   --parameters \
     storageAccountName=cmcspcostexports \
     exportManagedIdentityPrincipalId="$PRINCIPAL_ID"
@@ -393,7 +393,7 @@ Get the connection string from **Azure Portal → Storage account → Access key
 
 ### Billing scope export (export-billing.bicep)
 
-The billing scope export (`bicep/export-billing.bicep`) targets a CSP Billing Account and requires:
+The billing scope export (`infra/modules/export-billing.bicep`) targets a CSP Billing Account and requires:
 
 - **Billing Account Owner** or **Contributor** to deploy the export resource (tenant-level Bicep deployment requires elevated permissions)
 - The SAS token passed at deploy time must grant `acwl` (add, create, write, list) on the container

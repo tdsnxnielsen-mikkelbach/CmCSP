@@ -18,6 +18,8 @@ public enum ExportPathState
 {
     /// <summary>ExportBlob mode is off or no destination storage is configured.</summary>
     NotApplicable,
+    /// <summary>ExportBlob mode is on but a required setting (e.g. StorageAccountResourceId) is missing.</summary>
+    Misconfigured,
     /// <summary>Exports could not be enumerated (e.g. insufficient permissions / not SP mode).</summary>
     Unknown,
     /// <summary>No export targets the configured storage account yet.</summary>
@@ -38,16 +40,21 @@ public sealed record ExportPathStatus(
     string? ExportName = null);
 
 /// <summary>
-/// Automatically provisions a daily Cost Management export and its storage role assignment
-/// when a new subscription is added through the UI.
+/// Finds and reuses the daily Cost Management export for a subscription and (re)grants the
+/// export's managed identity write access to the shared storage account.
 ///
 /// Flow:
-///   1. PUT  /subscriptions/{subId}/providers/Microsoft.CostManagement/exports/cmcsp-daily-export
-///      — authenticated as the Entra App SP (AzureTokenService); requires Cost Management Contributor
-///        on the target subscription.
+///   1. GET  /subscriptions/{subId}/providers/Microsoft.CostManagement/exports
+///      — authenticated as the Entra App SP (AzureTokenService); finds an export targeting the
+///        configured storage account (requires Cost Management Reader on the subscription).
 ///   2. PUT  {storageAccountResourceId}/providers/Microsoft.Authorization/roleAssignments/{guid}
 ///      — authenticated as the Container App MI (DefaultAzureCredential); requires
 ///        User Access Administrator on the storage account (one-time Bicep role assignment).
+///
+/// Exports are NOT created here: Azure Cost Management denies all service principals
+/// (Entra-app SPs and managed identities) write access to exports, so creation happens at
+/// deploy time as the deployer (a user principal) via the postprovision hook. When no
+/// reusable export exists this service returns actionable guidance to re-run 'azd provision'.
 ///
 /// No-op when ExportBlob.Enabled = false or StorageAccountResourceId is not configured.
 /// </summary>
@@ -55,7 +62,7 @@ public sealed class ExportProvisioningService
 {
     private const string ExportName                   = "cmcsp-daily-export";
     private const string StorageBlobContributorRoleId = "ba92f5b4-2d11-453d-a403-e96b0029c9fe";
-    private const string CostMgmtContributorRoleId    = "1e7ca9b1-60d1-4db8-a914-f2ca1ff27c40";
+    private const string CostMgmtContributorRoleId    = "434105ed-43f6-45c7-a02f-909b2ba83430";
     private const string RoleAssignmentsApiVersion    = "2022-04-01";
 
     private readonly AzureTokenService                  _spTokenService;
@@ -80,9 +87,11 @@ public sealed class ExportProvisioningService
     }
 
     /// <summary>
-    /// Creates the daily export on <paramref name="subscriptionId"/> and grants its managed
-    /// identity write access to the shared storage account. Safe to call multiple times
-    /// (both ARM operations are idempotent).
+    /// Finds and reuses the daily export on <paramref name="subscriptionId"/> and (re)grants its
+    /// managed identity write access to the shared storage account. Safe to call multiple times
+    /// (the storage role grant is idempotent). Does not create exports — when none targets the
+    /// configured storage account it returns actionable guidance to re-run 'azd provision', because
+    /// Azure denies service principals write access to Cost Management exports.
     /// </summary>
     public async Task<ExportProvisioningResult> ProvisionAsync(
         string subscriptionId,
@@ -99,10 +108,15 @@ public sealed class ExportProvisioningService
 
         if (string.IsNullOrWhiteSpace(_options.ExportBlob.StorageAccountResourceId))
         {
-            _logger.LogWarning(
-                "ExportProvisioning[{CorrelationId}]: skipped — AzureCostManagement:ExportBlob:StorageAccountResourceId is not configured",
-                correlationId);
-            return new ExportProvisioningResult(false, true, "ExportBlob storage account resource ID is not configured.");
+            _logger.LogError(
+                "ExportProvisioning[{CorrelationId}]: misconfigured for {SubId} — ExportBlob is enabled but " +
+                "AzureCostManagement:ExportBlob:StorageAccountResourceId is empty. Exports cannot be created or " +
+                "detected until the Container App is re-wired with the destination storage account resource id " +
+                "(check the postprovision hook / STORAGE_ACCOUNT_RESOURCE_ID).",
+                correlationId, subscriptionId);
+            return new ExportProvisioningResult(false, false,
+                "Export storage is not configured: ExportBlob is enabled but StorageAccountResourceId is empty. " +
+                "Re-run provisioning (azd provision) so the Container App is wired to the destination storage account.");
         }
 
         _logger.LogInformation(
@@ -150,12 +164,21 @@ public sealed class ExportProvisioningService
         }
         else
         {
-            exportMiPrincipalId = await CreateExportAsync(subscriptionId, correlationId, ct);
-            if (string.IsNullOrWhiteSpace(exportMiPrincipalId))
-                return new ExportProvisioningResult(false, false, $"Failed to create or update export '{ExportName}'.", ExportName);
-
-            resolvedExportName = ExportName;
-            resolutionMessage = $"Created or updated export '{ExportName}'.";
+            // No reusable export exists. Azure Cost Management denies ALL service principals
+            // (Entra-app SPs and managed identities) write access to exports — even with
+            // Cost Management Contributor — so this app cannot create one from the running
+            // container. Exports are created at deploy time as the deployer (a user principal)
+            // by the postprovision hook. Return actionable guidance instead of attempting a
+            // PUT that always fails with 401 RBACAccessDenied.
+            _logger.LogWarning(
+                "ExportProvisioning[{CorrelationId}]: no export targets the configured storage account on {SubId}. " +
+                "Service principals cannot create Cost Management exports (Azure returns 401 RBACAccessDenied); " +
+                "creation happens at deploy time. Re-run 'azd provision' to create '{ExportName}'.",
+                correlationId, subscriptionId, ExportName);
+            return new ExportProvisioningResult(false, true,
+                $"No export targets the configured storage account yet. Service principals cannot create Cost " +
+                $"Management exports, so '{ExportName}' must be created at deploy time — re-run 'azd provision' " +
+                "(it provisions exports as the deployer, which Azure permits).", ExportName);
         }
 
         if (string.IsNullOrWhiteSpace(exportMiPrincipalId))
@@ -191,7 +214,9 @@ public sealed class ExportProvisioningService
             return new ExportPathStatus(ExportPathState.NotApplicable, "n/a", "ExportBlob mode is not enabled.");
 
         if (string.IsNullOrWhiteSpace(_options.ExportBlob.StorageAccountResourceId))
-            return new ExportPathStatus(ExportPathState.NotApplicable, "n/a", "No export storage account is configured.");
+            return new ExportPathStatus(ExportPathState.Misconfigured, "misconfigured",
+                "ExportBlob is enabled but no destination storage account is configured " +
+                "(StorageAccountResourceId is empty). Re-run provisioning to wire the Container App to storage.");
 
         if (!_spTokenService.UsingServicePrincipal)
             return new ExportPathStatus(ExportPathState.Unknown, "unknown",
@@ -205,7 +230,8 @@ public sealed class ExportProvisioningService
 
         if (export is null)
             return new ExportPathStatus(ExportPathState.NotProvisioned, "not provisioned",
-                $"No export targets the configured storage account. Use Re-provision to create '{ExportName}'.");
+                $"No export targets the configured storage account. Exports are created at deploy time " +
+                $"(service principals cannot create them) — re-run 'azd provision' to create '{ExportName}'.");
 
         var hasIdentity = !string.IsNullOrWhiteSpace(export.PrincipalId);
         var isCanonical = string.Equals(export.Name, ExportName, StringComparison.OrdinalIgnoreCase);
@@ -299,89 +325,10 @@ public sealed class ExportProvisioningService
         }
 
         _logger.LogWarning(
-            "ExportProvisioning[{CorrelationId}]: no reusable export found on {SubId} matching storage resource ID '{StorageResourceId}' — will attempt to create '{ExportName}'.",
-            correlationId, subscriptionId, _options.ExportBlob.StorageAccountResourceId, ExportName);
+            "ExportProvisioning[{CorrelationId}]: no reusable export found on {SubId} matching storage resource ID '{StorageResourceId}'. " +
+            "Exports must be created at deploy time (service principals cannot create them) — re-run 'azd provision'.",
+            correlationId, subscriptionId, _options.ExportBlob.StorageAccountResourceId);
         return (null, false);
-    }
-
-    private async Task<string?> CreateExportAsync(
-        string subscriptionId,
-        string correlationId,
-        CancellationToken ct)
-    {
-        var spToken         = await _spTokenService.GetAccessTokenAsync(ct);
-        var client          = _httpFactory.CreateClient("AzureMgmt");
-        var recurrenceFrom  = DateTime.UtcNow.AddDays(1).ToString("yyyy-MM-ddT00:00:00Z");
-
-        var body = new
-        {
-            location = "swedencentral",
-            identity = new { type = "SystemAssigned" },
-            properties = new
-            {
-                format     = "Csv",
-                definition = new
-                {
-                    type      = "ActualCost",
-                    timeframe = "MonthToDate",
-                    dataSet   = new { granularity = "Daily", configuration = new { } }
-                },
-                deliveryInfo = new
-                {
-                    destination = new
-                    {
-                        type           = "AzureBlob",
-                        resourceId     = _options.ExportBlob.StorageAccountResourceId,
-                        container      = _options.ExportBlob.ContainerName,
-                        rootFolderPath = _options.ExportBlob.BlobPrefix
-                    }
-                },
-                schedule = new
-                {
-                    recurrence       = "Daily",
-                    recurrencePeriod = new { from = recurrenceFrom, to = "2099-12-31T00:00:00Z" },
-                    status           = "Active"
-                },
-                dataOverwriteBehavior = "CreateNewReport",
-                compressionMode       = "none"
-            }
-        };
-
-        var url = $"https://management.azure.com/subscriptions/{subscriptionId}" +
-                  $"/providers/Microsoft.CostManagement/exports/{ExportName}" +
-                  $"?api-version={_options.ApiVersion}";
-
-        using var req = new HttpRequestMessage(HttpMethod.Put, url);
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", spToken);
-        req.Content = JsonContent.Create(body);
-
-        using var resp = await client.SendAsync(req, ct);
-        var json = await resp.Content.ReadAsStringAsync(ct);
-
-        if (!resp.IsSuccessStatusCode)
-        {
-            var hint = resp.StatusCode is System.Net.HttpStatusCode.Unauthorized
-                                       or System.Net.HttpStatusCode.Forbidden
-                ? " — ensure the Entra App SP has 'Cost Management Contributor' on this subscription"
-                : string.Empty;
-
-            _logger.LogError(
-                "ExportProvisioning[{CorrelationId}]: failed to create export on subscription {SubId}: HTTP {Status} — {Body}{Hint}",
-                correlationId, subscriptionId, (int)resp.StatusCode, json, hint);
-            return null;
-        }
-
-        using var doc = JsonDocument.Parse(json);
-        var principalId = doc.RootElement
-            .GetProperty("identity")
-            .GetProperty("principalId")
-            .GetString();
-
-        _logger.LogInformation(
-            "ExportProvisioning[{CorrelationId}]: created/updated export '{ExportName}' on {SubId}; export MI principal: {PrincipalId}",
-            correlationId, ExportName, subscriptionId, principalId);
-
-        return principalId;
     }
 
     // ── Step 0 (best-effort): ensure the Entra App SP can manage exports here ──

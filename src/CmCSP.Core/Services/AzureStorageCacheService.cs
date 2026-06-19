@@ -29,7 +29,7 @@ namespace CmCSP.Services;
 ///   - Storage Table Data Contributor
 ///   - Storage Blob Data Contributor
 /// </summary>
-public sealed class AzureStorageCacheService
+public sealed class AzureStorageCacheService : ICacheService
 {
     // Entries larger than this byte threshold are stored in blob; smaller go inline in table.
     private const int TableSizeLimit = 60 * 1024; // 60 KB (table row limit is 1 MB, use conservative threshold)

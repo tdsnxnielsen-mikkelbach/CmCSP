@@ -111,6 +111,31 @@ public class CostManagementOptions
         public string CacheContainerName { get; set; } = "cmcspcache";
     }
 
+    // ── Azure Managed Redis (Phase 4 distributed cache) ───────────────────────
+
+    /// <summary>
+    /// When Enabled = true, cost data is cached in Azure Managed Redis (shared across replicas
+    /// and jobs) instead of Azure Table/Blob storage. Takes precedence over <see cref="AzureCache"/>.
+    /// Authenticates with DefaultAzureCredential (no access keys) — the managed identity needs a
+    /// Redis data-access policy assignment. The in-process IMemoryCache stays as the L1 tier.
+    /// </summary>
+    public RedisCacheOptions Redis { get; set; } = new();
+
+    public sealed class RedisCacheOptions
+    {
+        /// <summary>Set to true to use Azure Managed Redis as the shared cache tier.</summary>
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>Redis host name, e.g. &lt;name&gt;.&lt;region&gt;.redis.azure.net (no port).</summary>
+        public string HostName { get; set; } = string.Empty;
+
+        /// <summary>Redis port. Azure Managed Redis uses 10000.</summary>
+        public int Port { get; set; } = 10000;
+
+        /// <summary>Logical key namespace prefix so multiple apps can share one cluster.</summary>
+        public string KeyPrefix { get; set; } = "cmcsp:";
+    }
+
     // ── Cost Details API (generateCostDetailsReport) ──────────────────────────
 
     /// <summary>

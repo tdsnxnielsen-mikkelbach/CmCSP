@@ -31,9 +31,6 @@ param exportManagedIdentityPrincipalId string = ''
 @description('Principal ID of the Container App managed identity (for read cache access). Leave empty to skip.')
 param appManagedIdentityPrincipalId string = ''
 
-@description('Principal ID of the cache cleanup job managed identity (for delete access to expired cache entries). Leave empty to skip.')
-param cleanupJobManagedIdentityPrincipalId string = ''
-
 @description('Principal ID of the cost collector job managed identity (cache read/write + export read + audit write). Leave empty to skip.')
 param collectJobManagedIdentityPrincipalId string = ''
 
@@ -173,30 +170,6 @@ output storageAccountUri string = sa.properties.primaryEndpoints.blob
 output exportContainerName string = exportContainer.name
 output cacheContainerName string = cacheContainer.name
 output cacheTableName string = cacheTable.name
-
-// ── Roles: Cleanup Job MI → Table Data Contributor + Cache Blob Contributor ──
-// Scoped to the storage account (table) and to the cache container (blob) so the
-// cleanup job can delete expired rows and their associated large-payload blobs.
-
-resource cleanupJobTableRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(cleanupJobManagedIdentityPrincipalId)) {
-  name: guid(sa.id, cleanupJobManagedIdentityPrincipalId, storageTableDataContributorRoleId)
-  scope: sa
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageTableDataContributorRoleId)
-    principalId: cleanupJobManagedIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-resource cleanupJobCacheBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(cleanupJobManagedIdentityPrincipalId)) {
-  name: guid(sa.id, cleanupJobManagedIdentityPrincipalId, storageBlobDataContributorRoleId, 'cleanup')
-  scope: cacheContainer
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
-    principalId: cleanupJobManagedIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
 
 // ── Roles: Collect Job MI → Blob Data Reader + Cache Blob Contributor + Table Data Contributor ──
 // The collector runs the same data path as the app: reads cost-export blobs, writes large

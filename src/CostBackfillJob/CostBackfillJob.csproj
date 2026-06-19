@@ -5,7 +5,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <UserSecretsId>cmcsp-cost-collector-job</UserSecretsId>
+    <UserSecretsId>cmcsp-cost-backfill-job</UserSecretsId>
 
     <!-- Microsoft.Data.SqlClient (SQL data platform) requires ICU; the plain chiseled
          image runs in globalization-invariant mode and throws on SqlConnection.Open().
@@ -13,7 +13,7 @@
     <InvariantGlobalization>false</InvariantGlobalization>
 
     <!-- dotnet publish /t:PublishContainer defaults -->
-    <ContainerRepository>cmcsp-collect</ContainerRepository>
+    <ContainerRepository>cmcsp-backfill</ContainerRepository>
     <ContainerBaseImage>mcr.microsoft.com/dotnet/runtime:10.0-noble-chiseled-extra</ContainerBaseImage>
   </PropertyGroup>
 
@@ -25,7 +25,6 @@
     <PackageReference Include="Azure.Extensions.AspNetCore.Configuration.Secrets" Version="1.5.1" />
     <PackageReference Include="Azure.Identity" Version="*" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="*" />
-    <PackageReference Include="Microsoft.Extensions.Http" Version="*" />
   </ItemGroup>
 
 </Project>

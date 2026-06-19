@@ -1,37 +1,53 @@
 using Azure.Data.Tables;
 using Azure.Identity;
+using CmCSP.Data;
 using CmCSP.Models;
+using Microsoft.EntityFrameworkCore;
 
 namespace CmCSP.Services;
 
 /// <summary>
-/// Reads and writes the cost-collection audit trail in Azure Table Storage.
+/// Reads and writes the cost-collection audit trail.
+///
+/// Phase 4: when a <see cref="CmcspDbContext"/> factory is registered (i.e. the SQL data
+/// platform is provisioned), audit rows are persisted to and read from the
+/// <c>CollectionAudit</c> SQL table — the durable system of record. When SQL is not
+/// configured the service falls back to the legacy Azure Table Storage table
+/// (<c>cmcspcollectaudit</c>) so existing deployments keep working unchanged.
 ///
 /// The CostCollectorJob calls <see cref="WriteAsync"/> at the end of every run; the
 /// dashboard calls <see cref="GetLatestAsync"/> / <see cref="GetRecentAsync"/> to show
 /// the last-run status without waiting on Log Analytics ingestion latency.
 ///
-/// Uses the same storage account as the distributed cache
+/// Table Storage fallback uses the same storage account as the distributed cache
 /// (<see cref="CostManagementOptions.AzureCacheOptions.StorageAccountUri"/>) but a
 /// dedicated table so audit rows never collide with cache entries.
 ///
-/// Authentication: DefaultAzureCredential. The writer (job MI) needs
-/// 'Storage Table Data Contributor'; the reader (app MI) needs at least
-/// 'Storage Table Data Reader' on the storage account.
+/// Authentication: DefaultAzureCredential / managed identity for both back-ends.
 /// </summary>
 public sealed class CollectionAuditService
 {
     public const string TableName = "cmcspcollectaudit";
     private const string PartitionKey = "collect";
 
+    private readonly IDbContextFactory<CmcspDbContext>? _dbFactory;
     private readonly TableClient? _table;
     private readonly ILogger<CollectionAuditService> _logger;
 
     public CollectionAuditService(
         CostManagementOptions options,
-        ILogger<CollectionAuditService> logger)
+        ILogger<CollectionAuditService> logger,
+        IDbContextFactory<CmcspDbContext>? dbFactory = null)
     {
         _logger = logger;
+        _dbFactory = dbFactory;
+
+        // SQL is the system of record when available — skip the Table Storage client entirely.
+        if (_dbFactory is not null)
+        {
+            _logger.LogInformation("CollectionAuditService: using SQL ({Table}) as the audit store.", nameof(CmcspDbContext.CollectionAudit));
+            return;
+        }
 
         var uri = options.AzureCache.StorageAccountUri;
         if (string.IsNullOrWhiteSpace(uri)) return;
@@ -50,12 +66,27 @@ public sealed class CollectionAuditService
         }
     }
 
-    /// <summary><c>true</c> when audit storage is configured and reachable.</summary>
-    public bool IsEnabled => _table is not null;
+    /// <summary><c>true</c> when an audit store (SQL or Table Storage) is configured.</summary>
+    public bool IsEnabled => _dbFactory is not null || _table is not null;
 
     /// <summary>Appends an audit row. No-op (with a warning) when audit storage is not configured.</summary>
     public async Task WriteAsync(CollectionAuditRecord record, CancellationToken ct = default)
     {
+        if (_dbFactory is not null)
+        {
+            try
+            {
+                await using var db = await _dbFactory.CreateDbContextAsync(ct);
+                db.CollectionAudit.Add(ToEntity(record));
+                await db.SaveChangesAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "CollectionAuditService: failed to write audit row for run {CorrelationId} to SQL.", record.CorrelationId);
+            }
+            return;
+        }
+
         if (_table is null)
         {
             _logger.LogWarning("CollectionAuditService: audit storage not configured; skipping audit write.");
@@ -95,6 +126,24 @@ public sealed class CollectionAuditService
     /// <summary>Returns the most recent audit rows, newest first (up to <paramref name="max"/>).</summary>
     public async Task<IReadOnlyList<CollectionAuditRecord>> GetRecentAsync(int max = 10, CancellationToken ct = default)
     {
+        if (_dbFactory is not null)
+        {
+            try
+            {
+                await using var db = await _dbFactory.CreateDbContextAsync(ct);
+                var rows = await db.CollectionAudit
+                    .OrderByDescending(x => x.StartedUtc)
+                    .Take(max)
+                    .ToListAsync(ct);
+                return rows.Select(Map).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "CollectionAuditService: failed to read audit rows from SQL.");
+                return [];
+            }
+        }
+
         if (_table is null) return [];
 
         var results = new List<CollectionAuditRecord>(max);
@@ -135,5 +184,39 @@ public sealed class CollectionAuditService
         Error             = e.GetString("Error"),
         ReplicaName       = e.GetString("ReplicaName"),
         CorrelationId     = e.GetString("CorrelationId") ?? string.Empty
+    };
+
+    private static CollectionAuditRecord Map(CollectionAuditEntity e) => new()
+    {
+        Status            = e.Status,
+        Trigger           = e.Trigger,
+        StartedUtc        = e.StartedUtc,
+        FinishedUtc       = e.FinishedUtc,
+        DurationMs        = e.DurationMs,
+        SubscriptionCount = e.SubscriptionCount,
+        MainRows          = e.MainRows,
+        RgRows            = e.RgRows,
+        TagRows           = e.TagRows,
+        AmortRows         = e.AmortRows,
+        Error             = e.Error,
+        ReplicaName       = e.ReplicaName,
+        CorrelationId     = e.CorrelationId
+    };
+
+    private static CollectionAuditEntity ToEntity(CollectionAuditRecord r) => new()
+    {
+        Status            = r.Status,
+        Trigger           = r.Trigger,
+        StartedUtc        = r.StartedUtc,
+        FinishedUtc       = r.FinishedUtc,
+        DurationMs        = r.DurationMs,
+        SubscriptionCount = r.SubscriptionCount,
+        MainRows          = r.MainRows,
+        RgRows            = r.RgRows,
+        TagRows           = r.TagRows,
+        AmortRows         = r.AmortRows,
+        Error             = r.Error,
+        ReplicaName       = r.ReplicaName,
+        CorrelationId     = r.CorrelationId
     };
 }

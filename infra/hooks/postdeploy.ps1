@@ -9,7 +9,6 @@
     ACR, and updates the corresponding Container Apps Job to the new digest.
 
     Jobs handled:
-      • cache cleanup  (src/CacheCleanupJob  → cmcsp-cleanup → CLEANUP_JOB_NAME)
       • cost collector (src/CostCollectorJob  → cmcsp-collect → COLLECT_JOB_NAME)
 
     Mirrors the job portion of scripts/deploy-image.ps1, reusing the ACR token +
@@ -18,7 +17,7 @@
 .NOTES
     Inputs come from azd outputs:
       AZURE_CONTAINER_REGISTRY_NAME, AZURE_CONTAINER_REGISTRY_ENDPOINT,
-      AZURE_RESOURCE_GROUP, CLEANUP_JOB_NAME, COLLECT_JOB_NAME
+      AZURE_RESOURCE_GROUP, COLLECT_JOB_NAME
 #>
 
 Set-StrictMode -Version Latest
@@ -44,7 +43,6 @@ $appRg          = Require-Env 'AZURE_RESOURCE_GROUP'
 
 # Jobs to build/push/update. Names come from bicep outputs; project/repository are static.
 $jobs = @(
-    [PSCustomObject]@{ JobName = (Require-Env 'CLEANUP_JOB_NAME'); Project = 'CacheCleanupJob';  Repository = 'cmcsp-cleanup' }
     [PSCustomObject]@{ JobName = (Require-Env 'COLLECT_JOB_NAME'); Project = 'CostCollectorJob';  Repository = 'cmcsp-collect' }
 )
 

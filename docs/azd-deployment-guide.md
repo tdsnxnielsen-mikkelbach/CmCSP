@@ -10,11 +10,11 @@ and image builds via hooks.
 
 | Concern | Handled by |
 |---|---|
-| Resource group + app infra + storage + RBAC | `infra/main.bicep` (subscription scope) composing `bicep/app.bicep` + `bicep/main.bicep` |
+| Resource group + app infra + storage + RBAC | `infra/main.bicep` (subscription scope) composing `infra/modules/app.bicep` + `infra/modules/storage.bicep` |
 | Web app image build / push / revision roll | `azd deploy` (service `web`, .NET SDK container build — no Dockerfile) |
 | Key Vault secrets, Container App env-var wiring | `infra/hooks/postprovision.ps1` |
 | Cost Management exports (subscription **or** billing scope) | `infra/hooks/postprovision.ps1` (scope switch) |
-| Cache cleanup Job image build / push / update | `infra/hooks/postdeploy.ps1` |
+| Cost collector Job image build / push / update | `infra/hooks/postdeploy.ps1` |
 
 The old multi-pass managed-identity flow is collapsed into module ordering:
 `app` deploys first, then `storage` consumes its MI principal IDs for declarative
@@ -58,7 +58,7 @@ azd up
 ```
 
 `azd up` runs **provision** (Bicep) → **postprovision** (secrets, env vars,
-exports) → **deploy** (web image) → **postdeploy** (cleanup job image).
+exports) → **deploy** (web image) → **postdeploy** (collector job image).
 
 ---
 
@@ -69,8 +69,8 @@ applied by the postprovision hook.
 
 | `EXPORT_SCOPE` | Template | Auth | Deployment | Extra config |
 |---|---|---|---|---|
-| `subscription` | `bicep/export-sub.bicep` | Managed identity | `az deployment sub create` | — |
-| `billing` | `bicep/export-billing.bicep` | SAS token | `az deployment tenant create` (tenant scope) | `BILLING_ACCOUNT_ID` |
+| `subscription` | `infra/modules/export-sub.bicep` | Managed identity | `az deployment sub create` | — |
+| `billing` | `infra/modules/export-billing.bicep` | SAS token | `az deployment tenant create` (tenant scope) | `BILLING_ACCOUNT_ID` |
 | `none` (default) | — | — | skipped | — |
 
 Switch scope at any time, then re-run provisioning:
@@ -141,6 +141,6 @@ azd env get-values  # inspect resolved outputs
 | Symptom | Fix |
 |---|---|
 | `Required azd environment variable '...' is not set` | Run the corresponding `azd env set` and retry. |
-| `azd deploy` cannot find the Container App | Confirm the `azd-service-name: web` tag exists — it is applied by `bicep/app.bicep` via the `azdServiceName` param. |
+| `azd deploy` cannot find the Container App | Confirm the `azd-service-name: web` tag exists — it is applied by `infra/modules/app.bicep` via the `azdServiceName` param. |
 | Billing export fails with permission error | Tenant-scope deploy needs Global Admin / Billing Account Owner. |
 | Need the underlying `az` steps | See [csp-deployment-guide.md](csp-deployment-guide.md) for the manual command-by-command flow. |
