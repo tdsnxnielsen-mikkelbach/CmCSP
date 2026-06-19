@@ -1,0 +1,148 @@
+@page "/marketplace"
+@inherits CostPageBase
+
+<PageTitle>Azure Marketplace – CSP Dashboard</PageTitle>
+
+<LoadingErrorDisplay Loading="@_loading" Error="@_error" />
+
+<MudText Typo="Typo.h5" Class="mb-1 fw-bold">Azure Marketplace</MudText>
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+    Month-to-date Azure spend split into Microsoft first-party services and third-party
+    Azure Marketplace (ISV / SaaS-on-Azure) charges. Azure spend only.
+</MudText>
+
+@if (!_loading && _rows.Count == 0)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4">
+        No publisher-type breakdown is available. This requires the Cost Management Query API
+        (the dimension is unavailable for some CSP/indirect subscriptions).
+    </MudAlert>
+}
+
+@* ── KPI cards ──────────────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3" Class="mb-4">
+    <KpiCard Label="Total Spend (MTD)" Value="@Fmt(_total)" Sm="6" Md="3" />
+    <KpiCard Label="Azure (first-party)" Value="@Fmt(_azure)" Sm="6" Md="3" />
+    <KpiCard Label="Marketplace (third-party)" Value="@Fmt(_marketplace)" Sm="6" Md="3" />
+    <KpiCard Label="Marketplace Share"
+             Value="@($"{_marketplacePct:F1}%")"
+             ValueColor="@(_marketplacePct >= 25 ? Color.Warning : Color.Default)"
+             Sm="6" Md="3" />
+</MudGrid>
+
+<MudGrid Spacing="3">
+    @* Donut – Azure vs Marketplace *@
+    <MudItem xs="12" md="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Azure vs Marketplace</MudText>
+            <ApexChart TItem="SplitPoint" Options="_donutOpts">
+                <ApexPointSeries TItem="SplitPoint"
+                                 Items="_split"
+                                 Name="Spend"
+                                 XValue="@(e => e.Label)"
+                                 YValue="@(e => (decimal?)e.Cost)"
+                                 SeriesType="SeriesType.Donut" />
+            </ApexChart>
+        </MudPaper>
+    </MudItem>
+
+    @* Bar – top Marketplace services *@
+    <MudItem xs="12" md="8">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top Marketplace Services</MudText>
+            @if (_marketplaceItems.Count == 0)
+            {
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    No third-party Marketplace charges in the current period.
+                </MudText>
+            }
+            else
+            {
+                <ApexChart TItem="ServicePoint" Options="_hbarOpts">
+                    <ApexPointSeries TItem="ServicePoint"
+                                     Items="_marketplaceItems.Take(15).ToList()"
+                                     Name="Marketplace Cost"
+                                     XValue="@(e => e.Service)"
+                                     YValue="@(e => (decimal?)e.Cost)"
+                                     SeriesType="SeriesType.Bar" />
+                </ApexChart>
+            }
+        </MudPaper>
+    </MudItem>
+
+    @* Detail table *@
+    <MudItem xs="12">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Spend by Publisher Type &amp; Service</MudText>
+            <MudDataGrid T="DetailRow"
+                         Items="_rows"
+                         SortMode="SortMode.Multiple"
+                         Filterable
+                         FilterMode="DataGridFilterMode.ColumnFilterRow"
+                         Dense>
+                <Columns>
+                    <PropertyColumn Property="r => r.PublisherType" Title="Publisher Type" />
+                    <PropertyColumn Property="r => r.Service" Title="Service" />
+                    <PropertyColumn Property="r => r.Cost"
+                                    Title=@($"Cost ({Options.TargetCurrency})")
+                                    Format="N0" />
+                </Columns>
+            </MudDataGrid>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private record SplitPoint(string Label, decimal Cost);
+    private record ServicePoint(string Service, decimal Cost);
+    private record DetailRow(string PublisherType, string Service, decimal Cost);
+
+    private decimal _total;
+    private decimal _azure;
+    private decimal _marketplace;
+    private decimal _marketplacePct;
+
+    private List<SplitPoint>   _split = [];
+    private List<ServicePoint> _marketplaceItems = [];
+    private List<DetailRow>    _rows = [];
+
+    private readonly ApexChartOptions<SplitPoint>   _donutOpts = ApexChartPresets.Donut<SplitPoint>();
+    private readonly ApexChartOptions<ServicePoint> _hbarOpts  = ApexChartPresets.HorizontalBar<ServicePoint>();
+
+    protected override async Task LoadAsync()
+    {
+        await RunLoadAsync(async () =>
+        {
+            var data = await CostService.GetPublisherBreakdownAsync();
+
+            // Anything that isn't Azure first-party counts as third-party Marketplace.
+            static bool IsAzure(string p) => p.Equals("azure", StringComparison.OrdinalIgnoreCase);
+
+            _azure       = data.Where(r => IsAzure(r.PublisherType)).Sum(r => r.NormalizedCost);
+            _marketplace = data.Where(r => !IsAzure(r.PublisherType)).Sum(r => r.NormalizedCost);
+            _total       = _azure + _marketplace;
+            _marketplacePct = _total > 0 ? Math.Round(_marketplace / _total * 100m, 1) : 0m;
+
+            _split =
+            [
+                new SplitPoint("Azure", _azure),
+                new SplitPoint("Marketplace", _marketplace)
+            ];
+
+            _marketplaceItems = data
+                .Where(r => !IsAzure(r.PublisherType))
+                .GroupBy(r => string.IsNullOrWhiteSpace(r.ServiceName) ? "(unassigned)" : r.ServiceName)
+                .Select(g => new ServicePoint(g.Key, g.Sum(r => r.NormalizedCost)))
+                .OrderByDescending(x => x.Cost)
+                .ToList();
+
+            _rows = data
+                .Select(r => new DetailRow(
+                    string.IsNullOrWhiteSpace(r.PublisherType) ? "azure" : r.PublisherType,
+                    string.IsNullOrWhiteSpace(r.ServiceName) ? "(unassigned)" : r.ServiceName,
+                    r.NormalizedCost))
+                .OrderByDescending(r => r.Cost)
+                .ToList();
+        });
+    }
+}

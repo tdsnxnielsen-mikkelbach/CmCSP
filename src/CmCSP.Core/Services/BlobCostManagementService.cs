@@ -170,6 +170,9 @@ public sealed class BlobCostManagementService : ICostManagementService
         _cache.Remove("cm_advisor");
         _cache.Remove("cm_advisor_scores");
         _cache.Remove("cm_sub_names");
+        _cache.Remove("cm_forecast");
+        _cache.Remove("cm_forecast_amort");
+        _cache.Remove("cm_publisher");
         _loadingState.Update(KeyMain, LoadPhase.Idle);
         _loadingState.Update(KeyRg,   LoadPhase.Idle);
         _loadingState.Update(KeyTag,  LoadPhase.Idle);
@@ -195,6 +198,56 @@ public sealed class BlobCostManagementService : ICostManagementService
         _apiService is not null
             ? _apiService.GetSubscriptionDisplayNamesAsync(ct)
             : Task.FromResult(new Dictionary<string, string>());
+
+    /// <summary>
+    /// Forecast and publisher-type breakdown are ARM Query API features (not available from
+    /// blob exports), so they delegate to the underlying API service on a best-effort basis
+    /// with a bounded timeout — a rate-limited API never blocks the dashboard.
+    /// </summary>
+    public Task<List<ForecastPoint>> GetForecastAsync(string metric = "ActualCost", CancellationToken ct = default) =>
+        DelegateBestEffortAsync(
+            token => _apiService!.GetForecastAsync(metric, token),
+            "forecast", ct, fallback: []);
+
+    public Task<List<PublisherTypeCostRow>> GetPublisherBreakdownAsync(CancellationToken ct = default) =>
+        DelegateBestEffortAsync(
+            token => _apiService!.GetPublisherBreakdownAsync(token),
+            "publisher breakdown", ct, fallback: []);
+
+    /// <summary>
+    /// Runs an API-service call with a 90-second timeout, returning <paramref name="fallback"/>
+    /// (rather than throwing) if the API is unavailable or rate-limited so blob-export pages
+    /// keep working. Mirrors <see cref="GetAmortizedMainCostDataAsync"/>.
+    /// </summary>
+    private async Task<T> DelegateBestEffortAsync<T>(
+        Func<CancellationToken, Task<T>> call, string label, CancellationToken ct, T fallback)
+    {
+        if (_apiService is null) return fallback;
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var linked  = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+
+        try
+        {
+            return await call(linked.Token);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "BlobCostManagementService: {Label} API call timed out (blob exports unaffected).", label);
+            return fallback;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "BlobCostManagementService: {Label} API call failed (blob exports unaffected).", label);
+            return fallback;
+        }
+    }
 
     // ── Internal ───────────────────────────────────────────────────────────────
 

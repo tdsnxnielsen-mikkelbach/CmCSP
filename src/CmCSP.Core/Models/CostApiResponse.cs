@@ -13,6 +13,32 @@ public sealed record CostApiProperties(
 
 public sealed record CostApiColumn(string Name, string Type);
 
+// ─── Forecast API response shapes ──────────────────────────────────────────────
+// POST /{scope}/providers/Microsoft.CostManagement/forecast
+// Response columns: PreTaxCost (Number), UsageDate (Number, YYYYMMDD),
+// CostStatus (String: "Actual" | "Forecast"), Currency (String). 204 = no forecast.
+
+/// <summary>
+/// A single day on the Microsoft Cost Management native forecast curve, normalised to the
+/// configured TargetCurrency. <see cref="IsForecast"/> distinguishes projected days (true)
+/// from actual-cost days (false) so the UI can render them as one continuous series.
+/// </summary>
+public sealed record ForecastPoint(DateTime Date, decimal Cost, bool IsForecast);
+
+// ─── Publisher-type (Marketplace) breakdown ────────────────────────────────────
+// Cost Management Query API grouped by PublisherType + MeterCategory.
+// PublisherType values: "azure", "marketplace", "awsMarketplace", "onepartner".
+
+/// <summary>
+/// Period-to-date spend for one PublisherType + service (MeterCategory) combination,
+/// normalised to the configured TargetCurrency. Used to split Azure first-party spend
+/// from third-party Azure Marketplace (ISV/SaaS-on-Azure) charges.
+/// </summary>
+public sealed record PublisherTypeCostRow(
+    string PublisherType,
+    string ServiceName,
+    decimal NormalizedCost);
+
 // ─── Budget API response shapes ────────────────────────────────────────────────────────
 // GET /subscriptions/{id}/providers/Microsoft.Consumption/budgets
 

@@ -42,7 +42,7 @@ purchases skew ActualCost." Arrow>
 @* ── KPI cards ─────────────────────────────────────────────────────────────── *@
 <MudGrid Spacing="3" Class="mb-4">
     <KpiCard Label="Cost MTD" Value="@Fmt(_costMtd)" Sm="6" Md="3" />
-    <KpiCard Label="Month-End Forecast" Value="@Fmt(_forecast)" Sm="6" Md="3" />
+    <KpiCard Label="@_forecastLabel" Value="@Fmt(_forecast)" Sm="6" Md="3" />
     <KpiCard Label="Rolling 3-Month Avg" Value="@Fmt(_rolling3m)" Sm="6" Md="3" />
     <KpiCard Label="YoY Change %" Value="@($"{_yoyPct:F1}%")" ValueColor="@(_yoyPct > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />
 </MudGrid>
@@ -79,10 +79,19 @@ purchases skew ActualCost." Arrow>
                 }
                 <ApexPointSeries TItem="DailyPoint"
                                  Items="_forecastDaily"
-                                 Name="Forecast (total)"
+                                 Name="Forecast (linear)"
                                  XValue="@(e => e.Date)"
                                  YValue="@(e => (decimal?)e.Cost)"
                                  SeriesType="SeriesType.Line" />
+                @if (_msForecastDaily.Count > 0)
+                {
+                    <ApexPointSeries TItem="DailyPoint"
+                                     Items="_msForecastDaily"
+                                     Name="Forecast (Microsoft)"
+                                     XValue="@(e => e.Date)"
+                                     YValue="@(e => (decimal?)e.Cost)"
+                                     SeriesType="SeriesType.Line" />
+                }
             </ApexChart>
         </MudPaper>
     </MudItem>
@@ -150,12 +159,14 @@ purchases skew ActualCost." Arrow>
 
     private decimal _costMtd;
     private decimal _forecast;
+    private string  _forecastLabel = "Month-End Forecast";
     private decimal _rolling3m;
     private decimal _yoyPct;
     private List<string> _seriesSubIds = [];
 
     private List<DailyPoint> _actualDaily = [];
     private List<DailyPoint> _forecastDaily = [];
+    private List<DailyPoint> _msForecastDaily = [];
     private List<MonthlyPoint> _monthlyTrend = [];
     private List<MonthlyPoint> _rolling3mLine = [];
     private List<MonthlyPoint> _currentYearMonthly = [];
@@ -245,6 +256,37 @@ purchases skew ActualCost." Arrow>
                     return new DailyPoint(date, "__forecast", dailyAvg * d);
                 })
                 .ToList();
+
+            // Microsoft Cost Management native forecast (same ARM token). When available it
+            // supersedes the linear extrapolation for the KPI; the linear line stays as a
+            // visual fallback/comparison. The service degrades to an empty list on error or
+            // 204 No Content, so we silently keep the linear forecast in that case.
+            var msForecast    = await CostService.GetForecastAsync(_metric);
+            var msForecastSum = msForecast.Sum(p => p.Cost);
+
+            // A month-end forecast can never be *less* than what's already been spent this
+            // month. Reject a degenerate native result (empty, zero, or below Cost MTD —
+            // e.g. a stale/partial cached forecast) and fall back to the linear extrapolation,
+            // which is >= Cost MTD by construction, so the KPI never reads an impossible value.
+            if (msForecast.Count > 0 && msForecastSum >= _costMtd && msForecastSum > 0m)
+            {
+                decimal cumulative = 0m;
+                _msForecastDaily = msForecast
+                    .OrderBy(p => p.Date)
+                    .Select(p =>
+                    {
+                        cumulative += p.Cost;
+                        return new DailyPoint(p.Date, "__ms_forecast", cumulative);
+                    })
+                    .ToList();
+                _forecast      = msForecastSum;
+                _forecastLabel = "Month-End Forecast (Microsoft)";
+            }
+            else
+            {
+                _msForecastDaily = [];
+                _forecastLabel   = "Month-End Forecast (linear)";
+            }
 
             // ── Monthly totals (scoped to the selected date range) ──────────────
             var rangeStart = _selectedRange.Start ?? today.AddYears(-1);

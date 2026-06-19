@@ -85,6 +85,41 @@
     </MudItem>
 </MudGrid>
 
+@* ── Cost anomalies ───────────────────────────────────────────────────────── *@
+@if (_anomalies.Count > 0)
+{
+    <MudPaper Class="pa-4 mt-4" Elevation="2">
+        <MudStack Row AlignItems="AlignItems.Center" Class="mb-3" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Filled.Warning" Color="Color.Warning" />
+            <MudText Typo="Typo.subtitle1" Class="fw-bold">Cost Anomalies</MudText>
+            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text">
+                @_anomalies.Count detected
+            </MudChip>
+            <MudTooltip Arrow Text="Daily spend per subscription + service that is statistically unusual versus its trailing 30-day baseline (z-score ≥ 2.5). Recent days only.">
+                <MudIcon Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Default" />
+            </MudTooltip>
+        </MudStack>
+        <MudDataGrid T="CostAnomaly"
+                     Items="_anomalies"
+                     SortMode="SortMode.Multiple"
+                     Dense>
+            <Columns>
+                <PropertyColumn Property="a => a.Date" Title="Date" Format="yyyy-MM-dd" />
+                <PropertyColumn Property="a => a.SubscriptionName" Title="Subscription" />
+                <PropertyColumn Property="a => a.ServiceName" Title="Service" />
+                <PropertyColumn Property="a => a.Cost" Title=@($"Cost ({Options.TargetCurrency})") Format="N0" />
+                <PropertyColumn Property="a => a.Baseline" Title=@($"Baseline ({Options.TargetCurrency})") Format="N0" />
+                <TemplateColumn Title="Δ %" SortBy="@(a => a.DeltaPct)">
+                    <CellTemplate>
+                        <MudText Color="Color.Error">+@context.Item.DeltaPct.ToString("F0")%</MudText>
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="a => a.ZScore" Title="z-score" Format="F1" />
+            </Columns>
+        </MudDataGrid>
+    </MudPaper>
+}
+
 @* ── Subscription Management ─────────────────────────────────────────────── *@
 <MudExpansionPanels Class="mt-4" Elevation="2">
     <MudExpansionPanel Text="Manage Subscriptions" Icon="@Icons.Material.Filled.ManageAccounts">
@@ -314,6 +349,7 @@
     private List<MonthlyPoint> _monthlyTrend = [];
     private List<ServicePoint> _topServices = [];
     private List<string> _seriesSubIds = [];
+    private IReadOnlyList<CostAnomaly> _anomalies = [];
 
     private readonly ApexChartOptions<DailyPoint> _twoLineOpts = ApexChartPresets.SmoothLine<DailyPoint>();
 
@@ -510,6 +546,11 @@
                 service,
                 serviceBySub.TryGetValue((service, subId), out var cost) ? cost : 0m)))
             .ToList();
+
+        // Statistical spike detection over the full dataset (per subscription + service),
+        // independent of the selected date range so a quiet picker window can't hide a
+        // recent anomaly.
+        _anomalies = CostAnomalyDetector.Detect(_data, GetSubName);
     }
 
     // ── Subscription management ──────────────────────────────────────────────

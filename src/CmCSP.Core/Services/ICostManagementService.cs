@@ -61,4 +61,21 @@ public interface ICostManagementService
     /// Falls back to the raw ID if the Subscriptions API is unavailable. Results are cached.
     /// </summary>
     Task<Dictionary<string, string>> GetSubscriptionDisplayNamesAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the Microsoft Cost Management native forecast for the current calendar month,
+    /// aggregated across all configured subscriptions. Each point is flagged
+    /// <see cref="ForecastPoint.IsForecast"/> = false for actual days and true for projected days.
+    /// Uses the same ARM token (no new permissions). Empty when the forecast API has no data
+    /// (e.g. 204 No Content). <paramref name="metric"/> is "ActualCost" or "AmortizedCost".
+    /// </summary>
+    Task<List<ForecastPoint>> GetForecastAsync(string metric = "ActualCost", CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns month-to-date spend split by PublisherType (Azure first-party vs Azure
+    /// Marketplace / third-party) and service, across all configured subscriptions, using the
+    /// same ARM token. Empty when the Query API is unavailable or the dimension is unsupported
+    /// (e.g. some CSP/indirect subscriptions).
+    /// </summary>
+    Task<List<PublisherTypeCostRow>> GetPublisherBreakdownAsync(CancellationToken ct = default);
 }

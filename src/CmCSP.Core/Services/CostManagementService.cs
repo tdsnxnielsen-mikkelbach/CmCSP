@@ -55,6 +55,9 @@ public sealed class CostManagementService : ICostManagementService
     private const string KeyAdvisor       = "cm_advisor";
     private const string KeyAdvisorScores = "cm_advisor_scores";
     private const string KeySubNames      = "cm_sub_names";
+    private const string KeyForecast      = "cm_forecast";
+    private const string KeyForecastAmort = "cm_forecast_amort";
+    private const string KeyPublisher     = "cm_publisher";
 
     // Stable GA API versions for endpoints other than the Cost Management query endpoint.
     private const string BudgetsApiVersion      = "2023-11-01";
@@ -130,6 +133,9 @@ public sealed class CostManagementService : ICostManagementService
         _cache.Remove(KeyAdvisor);
         _cache.Remove(KeyAdvisorScores);
         _cache.Remove(KeySubNames);
+        _cache.Remove(KeyForecast);
+        _cache.Remove(KeyForecastAmort);
+        _cache.Remove(KeyPublisher);
         // Reset phases so the loading banner re-appears on the next fetch.
         _loadingState.Update(KeyMain, LoadPhase.Idle);
         _loadingState.Update(KeyRg,   LoadPhase.Idle);
@@ -537,6 +543,271 @@ public sealed class CostManagementService : ICostManagementService
             _logger.LogError(ex, "Failed to fetch Advisor scores for subscription {SubId}.", subId);
         }
         return subResults;
+    }
+
+    // ── forecast (Microsoft Cost Management native forecast) ─────────────────
+
+    public async Task<List<ForecastPoint>> GetForecastAsync(
+        string metric = "ActualCost", CancellationToken ct = default)
+    {
+        var isAmortized = metric.Equals("AmortizedCost", StringComparison.OrdinalIgnoreCase);
+        var cacheKey    = isAmortized ? KeyForecastAmort : KeyForecast;
+        var ttl         = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
+
+        if (_cache.TryGetValue<List<ForecastPoint>>(cacheKey, ttl, out var cached) && cached is not null)
+        {
+            _logger.LogDebug("Cache hit for {Key}.", cacheKey);
+            return cached;
+        }
+
+        // Forecast the current calendar month (first → last day).
+        var today      = DateTime.UtcNow.Date;
+        var monthStart = new DateTime(today.Year, today.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+        var monthEnd   = monthStart.AddMonths(1).AddDays(-1);
+
+        _logger.LogInformation(
+            "Fetching native forecast ({Metric}) for {Count} subscription(s) ({From:yyyy-MM-dd}–{To:yyyy-MM-dd}).",
+            metric, _options.SubscriptionIds.Count, monthStart, monthEnd);
+
+        // Aggregate per day across all subscriptions; a day is "forecast" if any
+        // contributing subscription row is forecast (i.e. past today's actuals).
+        var perDay = new Dictionary<DateTime, (decimal Cost, bool IsForecast)>();
+
+        foreach (var subId in _options.SubscriptionIds)
+        {
+            try
+            {
+                var rows = await FetchForecastForSubAsync(subId, metric, monthStart, monthEnd, ct);
+                foreach (var p in rows)
+                {
+                    perDay.TryGetValue(p.Date, out var agg);
+                    perDay[p.Date] = (agg.Cost + p.Cost, agg.IsForecast || p.IsForecast);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Forecast fetch failed for subscription {SubId} – excluded from the total.", subId);
+            }
+        }
+
+        var result = perDay
+            .OrderBy(kv => kv.Key)
+            .Select(kv => new ForecastPoint(kv.Key, kv.Value.Cost, kv.Value.IsForecast))
+            .ToList();
+
+        _cache.Set(cacheKey, result, ttl);
+        _logger.LogInformation("Native forecast returned {Days} day(s) under '{Key}'.", result.Count, cacheKey);
+        return result;
+    }
+
+    private async Task<List<ForecastPoint>> FetchForecastForSubAsync(
+        string subscriptionId, string metric, DateTime from, DateTime to, CancellationToken ct)
+    {
+        var points = new List<ForecastPoint>();
+        var url = $"https://management.azure.com/subscriptions/{subscriptionId}" +
+                  $"/providers/Microsoft.CostManagement/forecast?api-version={_options.ApiVersion}";
+
+        var body = new
+        {
+            type      = metric,
+            timeframe = "Custom",
+            timePeriod = new
+            {
+                from = from.ToString("yyyy-MM-ddT00:00:00+00:00"),
+                to   = to.ToString("yyyy-MM-ddT23:59:59+00:00")
+            },
+            dataset = new
+            {
+                granularity = "Daily",
+                aggregation = new
+                {
+                    totalCost = new { name = "PreTaxCost", function = "Sum" }
+                }
+            },
+            includeActualCost       = true,
+            includeFreshPartialCost = false
+        };
+
+        await ThrottleAsync(subscriptionId, ct);
+
+        using var client = _httpFactory.CreateClient("AzureMgmt");
+        var token = await _tokenService.GetAccessTokenAsync(ct);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.PostAsJsonAsync(url, body, JsonOpts, ct);
+
+        // 204 No Content = the forecast model has nothing to project for this subscription.
+        if (response.StatusCode == System.Net.HttpStatusCode.NoContent)
+        {
+            _logger.LogInformation("Forecast API returned 204 (no data) for subscription {SubId}.", subscriptionId);
+            return points;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning(
+                "Forecast API returned {Status} for subscription {SubId} – skipping. Body: {Body}",
+                (int)response.StatusCode, subscriptionId, errorBody);
+            return points;
+        }
+
+        var apiResponse = await response.Content.ReadFromJsonAsync<CostApiResponse>(JsonOpts, ct);
+        if (apiResponse?.Properties is null) return points;
+
+        var colMap = apiResponse.Properties.Columns
+            .Select((c, i) => (Name: c.Name.ToLowerInvariant(), Index: i))
+            .ToDictionary(x => x.Name, x => x.Index);
+
+        // The cost column name varies by API version / aggregation alias
+        // ("PreTaxCost", "Cost", "PreTaxCostUSD"…). Find the first numeric cost-like
+        // column rather than assuming a single name, so the value never silently reads 0.
+        var costCol = ResolveCostColumn(colMap);
+
+        foreach (var row in apiResponse.Properties.Rows)
+        {
+            var cost     = costCol is not null ? GetDecimal(row, colMap, costCol) : 0m;
+            var dateInt  = GetInt(row, colMap, "usagedate");
+            var currency = GetString(row, colMap, "currency");
+            var status   = GetString(row, colMap, "coststatus");
+
+            if (!TryParseDate(dateInt, out var date)) continue;
+
+            points.Add(new ForecastPoint(
+                date,
+                NormaliseCurrency(cost, currency),
+                status.Equals("Forecast", StringComparison.OrdinalIgnoreCase)));
+        }
+
+        return points;
+    }
+
+    /// <summary>
+    /// Picks the cost value column from a forecast/query response column map. The Cost
+    /// Management forecast endpoint may label the aggregated cost column "PreTaxCost",
+    /// "Cost", "PreTaxCostUSD" or "CostUSD" depending on API version; this returns the
+    /// first present (preferring billing-currency over USD) so the amount isn't read as 0.
+    /// </summary>
+    private static string? ResolveCostColumn(Dictionary<string, int> colMap)
+    {
+        foreach (var candidate in new[] { "pretaxcost", "cost", "pretaxcostusd", "costusd" })
+            if (colMap.ContainsKey(candidate))
+                return candidate;
+        return null;
+    }
+
+    // ── publisher-type (Marketplace vs Azure) breakdown ──────────────────────
+
+    public async Task<List<PublisherTypeCostRow>> GetPublisherBreakdownAsync(CancellationToken ct = default)
+    {
+        var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
+        if (_cache.TryGetValue<List<PublisherTypeCostRow>>(KeyPublisher, ttl, out var cached) && cached is not null)
+        {
+            _logger.LogDebug("Cache hit for {Key}.", KeyPublisher);
+            return cached;
+        }
+
+        _logger.LogInformation(
+            "Fetching publisher-type (Marketplace) breakdown for {Count} subscription(s).",
+            _options.SubscriptionIds.Count);
+
+        // Aggregate month-to-date per (PublisherType, MeterCategory) across subscriptions.
+        var agg = new Dictionary<(string Publisher, string Service), decimal>();
+
+        foreach (var subId in _options.SubscriptionIds)
+        {
+            try
+            {
+                foreach (var row in await FetchPublisherBreakdownForSubAsync(subId, ct))
+                {
+                    var key = (row.PublisherType, row.ServiceName);
+                    agg.TryGetValue(key, out var sum);
+                    agg[key] = sum + row.NormalizedCost;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Publisher breakdown failed for subscription {SubId} – excluded from the total.", subId);
+            }
+        }
+
+        var result = agg
+            .Select(kv => new PublisherTypeCostRow(kv.Key.Publisher, kv.Key.Service, kv.Value))
+            .OrderByDescending(r => r.NormalizedCost)
+            .ToList();
+
+        _cache.Set(KeyPublisher, result, ttl);
+        _logger.LogInformation("Publisher breakdown returned {Rows} row(s) under '{Key}'.", result.Count, KeyPublisher);
+        return result;
+    }
+
+    private async Task<List<PublisherTypeCostRow>> FetchPublisherBreakdownForSubAsync(
+        string subscriptionId, CancellationToken ct)
+    {
+        var rows = new List<PublisherTypeCostRow>();
+        var url = $"https://management.azure.com/subscriptions/{subscriptionId}" +
+                  $"/providers/Microsoft.CostManagement/query?api-version={_options.ApiVersion}";
+
+        // No granularity ⇒ a single aggregate per grouping over the whole timeframe.
+        var body = new
+        {
+            type      = "ActualCost",
+            timeframe = "MonthToDate",
+            dataset = new
+            {
+                aggregation = new
+                {
+                    totalCost = new { name = "PreTaxCost", function = "Sum" }
+                },
+                grouping = new[]
+                {
+                    new { type = "Dimension", name = "PublisherType" },
+                    new { type = "Dimension", name = "MeterCategory" }
+                }
+            }
+        };
+
+        await ThrottleAsync(subscriptionId, ct);
+
+        using var client = _httpFactory.CreateClient("AzureMgmt");
+        var token = await _tokenService.GetAccessTokenAsync(ct);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.PostAsJsonAsync(url, body, JsonOpts, ct);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync(ct);
+            // Some CSP/indirect subscriptions reject PublisherType grouping (400) – treat as no data.
+            _logger.LogWarning(
+                "Publisher breakdown query returned {Status} for subscription {SubId} – skipping. Body: {Body}",
+                (int)response.StatusCode, subscriptionId, errorBody);
+            return rows;
+        }
+
+        var apiResponse = await response.Content.ReadFromJsonAsync<CostApiResponse>(JsonOpts, ct);
+        if (apiResponse?.Properties is null) return rows;
+
+        var colMap = apiResponse.Properties.Columns
+            .Select((c, i) => (Name: c.Name.ToLowerInvariant(), Index: i))
+            .ToDictionary(x => x.Name, x => x.Index);
+
+        foreach (var row in apiResponse.Properties.Rows)
+        {
+            var cost      = GetDecimal(row, colMap, "pretaxcost");
+            var publisher = GetString(row, colMap, "publishertype");
+            var service   = GetString(row, colMap, "metercategory");
+            var currency  = GetString(row, colMap, "currency");
+
+            rows.Add(new PublisherTypeCostRow(
+                string.IsNullOrWhiteSpace(publisher) ? "azure" : publisher,
+                string.IsNullOrWhiteSpace(service) ? "(unassigned)" : service,
+                NormaliseCurrency(cost, currency)));
+        }
+
+        return rows;
     }
 
     // ── internal fetch pipeline ──────────────────────────────────────────────
