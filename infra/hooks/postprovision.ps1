@@ -344,6 +344,58 @@ catch {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Phase 6a-2 – Microsoft Graph application permission for tenant-name lookup
+# ──────────────────────────────────────────────────────────────────────────────
+# The Customers page resolves each customer tenant's organisation display name from
+# its tenant GUID via Graph tenantRelationships/findTenantInformationByTenantId. That
+# call needs the application permission 'CrossTenantInformation.ReadBasic.All' (Graph
+# app-role 8c0aed2c-0c61-433d-b63c-6370ddc73248) with admin consent. Without it the
+# lookup returns null and the UI safely falls back to showing the tenant GUID.
+# Idempotent: only adds the permission when missing, then (re)grants admin consent.
+# Best-effort — needs Application.ReadWrite + the ability to grant admin consent; a
+# failure here warns and continues (the GUID fallback still works).
+
+Write-Step "Phase 6a-2 – Microsoft Graph permission for tenant-name lookup"
+
+$graphAppId            = '00000003-0000-0000-c000-000000000000'  # Microsoft Graph
+$crossTenantReadRoleId = '8c0aed2c-0c61-433d-b63c-6370ddc73248'  # CrossTenantInformation.ReadBasic.All (Role)
+
+try {
+    $appObjectId = az ad app show --id $clientId --query id -o tsv --only-show-errors 2>$null
+    if ([string]::IsNullOrWhiteSpace($appObjectId)) {
+        Write-Warning "  Could not find app registration '$clientId'; skipping Graph-permission wiring."
+    }
+    else {
+        # Is the CrossTenantInformation.ReadBasic.All role already requested on the app?
+        $hasPermission = az ad app show --id $clientId `
+            --query "requiredResourceAccess[?resourceAppId=='$graphAppId'].resourceAccess[?id=='$crossTenantReadRoleId'] | [0]" `
+            -o tsv --only-show-errors 2>$null
+
+        if ([string]::IsNullOrWhiteSpace($hasPermission)) {
+            Write-Host "  Adding Graph permission CrossTenantInformation.ReadBasic.All..."
+            az ad app permission add --id $clientId `
+                --api $graphAppId `
+                --api-permissions "$crossTenantReadRoleId=Role" `
+                --only-show-errors | Out-Null
+        }
+        else {
+            Write-Host "  Graph permission already requested on the app." -ForegroundColor DarkGray
+        }
+
+        # Grant (or re-affirm) tenant-wide admin consent for the application permission.
+        # admin-consent is idempotent and required for app-role permissions to take effect.
+        Write-Host "  Granting admin consent for application permissions..."
+        az ad app permission admin-consent --id $clientId --only-show-errors | Out-Null
+        Write-Host "  Graph permission ready (tenant-name lookup enabled)." -ForegroundColor Green
+    }
+}
+catch {
+    Write-Warning "  Graph-permission wiring failed: $($_.Exception.Message)"
+    Write-Warning "  Grant 'CrossTenantInformation.ReadBasic.All' (application) to app '$clientId' and admin-consent it manually."
+    Write-Warning "  Until then the Customers page shows tenant GUIDs instead of organisation names."
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Phase 6b – Cost Management Contributor for the Entra App SP
 # ──────────────────────────────────────────────────────────────────────────────
 # Grants the Entra App SP 'Cost Management Contributor' on each target

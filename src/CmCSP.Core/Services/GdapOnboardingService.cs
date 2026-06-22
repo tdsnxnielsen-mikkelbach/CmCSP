@@ -195,6 +195,48 @@ public sealed class GdapOnboardingService
     }
 
     /// <summary>
+    /// Resolves a customer tenant's organisation display name from its tenant GUID via Microsoft
+    /// Graph <c>tenantRelationships/findTenantInformationByTenantId</c> (a home-tenant directory
+    /// read that requires the <c>CrossTenantInformation.ReadBasic.All</c> application permission).
+    /// Returns <c>null</c> when the name cannot be resolved (permission not granted, tenant not
+    /// found, or any error), so callers can fall back to the tenant GUID.
+    /// </summary>
+    public async Task<string?> ResolveTenantDisplayNameAsync(string tenantId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId) || !Guid.TryParse(tenantId.Trim(), out _))
+            return null;
+
+        try
+        {
+            var token  = await _tokenService.GetGraphTokenAsync(ct);
+            var client = _httpFactory.CreateClient("AzureMgmt");
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+            var url = "https://graph.microsoft.com/v1.0/tenantRelationships/" +
+                      $"findTenantInformationByTenantId(tenantId='{tenantId.Trim()}')";
+
+            using var response = await client.GetAsync(url, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogDebug(
+                    "Tenant-name lookup for {Tenant} returned {Status}. Falling back to the tenant id.",
+                    tenantId, (int)response.StatusCode);
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            return doc.RootElement.TryGetProperty("displayName", out var name)
+                ? name.GetString()
+                : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Tenant-name lookup for {Tenant} failed; falling back to the tenant id.", tenantId);
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Assigns this app's service principal the <b>Cost Management Reader</b> role on every Azure
     /// subscription currently mapped to the customer, using a per-tenant (GDAP) token. This makes
     /// CSP-provisioned customers one-click: where the partner already holds Owner / User Access

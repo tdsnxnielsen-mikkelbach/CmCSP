@@ -106,7 +106,9 @@ else
                                     @c.Status
                                 </MudChip>
                                 <MudText Typo="Typo.body1" Class="fw-bold">@c.DisplayName</MudText>
-                                <MudText Typo="Typo.caption" Color="Color.Secondary">@c.TenantId</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary" title="@c.TenantId">
+                                    @(_tenantNames.GetValueOrDefault(c.TenantId) ?? c.TenantId)
+                                </MudText>
                             </div>
                         </TitleContent>
                         <ChildContent>
@@ -279,6 +281,9 @@ else
     private List<CustomerEntity> _customers = [];
     private readonly Dictionary<long, List<CustomerSubscriptionEntity>> _subsByCustomer = new();
 
+    // Resolved organisation display names keyed by tenant GUID (best-effort, via Microsoft Graph).
+    private readonly Dictionary<string, string> _tenantNames = new(StringComparer.OrdinalIgnoreCase);
+
     protected override async Task OnInitializedAsync()
     {
         if (Options.MultiTenancy.Enabled && Store.IsEnabled)
@@ -310,6 +315,29 @@ else
             _newSubId.TryAdd(c.Id, string.Empty);
             _newSubName.TryAdd(c.Id, string.Empty);
             _gdapId[c.Id] = c.GdapRelationshipId ?? string.Empty;
+        }
+
+        await ResolveTenantNamesAsync();
+    }
+
+    /// <summary>
+    /// Best-effort resolution of each customer tenant's organisation display name (via Graph), so
+    /// the list shows a friendly tenant name rather than a raw GUID. Failures are silent — the UI
+    /// falls back to the tenant GUID. Already-resolved tenants are skipped.
+    /// </summary>
+    private async Task ResolveTenantNamesAsync()
+    {
+        foreach (var c in _customers)
+        {
+            if (string.IsNullOrWhiteSpace(c.TenantId) || _tenantNames.ContainsKey(c.TenantId))
+                continue;
+
+            var name = await Gdap.ResolveTenantDisplayNameAsync(c.TenantId);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                _tenantNames[c.TenantId] = name!;
+                StateHasChanged();
+            }
         }
     }
 

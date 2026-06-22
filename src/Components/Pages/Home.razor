@@ -443,6 +443,16 @@
         {
             _data = await CostService.GetMainCostDataAsync();
             Compute();
+
+            // The landing page is the natural place to warm every dataset so the loading
+            // banner reflects reality without the user having to visit each page. The Resource
+            // Groups and Tag Chargeback datasets are already populated in the same SQL pass as
+            // Main (PopulateAllCachesAsync), but their per-dataset status only flips to Ready
+            // when something queries them — so touch them here. On a warm cache these are
+            // instant hits; on a cold cache they share Main's single load.
+            await Task.WhenAll(
+                CostService.GetRgCostDataAsync(),
+                CostService.GetTagCostDataAsync());
         });
     }
 

@@ -25,8 +25,10 @@ namespace CmCSP.Services;
 /// </summary>
 public sealed class AzureTokenService
 {
-    private static readonly string[]    MsalScopes  = ["https://management.azure.com/.default"];
-    private static readonly string[]    AzureScopes = ["https://management.azure.com/.default"];
+    private static readonly string[]    MsalScopes       = ["https://management.azure.com/.default"];
+    private static readonly string[]    AzureScopes      = ["https://management.azure.com/.default"];
+    private static readonly string[]    GraphMsalScopes  = ["https://graph.microsoft.com/.default"];
+    private static readonly string[]    GraphAzureScopes = ["https://graph.microsoft.com/.default"];
 
     private readonly IConfidentialClientApplication? _app;
     private readonly TokenCredential?                _credential;
@@ -99,6 +101,25 @@ public sealed class AzureTokenService
         // single identity, so the customer tenant is intentionally ignored here.
         var token = await _credential!.GetTokenAsync(
             new TokenRequestContext(AzureScopes), ct);
+        return token.Token;
+    }
+
+    /// <summary>
+    /// Acquires a Microsoft Graph token for the home (partner) tenant. Used for directory reads
+    /// that are home-tenant scoped, such as resolving a customer tenant's organisation display
+    /// name via <c>tenantRelationships/findTenantInformationByTenantId</c>
+    /// (requires the <c>CrossTenantInformation.ReadBasic.All</c> application permission).
+    /// </summary>
+    public async Task<string> GetGraphTokenAsync(CancellationToken ct = default)
+    {
+        if (_app is not null)
+        {
+            var result = await _app.AcquireTokenForClient(GraphMsalScopes).ExecuteAsync(ct);
+            return result.AccessToken;
+        }
+
+        var token = await _credential!.GetTokenAsync(
+            new TokenRequestContext(GraphAzureScopes), ct);
         return token.Token;
     }
 
