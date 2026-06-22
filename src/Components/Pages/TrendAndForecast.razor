@@ -70,7 +70,7 @@ purchases skew ActualCost." Arrow>
     <MudItem xs="12">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Actual vs Month-End Forecast (daily)</MudText>
-            <ApexChart TItem="DailyPoint" Options="_forecastOpts">
+            <ApexChart TItem="DailyPoint" Options="_forecastOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;
@@ -104,7 +104,7 @@ purchases skew ActualCost." Arrow>
     <MudItem xs="12" md="6">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Cost + Rolling 3-Month Avg</MudText>
-            <ApexChart TItem="MonthlyPoint" Options="_rollingOpts">
+            <ApexChart TItem="MonthlyPoint" Options="_rollingOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;
@@ -129,7 +129,7 @@ purchases skew ActualCost." Arrow>
     <MudItem xs="12" md="6">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Year-over-Year Comparison</MudText>
-            <ApexChart TItem="MonthlyPoint" Options="_yoyOpts">
+            <ApexChart TItem="MonthlyPoint" Options="_yoyOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;

@@ -31,12 +31,26 @@ public sealed class DashboardStateService
     public IReadOnlySet<string> SelectedSubscriptionIds => _selectedSubscriptionIds;
     private readonly HashSet<string> _selectedSubscriptionIds = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Monotonically increases on every filter change (date range, customer, subscriptions). Pages
+    /// use it as a render <c>@key</c> on ApexCharts so the charts re-create with fresh data when a
+    /// filter changes — unlike MudBlazor grids, ApexCharts do not re-render on an external
+    /// StateHasChanged alone.
+    /// </summary>
+    public int ViewVersion { get; private set; }
+
     public event Action? OnStateChanged;
+
+    private void RaiseChanged()
+    {
+        ViewVersion++;
+        OnStateChanged?.Invoke();
+    }
 
     public void SetDateRange(DateRange range)
     {
         SelectedRange = range;
-        OnStateChanged?.Invoke();
+        RaiseChanged();
     }
 
     /// <summary>Partner-only: drill into a single customer (<c>null</c> = all customers).</summary>
@@ -44,7 +58,7 @@ public sealed class DashboardStateService
     {
         if (SelectedCustomerId == customerId) return;
         SelectedCustomerId = customerId;
-        OnStateChanged?.Invoke();
+        RaiseChanged();
     }
 
     /// <summary>
@@ -58,7 +72,7 @@ public sealed class DashboardStateService
         if (next.SetEquals(_selectedSubscriptionIds)) return;
         _selectedSubscriptionIds.Clear();
         foreach (var id in next) _selectedSubscriptionIds.Add(id);
-        OnStateChanged?.Invoke();
+        RaiseChanged();
     }
 
     /// <summary>

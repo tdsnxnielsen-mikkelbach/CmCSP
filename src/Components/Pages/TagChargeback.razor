@@ -30,8 +30,8 @@
 {
     <MudAlert Severity="Severity.Warning" Class="mb-4" Icon="@Icons.Material.Outlined.Lock">
         Live resource inventory is unavailable because the app identity is missing the
-        <strong>Reader</strong> role on the target subscriptions. Grant Reader (deploy the Phase 7
-        Bicep role assignment) to see real tag coverage alongside cost data.
+        <strong>Reader</strong> role on the target subscriptions. Grant Reader to see real tag
+        coverage alongside cost data.
     </MudAlert>
 }
 else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
@@ -79,7 +79,7 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
     <MudItem xs="12" md="8">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Cost Distribution by Tag</MudText>
-            <ApexChart TItem="TagSeriesPoint" Options="_treemapOpts">
+            <ApexChart TItem="TagSeriesPoint" Options="_treemapOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;
@@ -98,7 +98,7 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
     <MudItem xs="12" md="4">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Tag Cost Ranked</MudText>
-            <ApexChart TItem="TagSeriesPoint" Options="_hbarOpts">
+            <ApexChart TItem="TagSeriesPoint" Options="_hbarOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;

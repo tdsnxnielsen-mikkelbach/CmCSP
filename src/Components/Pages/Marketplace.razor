@@ -35,7 +35,7 @@
     <MudItem xs="12" md="4">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Azure vs Marketplace</MudText>
-            <ApexChart TItem="SplitPoint" Options="_donutOpts">
+            <ApexChart TItem="SplitPoint" Options="_donutOpts" @key="ChartKey">
                 <ApexPointSeries TItem="SplitPoint"
                                  Items="_split"
                                  Name="Spend"
@@ -58,7 +58,7 @@
             }
             else
             {
-                <ApexChart TItem="ServicePoint" Options="_hbarOpts">
+                <ApexChart TItem="ServicePoint" Options="_hbarOpts" @key="ChartKey">
                     <ApexPointSeries TItem="ServicePoint"
                                      Items="_marketplaceItems.Take(15).ToList()"
                                      Name="Marketplace Cost"

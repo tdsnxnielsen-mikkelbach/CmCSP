@@ -766,8 +766,9 @@ public sealed class CostManagementService : ICostManagementService
     /// <summary>
     /// The (subscriptionId, tenantId) pairs to query for the current scope. <c>tenantId</c> is
     /// <c>null</c> for the home authority. Single-tenant/unscoped → the configured home subs.
-    /// A single customer → that customer's subs on its tenant. The partner aggregate → every
-    /// active customer's subs (each on its own tenant) plus the configured home subs.
+    /// A single customer → that customer's subs on its tenant (plus the home registry subs when
+    /// that customer is the home customer). The partner aggregate → every active customer's subs
+    /// (each on its own tenant) plus the home registry subs on the home token.
     /// </summary>
     private async Task<IReadOnlyList<(string SubscriptionId, string? TenantId)>> ResolvePublisherTargetsAsync(
         CancellationToken ct)
@@ -797,9 +798,14 @@ public sealed class CostManagementService : ICostManagementService
                 map[sub.SubscriptionId] = tid;
         }
 
-        // Include the partner's own (statically-configured) subscriptions in the aggregate view,
-        // queried on the home token, without overwriting any explicit per-customer mapping.
-        if (scope.IsPartner)
+        // Include the home/partner's own subscriptions (the SubStore registry, not the
+        // CustomerSubscription table — GetSubscriptionsAsync(home) is empty) on the home token
+        // whenever the home customer is in scope. This covers both the partner aggregate AND a
+        // partner drilling into the home customer (scope narrows to [homeId], IsPartner=false) —
+        // without it that drill-in yields zero targets and the Marketplace page renders blank.
+        var home = await _customers.GetHomeCustomerAsync(ct);
+        var homeInScope = scope.IsPartner || (home is not null && scope.CustomerIds.Contains(home.Id));
+        if (homeInScope)
             foreach (var s in _options.SubscriptionIds)
                 if (!map.ContainsKey(s)) map[s] = null;
 

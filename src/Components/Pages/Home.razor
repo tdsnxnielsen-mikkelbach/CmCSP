@@ -25,7 +25,7 @@
     <MudItem xs="12" md="6">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Daily Cost – Current vs Prior Month</MudText>
-            <ApexChart TItem="DailyPoint" Options="_twoLineOpts">
+            <ApexChart TItem="DailyPoint" Options="_twoLineOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;
@@ -50,7 +50,7 @@
     <MudItem xs="12" md="6">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Cost Trend</MudText>
-            <ApexChart TItem="MonthlyPoint" Options="_barOpts">
+            <ApexChart TItem="MonthlyPoint" Options="_barOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;
@@ -69,7 +69,7 @@
     <MudItem xs="12">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top 10 Services by Cost</MudText>
-            <ApexChart TItem="ServicePoint" Options="_hbarOpts">
+            <ApexChart TItem="ServicePoint" Options="_hbarOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;

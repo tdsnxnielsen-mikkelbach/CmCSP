@@ -261,6 +261,13 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// <summary>True when tenant attribution is meaningful (multi-tenancy on with rows tagged).</summary>
     protected bool ShowTenantColumn => Options.MultiTenancy.Enabled;
 
+    /// <summary>
+    /// A render key that changes whenever a global filter (date range, customer, subscriptions)
+    /// changes. Pages apply it as <c>@key</c> to ApexCharts so the chart re-creates with the new
+    /// data — ApexCharts do not otherwise re-render on an external <c>StateHasChanged</c> alone.
+    /// </summary>
+    protected int ChartKey => State.ViewVersion;
+
     /// <summary>Subscription id → owning tenant id, built from the loaded rows by <see cref="IndexSubscriptionData"/>.</summary>
     protected readonly Dictionary<string, string> _subTenantMap = new(StringComparer.OrdinalIgnoreCase);
 

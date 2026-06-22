@@ -19,7 +19,7 @@
     <MudItem xs="12" md="7">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top 15 Resource Groups by Cost</MudText>
-            <ApexChart TItem="RgSeriesPoint" Options="_hbarOpts">
+            <ApexChart TItem="RgSeriesPoint" Options="_hbarOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;

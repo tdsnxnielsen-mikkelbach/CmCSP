@@ -29,7 +29,7 @@
     <MudItem xs="12">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Month-over-Month Cost Change</MudText>
-            <ApexChart TItem="MomPoint" Options="_momBarOpts">
+            <ApexChart TItem="MomPoint" Options="_momBarOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;
@@ -48,7 +48,7 @@
     <MudItem xs="12" md="6">
         <MudPaper Class="pa-4" Elevation="2">
             <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">MoM Change by Subscription (latest two months)</MudText>
-            <ApexChart TItem="SubMomPoint" Options="_subMomOpts">
+            <ApexChart TItem="SubMomPoint" Options="_subMomOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
                     var capturedSubId = subId;
