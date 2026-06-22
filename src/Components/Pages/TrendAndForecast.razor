@@ -203,7 +203,7 @@ purchases skew ActualCost." Arrow>
                 ? CostService.GetAmortizedMainCostDataAsync()
                 : CostService.GetMainCostDataAsync();
             var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
-            var data  = await dataTask;
+            var data  = ApplySubFilter(await dataTask);
             _subNames = await nameTask;
             // Anchor the forecast month to the real current calendar month when it has data.
             // Azure cost data lags by 1-3 days and a brand-new calendar month often has no rows

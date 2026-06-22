@@ -67,6 +67,10 @@ Values only available when CostDetails:Enabled = true." Arrow>
                 <Columns>
                     <PropertyColumn Property="r => r.SubId"    Title="Subscription ID" />
                     <PropertyColumn Property="r => r.SubName"  Title="Name" />
+                    @if (ShowTenantColumn)
+                    {
+                        <PropertyColumn Property="r => r.Tenant" Title="Tenant" />
+                    }
                     <PropertyColumn Property="r => r.TotalCost" Title="Actual Cost"
                                     Format="N0" />
                     <PropertyColumn Property="r => r.MtdCost"  Title="MTD (Actual)"
@@ -102,7 +106,7 @@ Values only available when CostDetails:Enabled = true." Arrow>
 @code {
     private record SubPoint(string SubName, decimal Cost);
     private record TableRow(string SubId, string SubName, decimal TotalCost, decimal MtdCost,
-                            decimal AmortizedCost, decimal SharePct);
+                            decimal AmortizedCost, decimal SharePct, string Tenant);
 
     private decimal _totalCost;
     private decimal _topShare;
@@ -122,9 +126,12 @@ Values only available when CostDetails:Enabled = true." Arrow>
             var amortTask = Options.CostDetails.Enabled
                 ? CostService.GetAmortizedMainCostDataAsync()
                 : Task.FromResult(new List<CostRow>());
-            var data     = await dataTask;
+            var rawData  = await dataTask;
             _subNames = await nameTask;
-            var amortData = await amortTask;
+            // Apply the partner's subscription view-filter before any aggregation.
+            var data      = ApplySubFilter(rawData);
+            var amortData = ApplySubFilter(await amortTask);
+            await WarmTenantNamesAsync(data);
             var start = RangeStart;
             var end   = RangeEnd;
             // Anchor "today" to the most recent date present in the data rather than the wall
@@ -136,6 +143,15 @@ Values only available when CostDetails:Enabled = true." Arrow>
             var filtered = data.Where(r => r.Date >= start && r.Date <= end).ToList();
 
             _totalCost = filtered.Sum(r => r.NormalizedCost);
+
+            // Attribute each subscription to the tenant that owns it (from the tagged rows).
+            var subTenant = data
+                .Where(r => !string.IsNullOrWhiteSpace(r.SubscriptionId))
+                .GroupBy(r => r.SubscriptionId, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Select(r => r.TenantId).FirstOrDefault(t => !string.IsNullOrWhiteSpace(t)) ?? string.Empty,
+                    StringComparer.OrdinalIgnoreCase);
 
             var bySub = filtered
                 .GroupBy(r => new { r.SubscriptionId, r.SubscriptionName })
@@ -150,7 +166,18 @@ Values only available when CostDetails:Enabled = true." Arrow>
                 .OrderByDescending(x => x.Total)
                 .ToList();
 
-            var merged = SubStore.AllIds
+            // The universe of subscriptions = those present in the data (across every in-scope
+            // tenant) unioned with the home registry, narrowed by the active view-filter. The old
+            // code only listed SubStore.AllIds, so a partner never saw customer subscriptions here.
+            var sel = State.SelectedSubscriptionIds;
+            var universe = data.Select(r => r.SubscriptionId)
+                .Concat(SubStore.AllIds)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(id => sel.Count == 0 || sel.Contains(id))
+                .ToList();
+
+            var merged = universe
                 .Select(id =>
                 {
                     var existing = bySub.FirstOrDefault(x =>
@@ -168,7 +195,8 @@ Values only available when CostDetails:Enabled = true." Arrow>
                             : resolvedName,
                         Total = existing?.Total ?? 0m,
                         Mtd = existing?.Mtd ?? 0m,
-                        Amortized = amortTotal
+                        Amortized = amortTotal,
+                        Tenant = subTenant.TryGetValue(id, out var t) ? t : string.Empty
                     };
                 })
                 .OrderByDescending(x => x.Total)
@@ -187,7 +215,8 @@ Values only available when CostDetails:Enabled = true." Arrow>
                     x.Total,
                     x.Mtd,
                     x.Amortized,
-                    _totalCost > 0 ? x.Total / _totalCost * 100m : 0m))
+                    _totalCost > 0 ? x.Total / _totalCost * 100m : 0m,
+                    TenantNames.GetCachedOrId(x.Tenant)))
                 .ToList();
 
             _withDataSubCount = _rows

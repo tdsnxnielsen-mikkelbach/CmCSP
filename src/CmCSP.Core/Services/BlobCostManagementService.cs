@@ -194,6 +194,16 @@ public sealed class BlobCostManagementService : ICostManagementService
         _logger.LogInformation("Blob cost cache invalidated.");
     }
 
+    /// <summary>
+    /// Repopulates the <b>current scope's</b> three cost-dataset cache entries directly from the
+    /// durable store (SQL <c>CostFact</c>), refreshing both cache tiers. Used by the collector to
+    /// rebuild the partner-aggregate (<c>mt_partner:</c>) view after a multi-tenant run: collection
+    /// writes per-customer (<c>mt_c{id}:</c>) caches only, so without this the partner aggregate is
+    /// never refreshed and a newly-collected customer's data never appears in the partner view.
+    /// </summary>
+    public Task RefreshScopedCacheFromStoreAsync(CancellationToken ct = default) =>
+        PopulateAllCachesAsync(ct);
+
     public Task<List<SubscriptionBudget>> GetSubscriptionBudgetsAsync(CancellationToken ct = default) =>
         _apiService is not null
             ? _apiService.GetSubscriptionBudgetsAsync(ct)
@@ -632,7 +642,9 @@ public sealed class BlobCostManagementService : ICostManagementService
         SubscriptionName  = f.SubscriptionName,
         ServiceName       = f.ServiceName,
         ResourceGroupName = f.ResourceGroupName,
-        Tag               = f.Tag
+        Tag               = f.Tag,
+        CustomerId        = f.CustomerId,
+        TenantId          = f.TenantId
     };
 
     private async Task ParseCsvIntoAccumulatorsAsync(

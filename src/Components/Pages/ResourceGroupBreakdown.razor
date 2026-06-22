@@ -83,7 +83,7 @@
         {
             var dataTask = CostService.GetRgCostDataAsync();
             var subNameTask = CostService.GetSubscriptionDisplayNamesAsync();
-            var data  = await dataTask;
+            var data  = ApplySubFilter(await dataTask);
             _subNames = await subNameTask;
             var start = RangeStart;
             var end   = RangeEnd;

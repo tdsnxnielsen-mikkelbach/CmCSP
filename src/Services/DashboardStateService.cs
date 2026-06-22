@@ -22,6 +22,15 @@ public sealed class DashboardStateService
     /// </summary>
     public long? SelectedCustomerId { get; private set; }
 
+    /// <summary>
+    /// Phase 9: the set of subscription ids the user has chosen to view (case-insensitive). An
+    /// <b>empty</b> set means "show every subscription in the security scope" (the default). This is
+    /// a <i>view</i> filter layered on top of the security <see cref="TenantScope"/> — it never
+    /// widens what a user is allowed to see, only narrows the rows rendered on the pages.
+    /// </summary>
+    public IReadOnlySet<string> SelectedSubscriptionIds => _selectedSubscriptionIds;
+    private readonly HashSet<string> _selectedSubscriptionIds = new(StringComparer.OrdinalIgnoreCase);
+
     public event Action? OnStateChanged;
 
     public void SetDateRange(DateRange range)
@@ -37,4 +46,26 @@ public sealed class DashboardStateService
         SelectedCustomerId = customerId;
         OnStateChanged?.Invoke();
     }
+
+    /// <summary>
+    /// Replaces the set of selected subscription ids. Pass an empty sequence to select "all"
+    /// (the default, no filtering). Raises <see cref="OnStateChanged"/> when the set changes.
+    /// </summary>
+    public void SetSelectedSubscriptions(IEnumerable<string> subscriptionIds)
+    {
+        var next = new HashSet<string>(
+            subscriptionIds ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        if (next.SetEquals(_selectedSubscriptionIds)) return;
+        _selectedSubscriptionIds.Clear();
+        foreach (var id in next) _selectedSubscriptionIds.Add(id);
+        OnStateChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// True if <paramref name="subscriptionId"/> should be shown given the current selection. An
+    /// empty selection set means everything is visible.
+    /// </summary>
+    public bool IsSubscriptionVisible(string? subscriptionId) =>
+        _selectedSubscriptionIds.Count == 0 ||
+        (subscriptionId is not null && _selectedSubscriptionIds.Contains(subscriptionId));
 }

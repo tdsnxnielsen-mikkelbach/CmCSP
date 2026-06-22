@@ -158,7 +158,7 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
             var dataTask = CostService.GetTagCostDataAsync();
             var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
             var coverageTask = Optimization.GetTagCoverageAsync();
-            var data  = await dataTask;
+            var data  = ApplySubFilter(await dataTask);
             _subNames = await nameTask;
             _tagCoverage = await coverageTask;
             _tagKeyCounts = _tagCoverage.ResourcesPerTagKey

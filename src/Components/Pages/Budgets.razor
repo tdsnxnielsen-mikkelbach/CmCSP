@@ -203,7 +203,7 @@ else if (_budgets.Count > 0)
             var costTask   = CostService.GetMainCostDataAsync();
             var budgetTask = CostService.GetSubscriptionBudgetsAsync();
             var subNameTask = CostService.GetSubscriptionDisplayNamesAsync();
-            var costData   = await costTask;
+            var costData   = ApplySubFilter(await costTask);
             var budgets    = await budgetTask;
             var apiSubNames = await subNameTask;
 

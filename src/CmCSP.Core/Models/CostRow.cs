@@ -29,4 +29,13 @@ public sealed class CostRow
 
     // Populated by the ByTag query
     public string Tag { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Phase 9: the owning customer's id (0 in the single-tenant / unscoped path). Lets a partner
+    /// view attribute each row to a tenant for display and per-tenant filtering.
+    /// </summary>
+    public long CustomerId { get; set; }
+
+    /// <summary>Phase 9: the owning customer's Entra tenant GUID (empty in the single-tenant path).</summary>
+    public string TenantId { get; set; } = string.Empty;
 }

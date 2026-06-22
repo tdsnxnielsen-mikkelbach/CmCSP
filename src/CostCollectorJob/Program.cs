@@ -187,6 +187,37 @@ try
             mainRows += result.Main; rgRows += result.Rg; tagRows += result.Tag; amortRows += amort.Count;
         }
 
+        // Refresh the partner-aggregate (mt_partner:) cache from SQL. Collection above only writes
+        // per-customer (mt_c{id}:) caches, so without this rebuild the partner's all-customers view
+        // is populated lazily once and then served stale — a newly-collected customer's data would
+        // never appear for the partner. Reading under the partner scope re-caches all active
+        // customers' rows fresh in both tiers. Only partition 0 does it (the SQL read already spans
+        // every customer regardless of this execution's customer subset).
+        if (partitionIndex == 0 && costService is BlobCostManagementService blobAgg)
+        {
+            try
+            {
+                blobAgg.SubscriptionFilter = null;
+                scopeAccessor.Current = new TenantScope
+                {
+                    IsUnscoped  = false,
+                    IsPartner   = true,
+                    CustomerIds = allCustomers.Select(c => c.Id).ToList(),
+                    TenantId    = costOptions.MultiTenancy.HomeTenantId
+                };
+                await blobAgg.RefreshScopedCacheFromStoreAsync();
+                logger.LogInformation(
+                    "CostCollector[{CorrelationId}]: refreshed partner-aggregate cache for {Count} customer(s).",
+                    correlationId, allCustomers.Count);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "CostCollector[{CorrelationId}]: partner-aggregate cache refresh failed (will rebuild lazily).",
+                    correlationId);
+            }
+        }
+
         scopeAccessor.Current = TenantScope.Unscoped;
     }
     else

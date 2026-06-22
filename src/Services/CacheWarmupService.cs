@@ -69,6 +69,12 @@ public sealed class CacheWarmupService : BackgroundService
                     var prefix = TenantScope.CustomerCacheKeyPrefix(customer.Id);
                     rehydrated += RehydratePartition(prefix, stoppingToken);
                 }
+
+                // The partner-aggregate (all-customers) partition the collector rebuilds after each
+                // run — rehydrate it too so the partner's first view after a restart is served from
+                // the shared cache rather than paying the SQL read latency.
+                if (!stoppingToken.IsCancellationRequested)
+                    rehydrated += RehydratePartition(TenantScope.PartnerCacheKeyPrefix, stoppingToken);
             }
             catch (Exception ex)
             {

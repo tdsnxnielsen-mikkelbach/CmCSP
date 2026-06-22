@@ -57,6 +57,12 @@ public sealed record TenantScope
     /// <see cref="TenantScope"/>. Kept in sync with <see cref="CacheKeyPrefix"/>.
     /// </summary>
     public static string CustomerCacheKeyPrefix(long customerId) => $"mt_c{customerId}:";
+
+    /// <summary>
+    /// The cache-key prefix for the partner-aggregate (all-customers) partition. Kept in sync with
+    /// <see cref="CacheKeyPrefix"/> so the warmup service and collector can address it directly.
+    /// </summary>
+    public const string PartnerCacheKeyPrefix = "mt_partner:";
 }
 
 /// <summary>

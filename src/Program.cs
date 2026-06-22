@@ -157,6 +157,11 @@ builder.Services.AddSingleton<CustomerStore>();
 // manual subscription-ID entry. Cross-tenant discovery requires service-principal mode.
 builder.Services.AddSingleton<GdapOnboardingService>();
 
+// TenantNameService (Phase 9): process-wide cache of tenant id → display name (Graph, then the
+// customer registry, then the raw GUID) so the partner UI can label tenants by name everywhere
+// without each page re-issuing a Graph call.
+builder.Services.AddSingleton<TenantNameService>();
+
 // TenantScopeAccessor (Phase 9): ambient holder of the current circuit's tenant scope, read by
 // the singleton cost service for cache-key prefixing + SQL scoping. Singleton because it wraps
 // an AsyncLocal whose value is per-async-flow (published by CostPageBase before each load).

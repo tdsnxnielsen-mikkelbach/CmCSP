@@ -23,6 +23,7 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     [Inject] protected ITenantScopeProvider   ScopeProvider { get; set; } = default!;
     [Inject] protected TenantScopeAccessor    ScopeAccessor { get; set; } = default!;
     [Inject] protected CustomerStore          Customers     { get; set; } = default!;
+    [Inject] protected TenantNameService      TenantNames   { get; set; } = default!;
 
     protected bool    _loading = true;
     protected string? _error;
@@ -36,6 +37,14 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// </summary>
     protected int     _selectedSubCount;
     protected Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The subscriptions in the current tenant scope (home registry + every in-scope customer's
+    /// mapped subscriptions). Built by <see cref="ComputeSelectedSubCountAsync"/> and used by
+    /// <see cref="GetOrderedSubscriptionIds"/> so chart series include customer subscriptions, not
+    /// just the home registry.
+    /// </summary>
+    protected readonly HashSet<string> _scopeSubIds = new(StringComparer.OrdinalIgnoreCase);
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -93,27 +102,33 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// </summary>
     private async Task ComputeSelectedSubCountAsync(TenantScope scope)
     {
+        _scopeSubIds.Clear();
+
         if (scope.IsUnscoped)
         {
-            _selectedSubCount = SubStore.AllIds.Count;
-            return;
+            foreach (var id in SubStore.AllIds) _scopeSubIds.Add(id);
+        }
+        else
+        {
+            // The home/partner's own subscriptions live in the SubStore registry rather than the
+            // CustomerSubscription table, so only fold them in when the home customer is in scope
+            // (partner aggregate, or a partner drill-in to the home customer itself).
+            var home = await Customers.GetHomeCustomerAsync();
+            if (home is not null && scope.CustomerIds.Contains(home.Id))
+                foreach (var id in SubStore.AllIds)
+                    _scopeSubIds.Add(id);
+
+            foreach (var customerId in scope.CustomerIds)
+                foreach (var id in await Customers.GetSubscriptionIdsAsync(customerId))
+                    _scopeSubIds.Add(id);
         }
 
-        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        // The home/partner's own subscriptions live in the SubStore registry rather than the
-        // CustomerSubscription table, so only fold them in when the home customer is in scope
-        // (partner aggregate, or a partner drill-in to the home customer itself).
-        var home = await Customers.GetHomeCustomerAsync();
-        if (home is not null && scope.CustomerIds.Contains(home.Id))
-            foreach (var id in SubStore.AllIds)
-                ids.Add(id);
-
-        foreach (var customerId in scope.CustomerIds)
-            foreach (var id in await Customers.GetSubscriptionIdsAsync(customerId))
-                ids.Add(id);
-
-        _selectedSubCount = ids.Count;
+        // The badge reflects what is actually in view: the scope narrowed by the picker's
+        // subscription selection (an empty selection means "all in scope").
+        var sel = State.SelectedSubscriptionIds;
+        _selectedSubCount = sel.Count == 0
+            ? _scopeSubIds.Count
+            : _scopeSubIds.Count(sel.Contains);
     }
 
     // ── Template method ───────────────────────────────────────────────────────
@@ -160,14 +175,61 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     protected string GetSubName(string subscriptionId) =>
         _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
 
+    // ── Subscription view-filter + tenant display (Phase 9) ───────────────────
+
+    /// <summary>True when the partner has narrowed the view to a subset of subscriptions.</summary>
+    protected bool HasSubFilter => State.SelectedSubscriptionIds.Count > 0;
+
     /// <summary>
-    /// Returns subscription IDs in alphabetical order by display name, deduped.
+    /// Applies the user's subscription view-filter (<see cref="DashboardStateService.SelectedSubscriptionIds"/>)
+    /// to a set of cost rows. An empty selection means "all" (no filtering). This is a presentation
+    /// filter layered on top of the security <see cref="TenantScope"/> — it only ever narrows the
+    /// rows already authorised for the user, never widens them.
     /// </summary>
-    protected List<string> GetOrderedSubscriptionIds() =>
-        SubStore.AllIds
+    protected IReadOnlyList<CostRow> ApplySubFilter(IEnumerable<CostRow> rows)
+    {
+        var sel = State.SelectedSubscriptionIds;
+        if (sel.Count == 0)
+            return rows as IReadOnlyList<CostRow> ?? rows.ToList();
+        return rows.Where(r => sel.Contains(r.SubscriptionId)).ToList();
+    }
+
+    /// <summary>True when tenant attribution is meaningful (multi-tenancy on with rows tagged).</summary>
+    protected bool ShowTenantColumn => Options.MultiTenancy.Enabled;
+
+    /// <summary>
+    /// Warms the tenant-id → display-name cache for every tenant appearing in <paramref name="rows"/>
+    /// so subsequent synchronous <see cref="TenantLabel"/> calls render names rather than GUIDs.
+    /// </summary>
+    protected async Task WarmTenantNamesAsync(IEnumerable<CostRow> rows)
+    {
+        if (!Options.MultiTenancy.Enabled) return;
+        foreach (var tid in rows.Select(r => r.TenantId)
+                     .Where(t => !string.IsNullOrWhiteSpace(t))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            await TenantNames.GetDisplayNameAsync(tid);
+        }
+    }
+
+    /// <summary>A friendly tenant label for a row (resolved name, else GUID, else empty).</summary>
+    protected string TenantLabel(CostRow r) => TenantNames.GetCachedOrId(r.TenantId);
+
+    /// <summary>
+    /// Returns subscription IDs in alphabetical order by display name, deduped. Spans every
+    /// subscription in the current tenant scope (home + customers), narrowed by the active
+    /// subscription view-filter, so chart series include customer subscriptions for a partner.
+    /// </summary>
+    protected List<string> GetOrderedSubscriptionIds()
+    {
+        var source = _scopeSubIds.Count > 0 ? (IEnumerable<string>)_scopeSubIds : SubStore.AllIds;
+        var sel = State.SelectedSubscriptionIds;
+        return source
+            .Where(id => sel.Count == 0 || sel.Contains(id))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(GetSubName, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
 
     /// <summary>
     /// Counts distinct subscription IDs that appear in <paramref name="rows"/>.

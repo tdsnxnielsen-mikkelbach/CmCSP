@@ -5,6 +5,7 @@
 @inject SubscriptionStoreService SubStore
 @inject ITenantScopeProvider ScopeProvider
 @inject CustomerStore Customers
+@inject TenantNameService TenantName
 @inject ILogger<MainLayout> Logger
 @inject IJSRuntime JS
 @implements IDisposable
@@ -51,28 +52,61 @@
     <MudMainContent>
         <MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="py-4">
 
-            @* ── Partner customer picker (multi-tenancy, partner only) ─────── *@
-            @if (_showCustomerPicker)
+            @* ── Tenant → subscription picker (view filter, scope-safe) ───── *@
+            @if (_showPicker)
             {
-                <MudPaper Class="pa-3 mb-4 d-flex align-center flex-wrap gap-3" Elevation="1">
-                    <MudIcon Icon="@Icons.Material.Outlined.Groups" Color="Color.Primary" Class="flex-none" />
-                    <MudText Typo="Typo.subtitle2" Class="flex-none">Customer</MudText>
-                    <MudSelect T="long?"
-                               Value="State.SelectedCustomerId"
-                               ValueChanged="OnCustomerChanged"
-                               Variant="Variant.Outlined"
-                               Margin="Margin.Dense"
-                               Clearable="true"
-                               Placeholder="All customers"
-                               Style="min-width:260px">
-                        @foreach (var c in _customers)
+                <MudPaper Class="pa-3 mb-4" Elevation="1">
+                    <div class="d-flex align-center flex-wrap gap-2 mb-1">
+                        <MudIcon Icon="@Icons.Material.Outlined.AccountTree" Color="Color.Primary" Class="flex-none" />
+                        <MudText Typo="Typo.subtitle2" Class="flex-none">Subscriptions</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="flex-none">
+                            @_selectedDisplayCount of @_allSubIds.Count selected@(_groups.Count > 1 ? $" · {_groups.Count} tenants" : "")
+                        </MudText>
+                        <MudSpacer />
+                        <MudButton Size="Size.Small" Variant="Variant.Text"
+                                   OnClick="SelectAllSubs" Class="flex-none text-lowercase">all</MudButton>
+                        <MudButton Size="Size.Small" Variant="Variant.Text"
+                                   OnClick="ClearAllSubs" Class="flex-none text-lowercase">none</MudButton>
+                    </div>
+                    <MudExpansionPanels MultiExpansion="true" Elevation="0" Dense="true">
+                        @foreach (var g in _groups)
                         {
-                            <MudSelectItem T="long?" Value="@c.Id">@c.DisplayName</MudSelectItem>
+                            <MudExpansionPanel Expanded="@(_groups.Count == 1)">
+                                <TitleContent>
+                                    <div class="d-flex align-center gap-2">
+                                        <MudCheckBox T="bool?"
+                                                     TriState="true"
+                                                     Value="@TenantState(g)"
+                                                     ValueChanged="@((bool? v) => OnTenantToggled(g, v))"
+                                                     Color="Color.Primary"
+                                                     Dense="true"
+                                                     @onclick:stopPropagation="true" />
+                                        <MudIcon Icon="@Icons.Material.Outlined.Domain" Size="Size.Small" Color="Color.Secondary" />
+                                        <MudText Typo="Typo.body2" Class="fw-bold">@g.TenantName</MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            (@CheckedCount(g)/@g.Subs.Count)
+                                        </MudText>
+                                    </div>
+                                </TitleContent>
+                                <ChildContent>
+                                    @foreach (var s in g.Subs)
+                                    {
+                                        <div class="d-flex align-center gap-2" style="margin-left:2.25rem">
+                                            <MudCheckBox T="bool"
+                                                         Value="@IsSubChecked(s.Id)"
+                                                         ValueChanged="@((bool v) => OnSubToggled(s.Id, v))"
+                                                         Color="Color.Primary"
+                                                         Dense="true" />
+                                            <div>
+                                                <MudText Typo="Typo.body2">@s.Name</MudText>
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary">@s.Id</MudText>
+                                            </div>
+                                        </div>
+                                    }
+                                </ChildContent>
+                            </MudExpansionPanel>
                         }
-                    </MudSelect>
-                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="flex-none">
-                        @(State.SelectedCustomerId is null ? "Showing all customers" : "Drilled into one customer")
-                    </MudText>
+                    </MudExpansionPanels>
                 </MudPaper>
             }
 
@@ -100,44 +134,7 @@
                         Available: @_dataMin.Value.ToString("d MMM yyyy") – @_dataMax!.Value.ToString("d MMM yyyy")
                     </MudText>
                 }
-                <MudDivider Vertical="true" FlexItem="true" Class="d-none d-sm-flex mx-1" />
-                <MudButton Size="Size.Small"
-                           Variant="Variant.Text"
-                           StartIcon="@Icons.Material.Outlined.ManageAccounts"
-                           EndIcon="@(_showSubs ? Icons.Material.Filled.KeyboardArrowUp : Icons.Material.Filled.KeyboardArrowDown)"
-                           OnClick="ToggleSubsAsync"
-                           Class="flex-none text-lowercase">
-                    @SubStore.AllIds.Count subscription(s)
-                </MudButton>
             </MudPaper>
-
-            @if (_showSubs)
-            {
-                <MudPaper Class="pa-3 mb-4" Elevation="1">
-                    <MudText Typo="Typo.caption" Class="fw-bold d-block mb-2" Color="Color.Secondary">
-                        Configured Subscriptions (@SubStore.AllIds.Count)
-                    </MudText>
-                    @if (_subNamesLoading)
-                    {
-                        <MudProgressLinear Indeterminate Color="Color.Primary" />
-                    }
-                    else
-                    {
-                        <MudSimpleTable Dense="true" Elevation="0">
-                            <tbody>
-                                @foreach (var id in SubStore.AllIds)
-                                {
-                                    var displayName = _subNames.TryGetValue(id, out var n) ? n : id;
-                                    <tr>
-                                        <td><MudText Typo="Typo.body2">@displayName</MudText></td>
-                                        <td><MudText Typo="Typo.caption" Color="Color.Secondary">@id</MudText></td>
-                                    </tr>
-                                }
-                            </tbody>
-                        </MudSimpleTable>
-                    }
-                </MudPaper>
-            }
 
             <LoadingStatus />
             @Body
@@ -152,13 +149,15 @@
     private bool _prevDark;
     private MudThemeProvider _themeProvider = default!;
 
-    private bool _showSubs = false;
-    private bool _subNamesLoading = false;
-    private Dictionary<string, string> _subNames = [];
+    // Phase 9: tenant → subscription view-filter picker (replaces the old customer dropdown and
+    // the read-only subscription accordion). Selection drives DashboardStateService.
+    private bool _showPicker;
+    private readonly List<TenantGroup> _groups = [];
+    private readonly HashSet<string> _allSubIds = new(StringComparer.OrdinalIgnoreCase);
+    private int _selectedDisplayCount;
 
-    // Phase 9: partner customer picker (multi-tenancy, home tenant only).
-    private bool _showCustomerPicker;
-    private List<CmCSP.Data.CustomerEntity> _customers = [];
+    private sealed record SubItem(string Id, string Name);
+    private sealed record TenantGroup(long CustomerId, string TenantId, string TenantName, List<SubItem> Subs);
 
     private DateRange _dateRange = new(
         new DateTime(DateTime.Now.Year - 1, 1, 1),
@@ -170,39 +169,137 @@
     protected override void OnInitialized()
     {
         SubStore.OnChanged += HandleSubscriptionsChanged;
+        State.OnStateChanged += HandleStateChanged;
     }
 
     protected override async Task OnInitializedAsync()
     {
-        // Show the customer picker only for the partner (home tenant) when multi-tenancy is on.
-        if (Options.MultiTenancy.Enabled && Customers.IsEnabled)
-        {
-            var scope = await ScopeProvider.GetScopeAsync();
-            if (scope.IsPartner)
-            {
-                _customers = (await Customers.GetActiveCustomersAsync()).ToList();
-                _showCustomerPicker = _customers.Count > 0;
-            }
-        }
+        await BuildGroupsAsync();
     }
 
-    private void OnCustomerChanged(long? customerId)
+    private void HandleStateChanged() => InvokeAsync(() =>
     {
-        // Narrows (or clears) the partner's drill-in; fires OnStateChanged so all pages re-load.
-        State.SetSelectedCustomer(customerId);
-    }
+        RecomputeSelectedCount();
+        StateHasChanged();
+    });
 
     private void ToggleDrawer() => _drawerOpen = !_drawerOpen;
     private void ToggleTheme() => _isDark = !_isDark;
 
-    private async Task ToggleSubsAsync()
+    // ── Tenant → subscription picker ──────────────────────────────────────────
+
+    private async Task BuildGroupsAsync()
     {
-        _showSubs = !_showSubs;
-        if (_showSubs)
+        _groups.Clear();
+        _allSubIds.Clear();
+
+        Dictionary<string, string> names;
+        try { names = await CostService.GetSubscriptionDisplayNamesAsync(); }
+        catch { names = []; }
+
+        string NameOf(string id, string? stored) =>
+            !string.IsNullOrWhiteSpace(stored) ? stored!
+            : names.TryGetValue(id, out var n) ? n
+            : id;
+
+        if (Options.MultiTenancy.Enabled && Customers.IsEnabled)
         {
-            await RefreshSubNamesAsync(force: true);
+            var scope = await ScopeProvider.GetScopeAsync();
+            if (!scope.IsDenied)
+            {
+                var active = (await Customers.GetActiveCustomersAsync()).ToList();
+                if (!scope.IsUnscoped && !scope.IsPartner)
+                    active = active.Where(c => scope.CustomerIds.Contains(c.Id)).ToList();
+
+                var home = await Customers.GetHomeCustomerAsync();
+                foreach (var c in active.OrderBy(c => c.Id))
+                {
+                    var subs = (await Customers.GetSubscriptionsAsync(c.Id))
+                        .Select(s => new SubItem(s.SubscriptionId, NameOf(s.SubscriptionId, s.SubscriptionName)))
+                        .ToList();
+
+                    // The home customer's subscriptions live in the home registry, not the
+                    // per-customer mapping table — fall back to it so they still appear.
+                    if (subs.Count == 0 && home is not null && c.Id == home.Id)
+                        subs = SubStore.AllIds.Select(id => new SubItem(id, NameOf(id, null))).ToList();
+
+                    if (subs.Count == 0) continue;
+
+                    var tenantName = await TenantName.GetDisplayNameAsync(c.TenantId);
+                    if (string.IsNullOrWhiteSpace(tenantName)) tenantName = c.DisplayName;
+                    _groups.Add(new TenantGroup(c.Id, c.TenantId, tenantName, subs));
+                }
+            }
         }
+
+        // Single-tenant (or no customer registry): one synthetic group of all configured subs.
+        if (_groups.Count == 0 && SubStore.AllIds.Count > 0)
+        {
+            _groups.Add(new TenantGroup(0, string.Empty, "All subscriptions",
+                SubStore.AllIds.Select(id => new SubItem(id, NameOf(id, null))).ToList()));
+        }
+
+        foreach (var id in _groups.SelectMany(g => g.Subs).Select(s => s.Id))
+            _allSubIds.Add(id);
+
+        _showPicker = _allSubIds.Count > 0;
+        RecomputeSelectedCount();
     }
+
+    private void RecomputeSelectedCount() =>
+        _selectedDisplayCount = State.SelectedSubscriptionIds.Count == 0
+            ? _allSubIds.Count
+            : _allSubIds.Count(State.SelectedSubscriptionIds.Contains);
+
+    private bool IsSubChecked(string id) => State.IsSubscriptionVisible(id);
+
+    private int CheckedCount(TenantGroup g) => g.Subs.Count(s => IsSubChecked(s.Id));
+
+    private bool? TenantState(TenantGroup g)
+    {
+        var n = CheckedCount(g);
+        if (n == 0) return false;
+        if (n == g.Subs.Count) return true;
+        return null; // indeterminate
+    }
+
+    // The "all selected" default is stored as an empty set so newly-added subs stay visible.
+    // Translate that to the full universe when the user starts deselecting individual entries.
+    private HashSet<string> EffectiveSelected() =>
+        State.SelectedSubscriptionIds.Count == 0
+            ? new HashSet<string>(_allSubIds, StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(State.SelectedSubscriptionIds, StringComparer.OrdinalIgnoreCase);
+
+    private void Commit(HashSet<string> sel)
+    {
+        // Normalise "everything selected" back to the empty-set sentinel.
+        if (sel.Count >= _allSubIds.Count && _allSubIds.All(sel.Contains))
+            State.SetSelectedSubscriptions([]);
+        else
+            State.SetSelectedSubscriptions(sel);
+        RecomputeSelectedCount();
+    }
+
+    private void OnSubToggled(string id, bool value)
+    {
+        var sel = EffectiveSelected();
+        if (value) sel.Add(id); else sel.Remove(id);
+        Commit(sel);
+    }
+
+    private void OnTenantToggled(TenantGroup g, bool? value)
+    {
+        var select = value != false; // null (indeterminate click) or true → select all in tenant
+        var sel = EffectiveSelected();
+        foreach (var s in g.Subs)
+        {
+            if (select) sel.Add(s.Id); else sel.Remove(s.Id);
+        }
+        Commit(sel);
+    }
+
+    private void SelectAllSubs() => Commit(new HashSet<string>(_allSubIds, StringComparer.OrdinalIgnoreCase));
+    private void ClearAllSubs() => Commit(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
     private void HandleSubscriptionsChanged(string correlationId)
     {
@@ -212,33 +309,10 @@
                 "MainLayout[{CorrelationId}]: subscriptions changed (active count {Count}). Invalidating cost cache and broadcasting state refresh.",
                 correlationId, SubStore.AllIds.Count);
             CostService.InvalidateCache();
+            await BuildGroupsAsync();
             State.SetDateRange(State.SelectedRange);
-            if (_showSubs)
-                await RefreshSubNamesAsync(force: true);
             StateHasChanged();
         });
-    }
-
-    private async Task RefreshSubNamesAsync(bool force = false)
-    {
-        var activeIds = SubStore.AllIds;
-        if (!force && _subNames.Count > 0 && activeIds.All(id => _subNames.ContainsKey(id)))
-            return;
-
-        _subNamesLoading = true;
-        StateHasChanged();
-        try
-        {
-            _subNames = await CostService.GetSubscriptionDisplayNamesAsync();
-        }
-        catch
-        {
-            // Best-effort; falls back to showing raw IDs from Options
-        }
-        finally
-        {
-            _subNamesLoading = false;
-        }
     }
 
     private void OnDateRangeChanged(DateRange range)
@@ -349,5 +423,6 @@
     public void Dispose()
     {
         SubStore.OnChanged -= HandleSubscriptionsChanged;
+        State.OnStateChanged -= HandleStateChanged;
     }
 }
