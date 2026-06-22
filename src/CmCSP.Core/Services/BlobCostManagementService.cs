@@ -93,6 +93,8 @@ public sealed class BlobCostManagementService : ICostManagementService
     private readonly ILogger<BlobCostManagementService>  _logger;
     private readonly CostManagementService?              _apiService;
     private readonly IDbContextFactory<CmcspDbContext>?  _dbFactory;
+    private readonly TenantScopeAccessor?                _scopeAccessor;
+    private readonly CustomerStore?                      _customers;
 
     public BlobCostManagementService(
         ICacheService             cache,
@@ -100,7 +102,9 @@ public sealed class BlobCostManagementService : ICostManagementService
         DataLoadingStateService              loadingState,
         ILogger<BlobCostManagementService>   logger,
         CostManagementService?               apiService = null,
-        IDbContextFactory<CmcspDbContext>?   dbFactory  = null)
+        IDbContextFactory<CmcspDbContext>?   dbFactory  = null,
+        TenantScopeAccessor?                 scopeAccessor = null,
+        CustomerStore?                       customers  = null)
     {
         _cache        = cache;
         _options      = options;
@@ -108,7 +112,17 @@ public sealed class BlobCostManagementService : ICostManagementService
         _logger       = logger;
         _apiService   = apiService;
         _dbFactory    = dbFactory;
+        _scopeAccessor = scopeAccessor;
+        _customers    = customers;
     }
+
+    // The current request's tenant scope (Unscoped in the single-tenant path or background work).
+    private TenantScope Scope => _scopeAccessor?.Current ?? TenantScope.Unscoped;
+
+    // Tenant-namespaced cache key so customers never share cached payloads (empty prefix in the
+    // single-tenant path → keys are exactly as before).
+    private string Scoped(string baseKey) => Scope.CacheKeyPrefix + baseKey;
+
 
     // ── Public interface ───────────────────────────────────────────────────────
 
@@ -161,18 +175,19 @@ public sealed class BlobCostManagementService : ICostManagementService
 
     public void InvalidateCache()
     {
-        _cache.Remove(KeyMain);
-        _cache.Remove(KeyRg);
-        _cache.Remove(KeyTag);
-        _cache.Remove("cm_main_amort");
-        _cache.Remove("cm_budgets");
-        _cache.Remove("cm_budgets_subs");
-        _cache.Remove("cm_advisor");
-        _cache.Remove("cm_advisor_scores");
-        _cache.Remove("cm_sub_names");
-        _cache.Remove("cm_forecast");
-        _cache.Remove("cm_forecast_amort");
-        _cache.Remove("cm_publisher");
+        // Remove the current scope's payloads (empty prefix in the single-tenant path).
+        _cache.Remove(Scoped(KeyMain));
+        _cache.Remove(Scoped(KeyRg));
+        _cache.Remove(Scoped(KeyTag));
+        _cache.Remove(Scoped("cm_main_amort"));
+        _cache.Remove(Scoped("cm_budgets"));
+        _cache.Remove(Scoped("cm_budgets_subs"));
+        _cache.Remove(Scoped("cm_advisor"));
+        _cache.Remove(Scoped("cm_advisor_scores"));
+        _cache.Remove(Scoped("cm_sub_names"));
+        _cache.Remove(Scoped("cm_forecast"));
+        _cache.Remove(Scoped("cm_forecast_amort"));
+        _cache.Remove(Scoped("cm_publisher"));
         _loadingState.Update(KeyMain, LoadPhase.Idle);
         _loadingState.Update(KeyRg,   LoadPhase.Idle);
         _loadingState.Update(KeyTag,  LoadPhase.Idle);
@@ -253,10 +268,13 @@ public sealed class BlobCostManagementService : ICostManagementService
 
     private async Task<List<CostRow>> GetOrPopulateAsync(string key, CancellationToken ct)
     {
+        // Cache payloads are tenant-namespaced; the loading-state key stays unprefixed so the
+        // per-dataset UI banner works the same regardless of scope.
+        var cacheKey = Scoped(key);
         var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-        if (_cache.TryGetValue<List<CostRow>>(key, ttl, out var hit) && hit is not null)
+        if (_cache.TryGetValue<List<CostRow>>(cacheKey, ttl, out var hit) && hit is not null)
         {
-            _logger.LogDebug("Cache hit for {Key}.", key);
+            _logger.LogDebug("Cache hit for {Key}.", cacheKey);
             if (_loadingState.For(key)?.Phase != LoadPhase.Ready)
                 _loadingState.Update(key, LoadPhase.Ready, $"{hit.Count:N0} rows (cached)");
             return hit;
@@ -267,12 +285,12 @@ public sealed class BlobCostManagementService : ICostManagementService
         try
         {
             // Re-check inside the lock — another thread may have just populated it.
-            if (_cache.TryGetValue<List<CostRow>>(key, ttl, out hit) && hit is not null)
+            if (_cache.TryGetValue<List<CostRow>>(cacheKey, ttl, out hit) && hit is not null)
                 return hit;
 
             await PopulateAllCachesAsync(ct);
 
-            return _cache.TryGetValue<List<CostRow>>(key, ttl, out List<CostRow>? result) && result is not null
+            return _cache.TryGetValue<List<CostRow>>(cacheKey, ttl, out List<CostRow>? result) && result is not null
                 ? result
                 : [];
         }
@@ -461,9 +479,9 @@ public sealed class BlobCostManagementService : ICostManagementService
     private void SetCaches(List<CostRow> mainList, List<CostRow> rgList, List<CostRow> tagList, bool anyError)
     {
         var expiry = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-        _cache.Set(KeyMain, mainList, expiry);
-        _cache.Set(KeyRg,   rgList,   expiry);
-        _cache.Set(KeyTag,  tagList,  expiry);
+        _cache.Set(Scoped(KeyMain), mainList, expiry);
+        _cache.Set(Scoped(KeyRg),   rgList,   expiry);
+        _cache.Set(Scoped(KeyTag),  tagList,  expiry);
 
         var phase = anyError && mainList.Count == 0 ? LoadPhase.Failed : LoadPhase.Ready;
         _loadingState.Update(KeyMain, phase, anyError && mainList.Count == 0 ? "fetch failed" : $"{mainList.Count:N0} rows");
@@ -479,21 +497,37 @@ public sealed class BlobCostManagementService : ICostManagementService
     private async Task<(List<CostRow> Main, List<CostRow> Rg, List<CostRow> Tag)> LoadFromSqlAsync(CancellationToken ct)
     {
         var cutoff = DateOnly.FromDateTime(RowCutoff);
+        var scope  = Scope;
         await using var db = await _dbFactory!.CreateDbContextAsync(ct);
 
-        var facts = await db.CostFacts
+        // Tenant isolation (Phase 9): in the single-tenant path the query is unfiltered (identical
+        // to before). When scoped, every row must belong to a customer in the resolved scope — a
+        // customer can never read another tenant's facts, and a denied scope reads nothing.
+        var query = db.CostFacts
             .AsNoTracking()
             .Where(f => f.UsageDate >= cutoff &&
-                        (f.Dataset == DatasetMain || f.Dataset == DatasetRg || f.Dataset == DatasetTag))
-            .ToListAsync(ct);
+                        (f.Dataset == DatasetMain || f.Dataset == DatasetRg || f.Dataset == DatasetTag));
+
+        if (!scope.IsUnscoped)
+        {
+            if (scope.CustomerIds.Count == 0)
+            {
+                _logger.LogWarning("Tenant scope resolved to no customers ({Tenant}); returning no rows.", scope.TenantId);
+                return ([], [], []);
+            }
+            var ids = scope.CustomerIds;
+            query = query.Where(f => ids.Contains(f.CustomerId));
+        }
+
+        var facts = await query.ToListAsync(ct);
 
         var main = facts.Where(f => f.Dataset == DatasetMain).Select(Map).ToList();
         var rg   = facts.Where(f => f.Dataset == DatasetRg).Select(Map).ToList();
         var tag  = facts.Where(f => f.Dataset == DatasetTag).Select(Map).ToList();
 
         _logger.LogInformation(
-            "Loaded {Main}/{Rg}/{Tag} CostFact row(s) from SQL (since {Cutoff:yyyy-MM-dd}).",
-            main.Count, rg.Count, tag.Count, cutoff);
+            "Loaded {Main}/{Rg}/{Tag} CostFact row(s) from SQL (since {Cutoff:yyyy-MM-dd}, scope={Scope}).",
+            main.Count, rg.Count, tag.Count, cutoff, scope.IsUnscoped ? "unscoped" : scope.CacheKeyPrefix);
 
         return (main, rg, tag);
     }
@@ -502,10 +536,16 @@ public sealed class BlobCostManagementService : ICostManagementService
     private async Task UpsertFactsAsync(
         List<CostRow> main, List<CostRow> rg, List<CostRow> tag, CancellationToken ct)
     {
+        // Phase 9: stamp the owning customer. A collection run writes for one customer — the
+        // scope's single customer when scoped, otherwise the bootstrap "home" customer. In the
+        // single-tenant path with no seeded customer this resolves to (0, "") — the schema
+        // defaults — so behaviour is unchanged.
+        var (ownerId, ownerTenant) = await ResolveWriteOwnerAsync(ct);
+
         var incoming = new Dictionary<string, CostFact>(StringComparer.OrdinalIgnoreCase);
-        foreach (var r in main) { var f = ToFact(DatasetMain, r); incoming[NaturalKey(f)] = f; }
-        foreach (var r in rg)   { var f = ToFact(DatasetRg,   r); incoming[NaturalKey(f)] = f; }
-        foreach (var r in tag)  { var f = ToFact(DatasetTag,  r); incoming[NaturalKey(f)] = f; }
+        foreach (var r in main) { var f = ToFact(DatasetMain, r, ownerId, ownerTenant); incoming[NaturalKey(f)] = f; }
+        foreach (var r in rg)   { var f = ToFact(DatasetRg,   r, ownerId, ownerTenant); incoming[NaturalKey(f)] = f; }
+        foreach (var r in tag)  { var f = ToFact(DatasetTag,  r, ownerId, ownerTenant); incoming[NaturalKey(f)] = f; }
 
         if (incoming.Count == 0) return;
 
@@ -525,6 +565,8 @@ public sealed class BlobCostManagementService : ICostManagementService
                 cur.Cost             = inc.Cost;
                 cur.NormalizedCost   = inc.NormalizedCost;
                 cur.SubscriptionName = inc.SubscriptionName;
+                cur.CustomerId       = inc.CustomerId;
+                cur.TenantId         = inc.TenantId;
                 updated++;
             }
             else
@@ -541,10 +583,30 @@ public sealed class BlobCostManagementService : ICostManagementService
             "CostFact upsert complete — {Inserted} inserted, {Updated} updated.", inserted, updated);
     }
 
+    /// <summary>
+    /// Resolves the customer a collection run writes for: the scope's single customer when scoped,
+    /// otherwise the bootstrap "home" customer. Returns <c>(0, "")</c> — the schema defaults — when
+    /// no customer registry is available (legacy single-tenant deployments).
+    /// </summary>
+    private async Task<(long CustomerId, string TenantId)> ResolveWriteOwnerAsync(CancellationToken ct)
+    {
+        var scope = Scope;
+        if (!scope.IsUnscoped && scope.CustomerIds.Count == 1)
+            return (scope.CustomerIds[0], scope.TenantId);
+
+        if (_customers is { IsEnabled: true })
+        {
+            var home = await _customers.GetHomeCustomerAsync(ct);
+            if (home is not null) return (home.Id, home.TenantId);
+        }
+
+        return (0L, string.Empty);
+    }
+
     private static string NaturalKey(CostFact f) =>
         $"{f.Dataset}|{f.UsageDate:yyyyMMdd}|{f.SubscriptionId}|{f.ServiceName}|{f.ResourceGroupName}|{f.Tag}|{f.Currency}";
 
-    private static CostFact ToFact(string dataset, CostRow r) => new()
+    private static CostFact ToFact(string dataset, CostRow r, long customerId, string tenantId) => new()
     {
         Dataset           = dataset,
         UsageDate         = DateOnly.FromDateTime(r.Date),
@@ -555,7 +617,9 @@ public sealed class BlobCostManagementService : ICostManagementService
         Tag               = dataset == DatasetTag  ? r.Tag : string.Empty,
         Cost              = r.Cost,
         Currency          = r.Currency,
-        NormalizedCost    = r.NormalizedCost
+        NormalizedCost    = r.NormalizedCost,
+        CustomerId        = customerId,
+        TenantId          = tenantId
     };
 
     private static CostRow Map(CostFact f) => new()

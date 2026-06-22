@@ -87,6 +87,25 @@ param sqlServerName string = ''
 @description('Azure Managed Redis cluster name. Leave empty to derive a globally-unique name.')
 param redisName string = ''
 
+@description('''Phase 9: number of parallel collector executions a single "Collect now" fans out to.
+Scale lever for larger CSP estates — each execution handles a disjoint COLLECT_PARTITION_INDEX slice
+of the customer/subscription set, so collection across many customers stays within the per-execution
+timeout. 1 = single execution (the collector still fans out over customers internally).''')
+@minValue(1)
+@maxValue(20)
+param collectorPartitionCount int = 1
+
+@description('''Phase 9 (CSP multi-tenancy) master switch. false (default) = single-tenant: sign-in is
+limited to the home tenant and every read is scoped to the bootstrap home customer. true = partners
+see all registered customers, per-tenant cache/SQL scoping and GDAP token acquisition apply. Requires
+the SQL data platform (deployDataPlatform = true).''')
+param multiTenancyEnabled bool = false
+
+@description('''Phase 9: the CSP's own (home) Entra tenant GUID. A user whose token tid claim matches
+this is the partner (sees all customers); any other tid must match a registered active customer.
+Leave empty to default to the configured AzureCostManagement:TenantId.''')
+param homeTenantId string = ''
+
 @description('Tags applied to every resource.')
 param tags object = {
   project: 'cmcsp'
@@ -127,6 +146,9 @@ module app './modules/app.bicep' = {
     location: location
     tags: allTags
     azdServiceName: 'web'
+    collectorPartitionCount: collectorPartitionCount
+    multiTenancyEnabled: multiTenancyEnabled
+    homeTenantId: homeTenantId
   }
 }
 

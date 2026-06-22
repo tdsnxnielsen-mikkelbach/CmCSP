@@ -20,6 +20,8 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     [Inject] protected DashboardStateService  State       { get; set; } = default!;
     [Inject] protected CostManagementOptions  Options     { get; set; } = default!;
     [Inject] protected SubscriptionStoreService SubStore  { get; set; } = default!;
+    [Inject] protected ITenantScopeProvider   ScopeProvider { get; set; } = default!;
+    [Inject] protected TenantScopeAccessor    ScopeAccessor { get; set; } = default!;
 
     protected bool    _loading = true;
     protected string? _error;
@@ -32,12 +34,43 @@ public abstract class CostPageBase : ComponentBase, IDisposable
         State.OnStateChanged += RefreshData;
 
     protected override async Task OnInitializedAsync() =>
-        await LoadAsync();
+        await LoadWithScopeAsync();
 
     private async void RefreshData()
     {
-        await LoadAsync();
+        await LoadWithScopeAsync();
         await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>
+    /// Phase 9: resolves the signed-in user's tenant scope and publishes it onto the ambient
+    /// <see cref="TenantScopeAccessor"/> (in this page's async context, so it flows down to the
+    /// singleton cost service's cache-key and SQL scoping) before invoking <see cref="LoadAsync"/>.
+    /// A denied scope (unknown/suspended tenant) short-circuits with an access error and loads no
+    /// data. In the single-tenant path the scope is <c>Unscoped</c> and this is a no-op pass-through.
+    /// </summary>
+    private async Task LoadWithScopeAsync()
+    {
+        var scope = await ScopeProvider.GetScopeAsync();
+
+        // Partner drill-in: when a partner has selected a single customer in the picker, narrow
+        // the resolved (all-customers) scope to just that customer so reads + cache key partition
+        // to it. The selection is ignored unless it's within the partner's authorised set.
+        if (scope.IsPartner && State.SelectedCustomerId is { } picked && scope.CustomerIds.Contains(picked))
+        {
+            scope = scope with { IsPartner = false, CustomerIds = [picked] };
+        }
+
+        ScopeAccessor.Current = scope;
+
+        if (scope.IsDenied)
+        {
+            _loading = false;
+            _error = "Your account's tenant is not authorized to view this dashboard.";
+            return;
+        }
+
+        await LoadAsync();
     }
 
     // ── Template method ───────────────────────────────────────────────────────

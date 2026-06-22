@@ -15,11 +15,26 @@ public sealed class DashboardStateService
         new DateTime(DateTime.Now.Year - 1, 1, 1),
         DateTime.Now);
 
+    /// <summary>
+    /// Phase 9: the customer a partner has drilled into, or <c>null</c> for the "all customers"
+    /// aggregate. Only meaningful for the partner (home tenant) when multi-tenancy is enabled;
+    /// ignored otherwise. <see cref="CostPageBase"/> narrows the resolved scope to this customer.
+    /// </summary>
+    public long? SelectedCustomerId { get; private set; }
+
     public event Action? OnStateChanged;
 
     public void SetDateRange(DateRange range)
     {
         SelectedRange = range;
+        OnStateChanged?.Invoke();
+    }
+
+    /// <summary>Partner-only: drill into a single customer (<c>null</c> = all customers).</summary>
+    public void SetSelectedCustomer(long? customerId)
+    {
+        if (SelectedCustomerId == customerId) return;
+        SelectedCustomerId = customerId;
         OnStateChanged?.Invoke();
     }
 }

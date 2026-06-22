@@ -204,4 +204,36 @@ public class CostManagementOptions
         /// <summary>Human-readable display name shown in the dashboard.</summary>
         public string DisplayName { get; set; } = string.Empty;
     }
+
+    // ── Phase 9: CSP multi-tenancy (GDAP + multi-tenant Entra app) ─────────────
+
+    /// <summary>
+    /// CSP multi-tenancy configuration (Phase 9). When <see cref="MultiTenancyOptions.Enabled"/>
+    /// is false (the default) the app behaves exactly as the single-tenant deployment: every
+    /// read is scoped to the bootstrap "home" customer and sign-in is limited to the home tenant.
+    /// </summary>
+    public MultiTenancyOptions MultiTenancy { get; set; } = new();
+
+    public sealed class MultiTenancyOptions
+    {
+        /// <summary>
+        /// Master switch for CSP multi-tenancy. Off = single-tenant (home tenant only); the
+        /// data model and per-customer scoping still apply, bound to the bootstrap home customer.
+        /// </summary>
+        public bool Enabled { get; set; } = false;
+
+        /// <summary>
+        /// The CSP's own (home) Entra tenant GUID. A user whose token <c>tid</c> claim matches
+        /// this value is the partner and sees all customers; any other <c>tid</c> must match a
+        /// registered, active <c>Customer.TenantId</c> or sign-in is rejected. Defaults to the
+        /// configured <see cref="CostManagementOptions.TenantId"/> when left empty.
+        /// </summary>
+        public string HomeTenantId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Display name for the bootstrap "home" customer that existing single-tenant data is
+        /// mapped to during migration, so no <c>CostFact</c> rows are orphaned.
+        /// </summary>
+        public string HomeCustomerName { get; set; } = "Home tenant";
+    }
 }

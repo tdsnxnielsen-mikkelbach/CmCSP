@@ -1,5 +1,7 @@
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Azure.Core;
 using Azure.Identity;
 
@@ -36,6 +38,7 @@ public sealed class JobControlService
     private readonly string? _subscriptionId;
     private readonly string? _resourceGroup;
     private readonly string? _jobName;
+    private readonly int     _partitionCount;
 
     public JobControlService(
         IConfiguration configuration,
@@ -47,6 +50,9 @@ public sealed class JobControlService
         _subscriptionId = configuration["CollectorJob:SubscriptionId"];
         _resourceGroup = configuration["CollectorJob:ResourceGroup"];
         _jobName = configuration["CollectorJob:JobName"];
+        _partitionCount = int.TryParse(configuration["CollectorJob:PartitionCount"], out var pc)
+            ? Math.Clamp(pc, 1, 20)
+            : 1;
     }
 
     /// <summary><c>true</c> when the collect-job coordinates are configured.</summary>
@@ -54,6 +60,14 @@ public sealed class JobControlService
         !string.IsNullOrWhiteSpace(_subscriptionId) &&
         !string.IsNullOrWhiteSpace(_resourceGroup) &&
         !string.IsNullOrWhiteSpace(_jobName);
+
+    /// <summary>
+    /// The number of parallel collector executions a single "Collect now" fans out to
+    /// (<c>CollectorJob:PartitionCount</c>, default 1). Each execution handles a disjoint slice via
+    /// <c>COLLECT_PARTITION_INDEX</c>/<c>COLLECT_PARTITION_COUNT</c> — used to scale collection
+    /// across many customers/subscriptions for larger CSP estates.
+    /// </summary>
+    public int DefaultPartitionCount => _partitionCount;
 
     private string JobUri =>
         $"{ArmBase}/subscriptions/{_subscriptionId}/resourceGroups/{_resourceGroup}" +
@@ -113,6 +127,126 @@ public sealed class JobControlService
         }
 
         return await GetLatestAsync(ct) ?? new JobRunStatus { Status = "Running", IsInProgress = true };
+    }
+
+    /// <summary>
+    /// Starts <paramref name="partitions"/> parallel collector executions, each handling a disjoint
+    /// slice of the work via <c>COLLECT_PARTITION_INDEX</c>/<c>COLLECT_PARTITION_COUNT</c>. Used to
+    /// scale collection across many customers/subscriptions for larger CSP estates. With
+    /// <paramref name="partitions"/> &lt;= 1 this is equivalent to <see cref="StartOrCoalesceAsync"/>
+    /// (coalescing onto any in-flight run).
+    /// </summary>
+    public async Task<JobRunStatus> StartScaledAsync(int partitions, CancellationToken ct = default)
+    {
+        if (!IsConfigured)
+            return JobRunStatus.NotConfigured;
+
+        partitions = Math.Clamp(partitions, 1, 20);
+        if (partitions == 1)
+            return await StartOrCoalesceAsync(ct);
+
+        // Read the job's container template once so each partition override preserves the image,
+        // resources and existing env (including secretRefs) and only adds the partition vars.
+        var container = await GetContainerTemplateAsync(ct);
+        if (container is null)
+        {
+            _logger.LogWarning("JobControl: could not read the job template for a scaled start — falling back to one execution.");
+            return await StartOrCoalesceAsync(ct);
+        }
+
+        var client = _httpFactory.CreateClient("AzureMgmt");
+        await AuthorizeAsync(client, ct);
+
+        string? firstExecution = null;
+        var started = 0;
+        for (var i = 0; i < partitions; i++)
+        {
+            var body = BuildStartOverride(container, i, partitions);
+            using var content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+            using var resp = await client.PostAsync($"{JobUri}/start?api-version={ApiVersion}", content, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var errBody = await resp.Content.ReadAsStringAsync(ct);
+                _logger.LogError("JobControl: scaled start partition {Index}/{Count} failed ({Status}): {Body}",
+                    i, partitions, (int)resp.StatusCode, errBody);
+                continue;
+            }
+
+            started++;
+            try
+            {
+                var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+                if (firstExecution is null && doc.RootElement.TryGetProperty("name", out var nameEl))
+                    firstExecution = nameEl.GetString();
+            }
+            catch (JsonException) { /* 202 with no body — execution name surfaces via the list */ }
+        }
+
+        _logger.LogInformation("JobControl: scaled start launched {Started}/{Requested} partition execution(s).",
+            started, partitions);
+
+        return new JobRunStatus
+        {
+            ExecutionName = firstExecution,
+            Status        = started == 0 ? "StartFailed" : "Running",
+            IsInProgress  = started > 0,
+            StartTimeUtc  = DateTimeOffset.UtcNow
+        };
+    }
+
+    // Reads the collect job's first container template (image/resources/env) as a mutable JSON
+    // object, so a scaled start can override only the partition env without losing other settings.
+    private async Task<JsonObject?> GetContainerTemplateAsync(CancellationToken ct)
+    {
+        var client = _httpFactory.CreateClient("AzureMgmt");
+        await AuthorizeAsync(client, ct);
+
+        using var resp = await client.GetAsync($"{JobUri}?api-version={ApiVersion}", ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning("JobControl: failed to read job template ({Status}): {Body}", (int)resp.StatusCode, body);
+            return null;
+        }
+
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        var container = JsonNode.Parse(json)?["properties"]?["template"]?["containers"]?.AsArray()?.FirstOrDefault()?.AsObject();
+        // Deep-clone so the returned node has no parent and can be reused per partition.
+        return container is null ? null : JsonNode.Parse(container.ToJsonString())!.AsObject();
+    }
+
+    // Builds the jobs/start body (a JobExecutionTemplate) for one partition: the container template
+    // with COLLECT_PARTITION_INDEX/COUNT + COLLECT_TRIGGER=manual upserted into its env.
+    private static JsonObject BuildStartOverride(JsonObject containerTemplate, int index, int count)
+    {
+        var container = JsonNode.Parse(containerTemplate.ToJsonString())!.AsObject();
+
+        var env = container["env"]?.AsArray();
+        if (env is null)
+        {
+            env = new JsonArray();
+            container["env"] = env;
+        }
+
+        void Upsert(string name, string value)
+        {
+            foreach (var item in env)
+            {
+                if (item is JsonObject o && (string?)o["name"] == name)
+                {
+                    o["value"] = value;
+                    o.Remove("secretRef");
+                    return;
+                }
+            }
+            env.Add(new JsonObject { ["name"] = name, ["value"] = value });
+        }
+
+        Upsert("COLLECT_PARTITION_COUNT", count.ToString());
+        Upsert("COLLECT_PARTITION_INDEX", index.ToString());
+        Upsert("COLLECT_TRIGGER", "manual");
+
+        return new JsonObject { ["containers"] = new JsonArray { container } };
     }
 
     /// <summary>Returns the most recent execution's status, or null if there are none.</summary>

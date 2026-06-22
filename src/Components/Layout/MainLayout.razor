@@ -3,6 +3,8 @@
 @inject DashboardStateService State
 @inject CostManagementOptions Options
 @inject SubscriptionStoreService SubStore
+@inject ITenantScopeProvider ScopeProvider
+@inject CustomerStore Customers
 @inject ILogger<MainLayout> Logger
 @inject IJSRuntime JS
 @implements IDisposable
@@ -48,6 +50,31 @@
 
     <MudMainContent>
         <MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="py-4">
+
+            @* ── Partner customer picker (multi-tenancy, partner only) ─────── *@
+            @if (_showCustomerPicker)
+            {
+                <MudPaper Class="pa-3 mb-4 d-flex align-center flex-wrap gap-3" Elevation="1">
+                    <MudIcon Icon="@Icons.Material.Outlined.Groups" Color="Color.Primary" Class="flex-none" />
+                    <MudText Typo="Typo.subtitle2" Class="flex-none">Customer</MudText>
+                    <MudSelect T="long?"
+                               Value="State.SelectedCustomerId"
+                               ValueChanged="OnCustomerChanged"
+                               Variant="Variant.Outlined"
+                               Margin="Margin.Dense"
+                               Clearable="true"
+                               Placeholder="All customers"
+                               Style="min-width:260px">
+                        @foreach (var c in _customers)
+                        {
+                            <MudSelectItem T="long?" Value="@c.Id">@c.DisplayName</MudSelectItem>
+                        }
+                    </MudSelect>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="flex-none">
+                        @(State.SelectedCustomerId is null ? "Showing all customers" : "Drilled into one customer")
+                    </MudText>
+                </MudPaper>
+            }
 
             @* ── Global date-range filter ─────────────────────────────────── *@
             <MudPaper Class="pa-3 mb-4 d-flex align-center flex-wrap gap-3" Elevation="1">
@@ -129,6 +156,10 @@
     private bool _subNamesLoading = false;
     private Dictionary<string, string> _subNames = [];
 
+    // Phase 9: partner customer picker (multi-tenancy, home tenant only).
+    private bool _showCustomerPicker;
+    private List<CmCSP.Data.CustomerEntity> _customers = [];
+
     private DateRange _dateRange = new(
         new DateTime(DateTime.Now.Year - 1, 1, 1),
         DateTime.Now);
@@ -139,6 +170,26 @@
     protected override void OnInitialized()
     {
         SubStore.OnChanged += HandleSubscriptionsChanged;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Show the customer picker only for the partner (home tenant) when multi-tenancy is on.
+        if (Options.MultiTenancy.Enabled && Customers.IsEnabled)
+        {
+            var scope = await ScopeProvider.GetScopeAsync();
+            if (scope.IsPartner)
+            {
+                _customers = (await Customers.GetActiveCustomersAsync()).ToList();
+                _showCustomerPicker = _customers.Count > 0;
+            }
+        }
+    }
+
+    private void OnCustomerChanged(long? customerId)
+    {
+        // Narrows (or clears) the partner's drill-in; fires OnStateChanged so all pages re-load.
+        State.SetSelectedCustomer(customerId);
     }
 
     private void ToggleDrawer() => _drawerOpen = !_drawerOpen;

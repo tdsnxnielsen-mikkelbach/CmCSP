@@ -43,6 +43,15 @@
     },
     "redisName": {
       "value": "${REDIS_NAME=}"
+    },
+    "collectorPartitionCount": {
+      "value": "${COLLECTOR_PARTITION_COUNT=1}"
+    },
+    "multiTenancyEnabled": {
+      "value": "${MULTI_TENANCY_ENABLED=false}"
+    },
+    "homeTenantId": {
+      "value": "${HOME_TENANT_ID=}"
     }
   }
 }

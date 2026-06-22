@@ -76,6 +76,7 @@ public sealed class CostManagementService : ICostManagementService
     private readonly CostManagementOptions          _options;
     private readonly DataLoadingStateService        _loadingState;
     private readonly ILogger<CostManagementService> _logger;
+    private readonly TenantScopeAccessor?           _scopeAccessor;
 
     public CostManagementService(
         IHttpClientFactory           httpFactory,
@@ -83,7 +84,8 @@ public sealed class CostManagementService : ICostManagementService
         AzureTokenService             tokenService,
         CostManagementOptions         options,
         DataLoadingStateService        loadingState,
-        ILogger<CostManagementService> logger)
+        ILogger<CostManagementService> logger,
+        TenantScopeAccessor?           scopeAccessor = null)
     {
         _httpFactory  = httpFactory;
         _cache        = cache;
@@ -91,7 +93,15 @@ public sealed class CostManagementService : ICostManagementService
         _options      = options;
         _loadingState = loadingState;
         _logger       = logger;
+        _scopeAccessor = scopeAccessor;
     }
+
+    // The current request's tenant scope (Unscoped in the single-tenant path or background work).
+    private TenantScope Scope => _scopeAccessor?.Current ?? TenantScope.Unscoped;
+
+    // Tenant-namespaced cache key so customers never share cached payloads (empty prefix in the
+    // single-tenant path → keys are exactly as before). Mirrors BlobCostManagementService.Scoped.
+    private string Scoped(string baseKey) => Scope.CacheKeyPrefix + baseKey;
 
     // ── date range for queries: rolling 365 days → today ───────────────────
     // Daily granularity is hard-capped at 365 days by the API (returns 400 otherwise).
@@ -124,18 +134,18 @@ public sealed class CostManagementService : ICostManagementService
 
     public void InvalidateCache()
     {
-        _cache.Remove(KeyMain);
-        _cache.Remove(KeyMainAmort);
-        _cache.Remove(KeyRg);
-        _cache.Remove(KeyTag);
-        _cache.Remove(KeyBudgets);
-        _cache.Remove(KeyBudgetsSubs);
-        _cache.Remove(KeyAdvisor);
-        _cache.Remove(KeyAdvisorScores);
-        _cache.Remove(KeySubNames);
-        _cache.Remove(KeyForecast);
-        _cache.Remove(KeyForecastAmort);
-        _cache.Remove(KeyPublisher);
+        _cache.Remove(Scoped(KeyMain));
+        _cache.Remove(Scoped(KeyMainAmort));
+        _cache.Remove(Scoped(KeyRg));
+        _cache.Remove(Scoped(KeyTag));
+        _cache.Remove(Scoped(KeyBudgets));
+        _cache.Remove(Scoped(KeyBudgetsSubs));
+        _cache.Remove(Scoped(KeyAdvisor));
+        _cache.Remove(Scoped(KeyAdvisorScores));
+        _cache.Remove(Scoped(KeySubNames));
+        _cache.Remove(Scoped(KeyForecast));
+        _cache.Remove(Scoped(KeyForecastAmort));
+        _cache.Remove(Scoped(KeyPublisher));
         // Reset phases so the loading banner re-appears on the next fetch.
         _loadingState.Update(KeyMain, LoadPhase.Idle);
         _loadingState.Update(KeyRg,   LoadPhase.Idle);
@@ -162,9 +172,9 @@ public sealed class CostManagementService : ICostManagementService
         var currentSubFingerprint = string.Join('|', distinctSubs);
 
         var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-        if (_cache.TryGetValue<List<SubscriptionBudget>>(KeyBudgets, ttl, out var cached) && cached is not null)
+        if (_cache.TryGetValue<List<SubscriptionBudget>>(Scoped(KeyBudgets), ttl, out var cached) && cached is not null)
         {
-            if (_cache.TryGetValue<string>(KeyBudgetsSubs, ttl, out var cachedSubFingerprint)
+            if (_cache.TryGetValue<string>(Scoped(KeyBudgetsSubs), ttl, out var cachedSubFingerprint)
                 && string.Equals(cachedSubFingerprint, currentSubFingerprint, StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogDebug("Cache hit for {Key}.", KeyBudgets);
@@ -241,15 +251,15 @@ public sealed class CostManagementService : ICostManagementService
             }
         }
 
-        _cache.Set(KeyBudgets, results, ttl);
-        _cache.Set(KeyBudgetsSubs, currentSubFingerprint, ttl);
+        _cache.Set(Scoped(KeyBudgets), results, ttl);
+        _cache.Set(Scoped(KeyBudgetsSubs), currentSubFingerprint, ttl);
         return results;
     }
 
     public async Task<List<AdvisorRecommendation>> GetAdvisorRecommendationsAsync(CancellationToken ct = default)
     {
         var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-        if (_cache.TryGetValue<List<AdvisorRecommendation>>(KeyAdvisor, ttl, out var cached) && cached is not null)
+        if (_cache.TryGetValue<List<AdvisorRecommendation>>(Scoped(KeyAdvisor), ttl, out var cached) && cached is not null)
         {
             _logger.LogDebug("Cache hit for {Key}.", KeyAdvisor);
             return cached;
@@ -267,7 +277,7 @@ public sealed class CostManagementService : ICostManagementService
         var perSub = await Task.WhenAll(tasks);
         var results = perSub.SelectMany(r => r).ToList();
 
-        _cache.Set(KeyAdvisor, results, ttl);
+        _cache.Set(Scoped(KeyAdvisor), results, ttl);
         return results;
     }
 
@@ -369,7 +379,7 @@ public sealed class CostManagementService : ICostManagementService
     public async Task<Dictionary<string, string>> GetSubscriptionDisplayNamesAsync(CancellationToken ct = default)
     {
         var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-        if (_cache.TryGetValue<Dictionary<string, string>>(KeySubNames, ttl, out var cached) && cached is not null)
+        if (_cache.TryGetValue<Dictionary<string, string>>(Scoped(KeySubNames), ttl, out var cached) && cached is not null)
         {
             // Bypass the cache if any current subscription IDs are missing from it
             // (e.g. a subscription was added through the UI after the cache was populated).
@@ -389,14 +399,14 @@ public sealed class CostManagementService : ICostManagementService
         var pairs = await Task.WhenAll(tasks);
         var result = pairs.ToDictionary(p => p.subId, p => p.name, StringComparer.OrdinalIgnoreCase);
 
-        _cache.Set(KeySubNames, result, ttl);
+        _cache.Set(Scoped(KeySubNames), result, ttl);
         return result;
     }
 
     public async Task<List<AdvisorCategoryScore>> GetAdvisorScoresAsync(CancellationToken ct = default)
     {
         var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-        if (_cache.TryGetValue<List<AdvisorCategoryScore>>(KeyAdvisorScores, ttl, out var cached) && cached is not null)
+        if (_cache.TryGetValue<List<AdvisorCategoryScore>>(Scoped(KeyAdvisorScores), ttl, out var cached) && cached is not null)
         {
             _logger.LogDebug("Cache hit for {Key}.", KeyAdvisorScores);
             return cached;
@@ -420,7 +430,7 @@ public sealed class CostManagementService : ICostManagementService
                 "Verify the app registration has the Reader role on each subscription " +
                 "and that Azure Advisor is enabled. Check for earlier warnings per subscription.");
 
-        _cache.Set(KeyAdvisorScores, results, ttl);
+        _cache.Set(Scoped(KeyAdvisorScores), results, ttl);
         return results;
     }
 
@@ -552,9 +562,10 @@ public sealed class CostManagementService : ICostManagementService
     {
         var isAmortized = metric.Equals("AmortizedCost", StringComparison.OrdinalIgnoreCase);
         var cacheKey    = isAmortized ? KeyForecastAmort : KeyForecast;
+        var scopedKey   = Scoped(cacheKey);
         var ttl         = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
 
-        if (_cache.TryGetValue<List<ForecastPoint>>(cacheKey, ttl, out var cached) && cached is not null)
+        if (_cache.TryGetValue<List<ForecastPoint>>(scopedKey, ttl, out var cached) && cached is not null)
         {
             _logger.LogDebug("Cache hit for {Key}.", cacheKey);
             return cached;
@@ -596,7 +607,7 @@ public sealed class CostManagementService : ICostManagementService
             .Select(kv => new ForecastPoint(kv.Key, kv.Value.Cost, kv.Value.IsForecast))
             .ToList();
 
-        _cache.Set(cacheKey, result, ttl);
+        _cache.Set(scopedKey, result, ttl);
         _logger.LogInformation("Native forecast returned {Days} day(s) under '{Key}'.", result.Count, cacheKey);
         return result;
     }
@@ -702,7 +713,7 @@ public sealed class CostManagementService : ICostManagementService
     public async Task<List<PublisherTypeCostRow>> GetPublisherBreakdownAsync(CancellationToken ct = default)
     {
         var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-        if (_cache.TryGetValue<List<PublisherTypeCostRow>>(KeyPublisher, ttl, out var cached) && cached is not null)
+        if (_cache.TryGetValue<List<PublisherTypeCostRow>>(Scoped(KeyPublisher), ttl, out var cached) && cached is not null)
         {
             _logger.LogDebug("Cache hit for {Key}.", KeyPublisher);
             return cached;
@@ -738,7 +749,7 @@ public sealed class CostManagementService : ICostManagementService
             .OrderByDescending(r => r.NormalizedCost)
             .ToList();
 
-        _cache.Set(KeyPublisher, result, ttl);
+        _cache.Set(Scoped(KeyPublisher), result, ttl);
         _logger.LogInformation("Publisher breakdown returned {Rows} row(s) under '{Key}'.", result.Count, KeyPublisher);
         return result;
     }
@@ -815,7 +826,10 @@ public sealed class CostManagementService : ICostManagementService
     private async Task<List<CostRow>> GetOrFetchAsync(
         string cacheKey, QueryType type, string metric, CancellationToken ct)
     {
-        if (_cache.TryGetValue<List<CostRow>>(cacheKey, TimeSpan.FromMinutes(_options.CacheExpirationMinutes), out var cached) && cached is not null)
+        // Cache key is tenant-scoped (per-customer partition); the loading-state banner stays
+        // keyed by the unprefixed base key so the UI surface is shared across the circuit.
+        var scopedKey = Scoped(cacheKey);
+        if (_cache.TryGetValue<List<CostRow>>(scopedKey, TimeSpan.FromMinutes(_options.CacheExpirationMinutes), out var cached) && cached is not null)
         {
             _logger.LogDebug("Cache hit for {Key}.", cacheKey);
             // Ensure the UI shows Ready even when the warmup service didn't run
@@ -859,7 +873,7 @@ public sealed class CostManagementService : ICostManagementService
         }
 
         var expiry = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-        _cache.Set(cacheKey, allRows, expiry);
+        _cache.Set(scopedKey, allRows, expiry);
         _loadingState.Update(
             cacheKey,
             anyError && allRows.Count == 0 ? LoadPhase.Failed : LoadPhase.Ready,

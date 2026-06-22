@@ -1,0 +1,428 @@
+@page "/customers"
+@using CmCSP.Data
+@inject CustomerStore Store
+@inject GdapOnboardingService Gdap
+@inject CostManagementOptions Options
+@inject ITenantScopeProvider ScopeProvider
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+
+<PageTitle>Customers – CSP Dashboard</PageTitle>
+
+<MudText Typo="Typo.h5" Class="mb-1 fw-bold">Customers</MudText>
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+    CSP multi-tenancy: onboard a customer (one Entra tenant), map its Azure subscriptions, and
+    suspend or reactivate access. A customer's users sign in from their own tenant and see only
+    their own data.
+</MudText>
+
+@if (!_ready)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-4" />
+}
+else if (!Options.MultiTenancy.Enabled)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4" Icon="@Icons.Material.Outlined.Info">
+        Multi-tenancy is disabled. Set <code>AzureCostManagement:MultiTenancy:Enabled = true</code>
+        (and provision the SQL data platform) to onboard customers.
+    </MudAlert>
+}
+else if (!Store.IsEnabled)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4" Icon="@Icons.Material.Outlined.Storage">
+        The SQL data platform is required for the customer registry but is not configured.
+    </MudAlert>
+}
+else if (!_isPartner)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4" Icon="@Icons.Material.Outlined.Lock">
+        Customer management is available to the partner (home tenant) only.
+    </MudAlert>
+}
+else
+{
+    @* ── Onboard a customer ─────────────────────────────────────────────────── *@
+    <MudPaper Class="pa-4 mb-4" Elevation="2">
+        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Onboard a customer</MudText>
+        <div class="d-flex flex-wrap gap-3 align-center">
+            <MudTextField @bind-Value="_newTenantId"
+                          Label="Customer tenant GUID"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense"
+                          Style="min-width:330px"
+                          Placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+            <MudTextField @bind-Value="_newDisplayName"
+                          Label="Display name"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense"
+                          Style="min-width:240px" />
+            <MudTextField @bind-Value="_newGdapId"
+                          Label="GDAP relationship id (optional)"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense"
+                          Style="min-width:280px" />
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.PersonAdd"
+                       Disabled="_busy"
+                       OnClick="OnboardAsync">
+                Onboard
+            </MudButton>
+        </div>
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-3 d-block">
+            After onboarding, send the customer admin the <b>consent link</b> and then use
+            <b>Discover subscriptions</b> to map their Azure subscriptions automatically (GDAP).
+        </MudText>
+        @if (!Gdap.CanAcquireCrossTenantTokens)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2" Icon="@Icons.Material.Outlined.Info">
+                The app is running on a managed identity, which cannot read across tenants. Configure the
+                Entra app client secret to enable GDAP consent links and subscription auto-discovery;
+                otherwise map subscriptions manually below.
+            </MudAlert>
+        }
+    </MudPaper>
+
+    @* ── Customer list ──────────────────────────────────────────────────────── *@
+    <MudPaper Class="pa-4" Elevation="2">
+        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Registered customers (@_customers.Count)</MudText>
+        @if (_customers.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Color="Color.Secondary">No customers onboarded yet.</MudText>
+        }
+        else
+        {
+            <MudExpansionPanels MultiExpansion="true" Elevation="0">
+                @foreach (var c in _customers)
+                {
+                    <MudExpansionPanel @key="c.Id">
+                        <TitleContent>
+                            <div class="d-flex align-center gap-2">
+                                <MudChip T="string"
+                                         Size="Size.Small"
+                                         Color="@(c.Status == "active" ? Color.Success : Color.Default)"
+                                         Variant="Variant.Filled">
+                                    @c.Status
+                                </MudChip>
+                                <MudText Typo="Typo.body1" Class="fw-bold">@c.DisplayName</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@c.TenantId</MudText>
+                            </div>
+                        </TitleContent>
+                        <ChildContent>
+                            <div class="d-flex flex-wrap gap-2 mb-3">
+                                @if (c.Status == "active")
+                                {
+                                    <MudButton Size="Size.Small"
+                                               Variant="Variant.Outlined"
+                                               Color="Color.Warning"
+                                               StartIcon="@Icons.Material.Filled.Block"
+                                               Disabled="_busy"
+                                               OnClick="@(() => SetStatusAsync(c.Id, "suspended"))">
+                                        Suspend
+                                    </MudButton>
+                                }
+                                else
+                                {
+                                    <MudButton Size="Size.Small"
+                                               Variant="Variant.Outlined"
+                                               Color="Color.Success"
+                                               StartIcon="@Icons.Material.Filled.CheckCircle"
+                                               Disabled="_busy"
+                                               OnClick="@(() => SetStatusAsync(c.Id, "active"))">
+                                        Reactivate
+                                    </MudButton>
+                                }
+                            </div>
+
+                            @* ── GDAP onboarding ───────────────────────────────────────── *@
+                            <MudText Typo="Typo.subtitle2" Class="mb-2 fw-bold">Delegated access (GDAP)</MudText>
+                            <div class="d-flex flex-wrap gap-2 align-center mb-2">
+                                <MudButton Size="Size.Small"
+                                           Variant="Variant.Outlined"
+                                           Color="Color.Primary"
+                                           StartIcon="@Icons.Material.Filled.Link"
+                                           Disabled="_busy"
+                                           OnClick="@(() => CopyConsentLinkAsync(c.TenantId))">
+                                    Copy consent link
+                                </MudButton>
+                                <MudButton Size="Size.Small"
+                                           Variant="Variant.Filled"
+                                           Color="Color.Secondary"
+                                           StartIcon="@Icons.Material.Filled.Sync"
+                                           Disabled="@(_busy || !Gdap.CanAcquireCrossTenantTokens)"
+                                           OnClick="@(() => DiscoverSubsAsync(c.Id, c.TenantId))">
+                                    Discover subscriptions
+                                </MudButton>
+                                @if (!string.IsNullOrWhiteSpace(c.GdapRelationshipId))
+                                {
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="Color.Default"
+                                             Icon="@Icons.Material.Filled.VerifiedUser">
+                                        @c.GdapRelationshipId
+                                    </MudChip>
+                                }
+                            </div>
+                            <div class="d-flex flex-wrap gap-2 align-center mb-4">
+                                <MudTextField @bind-Value="_gdapId[c.Id]"
+                                              Label="GDAP relationship id"
+                                              Variant="Variant.Outlined"
+                                              Margin="Margin.Dense"
+                                              Style="min-width:300px" />
+                                <MudButton Size="Size.Small"
+                                           Variant="Variant.Outlined"
+                                           StartIcon="@Icons.Material.Filled.Save"
+                                           Disabled="_busy"
+                                           OnClick="@(() => SaveGdapIdAsync(c.Id))">
+                                    Save id
+                                </MudButton>
+                            </div>
+
+                            <MudText Typo="Typo.subtitle2" Class="mb-2 fw-bold">Subscriptions</MudText>
+                            @{
+                                var subs = _subsByCustomer.TryGetValue(c.Id, out var s) ? s : [];
+                            }
+                            @if (subs.Count == 0)
+                            {
+                                <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-2">
+                                    No subscriptions mapped.
+                                </MudText>
+                            }
+                            else
+                            {
+                                <MudSimpleTable Dense="true" Elevation="0" Class="mb-2">
+                                    <tbody>
+                                        @foreach (var sub in subs)
+                                        {
+                                            <tr @key="sub.SubscriptionId">
+                                                <td>
+                                                    <MudText Typo="Typo.body2">
+                                                        @(string.IsNullOrWhiteSpace(sub.SubscriptionName) ? "(unnamed)" : sub.SubscriptionName)
+                                                    </MudText>
+                                                </td>
+                                                <td>
+                                                    <MudText Typo="Typo.caption" Color="Color.Secondary">@sub.SubscriptionId</MudText>
+                                                </td>
+                                                <td style="width:1%">
+                                                    <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                                   Size="Size.Small"
+                                                                   Color="Color.Error"
+                                                                   Disabled="_busy"
+                                                                   OnClick="@(() => RemoveSubAsync(c.Id, sub.SubscriptionId))"
+                                                                   aria-label="Remove subscription" />
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </MudSimpleTable>
+                            }
+
+                            <div class="d-flex flex-wrap gap-2 align-center">
+                                <MudTextField @bind-Value="_newSubId[c.Id]"
+                                              Label="Subscription GUID"
+                                              Variant="Variant.Outlined"
+                                              Margin="Margin.Dense"
+                                              Style="min-width:320px"
+                                              Placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+                                <MudTextField @bind-Value="_newSubName[c.Id]"
+                                              Label="Name (optional)"
+                                              Variant="Variant.Outlined"
+                                              Margin="Margin.Dense"
+                                              Style="min-width:200px" />
+                                <MudButton Size="Size.Small"
+                                           Variant="Variant.Filled"
+                                           Color="Color.Primary"
+                                           StartIcon="@Icons.Material.Filled.Add"
+                                           Disabled="_busy"
+                                           OnClick="@(() => AddSubAsync(c.Id))">
+                                    Map subscription
+                                </MudButton>
+                            </div>
+                        </ChildContent>
+                    </MudExpansionPanel>
+                }
+            </MudExpansionPanels>
+        }
+    </MudPaper>
+}
+
+@code {
+    private bool _ready;
+    private bool _busy;
+    private bool _isPartner;
+
+    private string _newTenantId = string.Empty;
+    private string _newDisplayName = string.Empty;
+    private string _newGdapId = string.Empty;
+
+    private readonly Dictionary<long, string> _newSubId = new();
+    private readonly Dictionary<long, string> _newSubName = new();
+    private readonly Dictionary<long, string> _gdapId = new();
+
+    private List<CustomerEntity> _customers = [];
+    private readonly Dictionary<long, List<CustomerSubscriptionEntity>> _subsByCustomer = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Options.MultiTenancy.Enabled && Store.IsEnabled)
+        {
+            var scope = await ScopeProvider.GetScopeAsync();
+            _isPartner = scope.IsPartner;
+            if (_isPartner)
+                await ReloadAsync();
+        }
+        _ready = true;
+    }
+
+    private async Task ReloadAsync()
+    {
+        _customers = (await Store.GetAllCustomersAsync()).ToList();
+        _subsByCustomer.Clear();
+        foreach (var c in _customers)
+        {
+            _subsByCustomer[c.Id] = (await Store.GetSubscriptionsAsync(c.Id)).ToList();
+            _newSubId.TryAdd(c.Id, string.Empty);
+            _newSubName.TryAdd(c.Id, string.Empty);
+            _gdapId[c.Id] = c.GdapRelationshipId ?? string.Empty;
+        }
+    }
+
+    private async Task OnboardAsync()
+    {
+        _busy = true;
+        try
+        {
+            await Store.OnboardCustomerAsync(
+                _newTenantId,
+                _newDisplayName,
+                string.IsNullOrWhiteSpace(_newGdapId) ? null : _newGdapId.Trim());
+            Snackbar.Add($"Onboarded {_newDisplayName}.", Severity.Success);
+            _newTenantId = string.Empty;
+            _newDisplayName = string.Empty;
+            _newGdapId = string.Empty;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SetStatusAsync(long customerId, string status)
+    {
+        _busy = true;
+        try
+        {
+            await Store.SetCustomerStatusAsync(customerId, status);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task AddSubAsync(long customerId)
+    {
+        _busy = true;
+        try
+        {
+            await Store.AddSubscriptionAsync(
+                customerId,
+                _newSubId.GetValueOrDefault(customerId, string.Empty),
+                _newSubName.GetValueOrDefault(customerId, string.Empty));
+            _newSubId[customerId] = string.Empty;
+            _newSubName[customerId] = string.Empty;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RemoveSubAsync(long customerId, string subscriptionId)
+    {
+        _busy = true;
+        try
+        {
+            await Store.RemoveSubscriptionAsync(customerId, subscriptionId);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CopyConsentLinkAsync(string tenantId)
+    {
+        try
+        {
+            var redirect = Nav.ToAbsoluteUri("/customers").ToString();
+            var url = Gdap.BuildAdminConsentUrl(tenantId, redirect);
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", url);
+            Snackbar.Add("Admin-consent link copied to clipboard. Send it to the customer admin.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task DiscoverSubsAsync(long customerId, string tenantId)
+    {
+        _busy = true;
+        try
+        {
+            var result = await Gdap.SyncSubscriptionsAsync(customerId, tenantId);
+            if (result.Discovered == 0)
+                Snackbar.Add("No subscriptions found. Has the customer consented and the GDAP relationship been set up?", Severity.Warning);
+            else
+                Snackbar.Add($"Discovered {result.Discovered} subscription(s); mapped {result.Added} new.", Severity.Success);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SaveGdapIdAsync(long customerId)
+    {
+        _busy = true;
+        try
+        {
+            await Store.UpdateGdapRelationshipAsync(customerId, _gdapId.GetValueOrDefault(customerId, string.Empty));
+            Snackbar.Add("GDAP relationship id saved.", Severity.Success);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

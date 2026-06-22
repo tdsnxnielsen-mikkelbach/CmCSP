@@ -15,6 +15,8 @@ public sealed class CmcspDbContext(DbContextOptions<CmcspDbContext> options) : D
     public DbSet<CollectionAuditEntity> CollectionAudit => Set<CollectionAuditEntity>();
     public DbSet<UserSubscriptionEntity> UserSubscriptions => Set<UserSubscriptionEntity>();
     public DbSet<AppSettingEntity> AppSettings => Set<AppSettingEntity>();
+    public DbSet<CustomerEntity> Customers => Set<CustomerEntity>();
+    public DbSet<CustomerSubscriptionEntity> CustomerSubscriptions => Set<CustomerSubscriptionEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -32,6 +34,9 @@ public sealed class CmcspDbContext(DbContextOptions<CmcspDbContext> options) : D
             e.Property(x => x.Cost).HasColumnType("decimal(38,18)");
             e.Property(x => x.Currency).HasMaxLength(8).IsRequired();
             e.Property(x => x.NormalizedCost).HasColumnType("decimal(38,18)");
+            // Phase 9: tenant dimension carried for query scoping (not part of the natural key).
+            e.Property(x => x.CustomerId).HasDefaultValue(0L);
+            e.Property(x => x.TenantId).HasMaxLength(36).HasDefaultValue(string.Empty);
 
             // Natural key — guarantees one row per dataset/day/sub/grouping/currency so
             // re-collection and historical backfill upsert cleanly (latest write wins).
@@ -42,6 +47,10 @@ public sealed class CmcspDbContext(DbContextOptions<CmcspDbContext> options) : D
             // Common dashboard query shape: a dataset over a date range.
             e.HasIndex(x => new { x.Dataset, x.UsageDate })
                 .HasDatabaseName("IX_CostFact_Dataset_UsageDate");
+
+            // Phase 9: the per-customer read shape (partner picks a customer; customer sees own).
+            e.HasIndex(x => new { x.CustomerId, x.Dataset, x.UsageDate })
+                .HasDatabaseName("IX_CostFact_Customer_Dataset_UsageDate");
         });
 
         modelBuilder.Entity<CollectionAuditEntity>(e =>
@@ -69,6 +78,30 @@ public sealed class CmcspDbContext(DbContextOptions<CmcspDbContext> options) : D
             e.HasKey(x => x.Key);
             e.Property(x => x.Key).HasMaxLength(128);
             e.Property(x => x.Value).HasMaxLength(4000).IsRequired();
+        });
+
+        modelBuilder.Entity<CustomerEntity>(e =>
+        {
+            e.ToTable("Customer");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.TenantId).HasMaxLength(36).IsRequired();
+            e.Property(x => x.DisplayName).HasMaxLength(256).IsRequired();
+            e.Property(x => x.Status).HasMaxLength(16).HasDefaultValue("active");
+            e.Property(x => x.GdapRelationshipId).HasMaxLength(128);
+            e.HasIndex(x => x.TenantId).IsUnique().HasDatabaseName("UX_Customer_TenantId");
+        });
+
+        modelBuilder.Entity<CustomerSubscriptionEntity>(e =>
+        {
+            e.ToTable("CustomerSubscription");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.SubscriptionId).HasMaxLength(36).IsRequired();
+            e.Property(x => x.SubscriptionName).HasMaxLength(256).HasDefaultValue(string.Empty);
+            e.HasIndex(x => new { x.CustomerId, x.SubscriptionId })
+                .IsUnique()
+                .HasDatabaseName("UX_CustomerSubscription_Customer_Sub");
+            // Reverse lookup subscription → customer used during authorization.
+            e.HasIndex(x => x.SubscriptionId).HasDatabaseName("IX_CustomerSubscription_Sub");
         });
     }
 }

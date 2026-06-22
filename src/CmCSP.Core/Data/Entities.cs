@@ -20,7 +20,6 @@ public sealed class CostFact
 
     /// <summary>Service dimension — populated for <c>main</c> / <c>main_amort</c>, empty otherwise.</summary>
     public string ServiceName { get; set; } = string.Empty;
-
     /// <summary>Resource-group dimension — populated for <c>rg</c>, empty otherwise.</summary>
     public string ResourceGroupName { get; set; } = string.Empty;
 
@@ -35,6 +34,20 @@ public sealed class CostFact
 
     /// <summary>Cost converted to the configured TargetCurrency.</summary>
     public decimal NormalizedCost { get; set; }
+
+    /// <summary>
+    /// Phase 9: owning customer (FK → <see cref="Customer"/>), denormalised onto the fact for
+    /// fast per-customer filtered reads. The natural key is unchanged — a subscription belongs
+    /// to exactly one customer, so this is carried for query scoping, not added to the key.
+    /// In single-tenant deployments this is the bootstrap "home" customer.
+    /// </summary>
+    public long CustomerId { get; set; }
+
+    /// <summary>
+    /// Phase 9: the owning customer's Entra tenant GUID — redundant with <see cref="Customer"/>
+    /// but indexed for direct tenant scoping during authorization.
+    /// </summary>
+    public string TenantId { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -82,4 +95,48 @@ public sealed class AppSettingEntity
     public string Key { get; set; } = string.Empty;
     public string Value { get; set; } = string.Empty;
     public DateTimeOffset UpdatedUtc { get; set; }
+}
+
+/// <summary>
+/// Phase 9 (CSP multi-tenancy): a reseller's customer — one Entra tenant the partner has
+/// delegated (GDAP) access into. Existing single-tenant data maps to a single bootstrap
+/// "home" customer during migration, so nothing is orphaned.
+/// </summary>
+public sealed class CustomerEntity
+{
+    public long Id { get; set; }
+
+    /// <summary>The customer's Entra tenant GUID — the sign-in <c>tid</c> claim and token authority.</summary>
+    public string TenantId { get; set; } = string.Empty;
+
+    /// <summary>Friendly customer name shown in the partner's customer picker.</summary>
+    public string DisplayName { get; set; } = string.Empty;
+
+    /// <summary><c>active</c> or <c>suspended</c> — gates sign-in and collection.</summary>
+    public string Status { get; set; } = "active";
+
+    /// <summary>The GDAP relationship granting delegated access (nullable until established).</summary>
+    public string? GdapRelationshipId { get; set; }
+
+    public DateTimeOffset CreatedUtc { get; set; }
+}
+
+/// <summary>
+/// Phase 9: which subscriptions belong to a customer. Generalises the flat
+/// <see cref="UserSubscriptionEntity"/> list into a tenant-scoped mapping.
+/// </summary>
+public sealed class CustomerSubscriptionEntity
+{
+    public long Id { get; set; }
+
+    /// <summary>Owning customer (FK → <see cref="CustomerEntity"/>).</summary>
+    public long CustomerId { get; set; }
+
+    /// <summary>Azure subscription GUID.</summary>
+    public string SubscriptionId { get; set; } = string.Empty;
+
+    /// <summary>Cached subscription display name.</summary>
+    public string SubscriptionName { get; set; } = string.Empty;
+
+    public DateTimeOffset AddedUtc { get; set; }
 }

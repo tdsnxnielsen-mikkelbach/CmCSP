@@ -21,15 +21,20 @@ public sealed class CacheWarmupService : BackgroundService
 
     private readonly ICacheService     _cache;
     private readonly TimeSpan                      _memoryTtl;
+    private readonly CostManagementOptions         _options;
+    private readonly CustomerStore?                _customers;
     private readonly ILogger<CacheWarmupService>  _logger;
 
     public CacheWarmupService(
         ICacheService     cache,
         CostManagementOptions        options,
-        ILogger<CacheWarmupService>  logger)
+        ILogger<CacheWarmupService>  logger,
+        CustomerStore?               customers = null)
     {
         _cache     = cache;
         _memoryTtl = TimeSpan.FromMinutes(options.CacheExpirationMinutes);
+        _options   = options;
+        _customers = customers;
         _logger    = logger;
     }
 
@@ -48,10 +53,43 @@ public sealed class CacheWarmupService : BackgroundService
 
         _logger.LogInformation("CacheWarmupService: rehydrating in-memory cache from persistent storage.");
 
+        // Single-tenant / unscoped aggregate (empty prefix) — always warmed.
+        var rehydrated = RehydratePartition(prefix: string.Empty, stoppingToken);
+
+        // Phase 9: when multi-tenancy is on, also rehydrate each active customer's partition so a
+        // partner drilling into a customer doesn't pay the storage-read latency on the first hit.
+        if (_options.MultiTenancy.Enabled && _customers is { IsEnabled: true } && !stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                var customers = await _customers.GetActiveCustomersAsync(stoppingToken);
+                foreach (var customer in customers)
+                {
+                    if (stoppingToken.IsCancellationRequested) break;
+                    var prefix = TenantScope.CustomerCacheKeyPrefix(customer.Id);
+                    rehydrated += RehydratePartition(prefix, stoppingToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "CacheWarmupService: per-customer rehydration failed.");
+            }
+        }
+
+        _logger.LogInformation(
+            "CacheWarmupService: rehydration complete ({Rehydrated} dataset(s)).",
+            rehydrated);
+    }
+
+    // Rehydrates the four shared datasets for one tenant partition (prefix). Returns the count
+    // of datasets found in the persistent cache (a miss means the collector hasn't produced it).
+    private int RehydratePartition(string prefix, CancellationToken stoppingToken)
+    {
         var rehydrated = 0;
-        foreach (var key in DatasetKeys)
+        foreach (var baseKey in DatasetKeys)
         {
             if (stoppingToken.IsCancellationRequested) break;
+            var key = prefix + baseKey;
 
             try
             {
@@ -67,7 +105,7 @@ public sealed class CacheWarmupService : BackgroundService
                 }
                 else
                 {
-                    _logger.LogInformation(
+                    _logger.LogDebug(
                         "CacheWarmupService: {Key} not in persistent cache yet — skipping (collector will populate).",
                         key);
                 }
@@ -77,9 +115,6 @@ public sealed class CacheWarmupService : BackgroundService
                 _logger.LogWarning(ex, "CacheWarmupService: failed to rehydrate {Key}.", key);
             }
         }
-
-        _logger.LogInformation(
-            "CacheWarmupService: rehydration complete ({Rehydrated}/{Total} datasets).",
-            rehydrated, DatasetKeys.Length);
+        return rehydrated;
     }
 }

@@ -83,7 +83,8 @@ function Invoke-SqlScript {
         [Parameter(Mandatory)][string]$ServerFqdn,
         [Parameter(Mandatory)][string]$Database,
         [string]$Query,
-        [string]$InputFile
+        [string]$InputFile,
+        [hashtable]$Variables
     )
 
     if (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue) {
@@ -92,6 +93,9 @@ function Invoke-SqlScript {
         if (-not $token) { Write-Error 'Could not acquire an Azure SQL access token (az account get-access-token).' }
         $params = @{ ServerInstance = $ServerFqdn; Database = $Database; AccessToken = $token; ErrorAction = 'Stop' }
         if ($InputFile) { $params['InputFile'] = $InputFile } else { $params['Query'] = $Query }
+        if ($Variables -and $Variables.Count -gt 0) {
+            $params['Variable'] = @($Variables.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" })
+        }
         Invoke-Sqlcmd @params | Out-Null
         return
     }
@@ -99,6 +103,9 @@ function Invoke-SqlScript {
     $sqlcmd = Get-Command sqlcmd -ErrorAction SilentlyContinue
     if ($sqlcmd) {
         $cmdArgs = @('-S', "tcp:$ServerFqdn,1433", '-d', $Database, '--authentication-method', 'ActiveDirectoryAzCli', '-b')
+        if ($Variables -and $Variables.Count -gt 0) {
+            foreach ($kv in $Variables.GetEnumerator()) { $cmdArgs += @('-v', "$($kv.Key)=$($kv.Value)") }
+        }
         if ($InputFile) { $cmdArgs += @('-i', $InputFile) } else { $cmdArgs += @('-Q', $Query) }
         & $sqlcmd.Source @cmdArgs
         if ($LASTEXITCODE -ne 0) { Write-Error "sqlcmd failed (exit $LASTEXITCODE)." }
@@ -168,6 +175,12 @@ $tenantId         = Require-Env 'CMCSP_TENANT_ID'
 $clientId         = Require-Env 'CMCSP_CLIENT_ID'
 $clientSecret     = Require-Env 'CMCSP_CLIENT_SECRET'
 $subscriptionIds  = (Require-Env 'CMCSP_SUBSCRIPTION_IDS') -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+
+# Phase 9 (CSP multi-tenancy): the home tenant the bootstrap "home" customer is seeded with.
+# Defaults to the deployment tenant so the seeded home customer matches the app's home tenant
+# (the app likewise falls back to AzureCostManagement:TenantId when HOME_TENANT_ID is empty).
+$homeTenantId     = Get-Env 'HOME_TENANT_ID' $tenantId
+if ([string]::IsNullOrWhiteSpace($homeTenantId)) { $homeTenantId = $tenantId }
 
 $exportScope      = (Get-Env 'EXPORT_SCOPE' 'none').ToLowerInvariant()
 $exportName       = Get-Env 'EXPORT_NAME' 'cmcsp-daily-export'
@@ -476,7 +489,8 @@ if ($dataPlatformEnabled) {
         # connection-string wiring above; the schema can be re-applied later by re-running azd provision.
         try {
             Write-Host "  Applying schema (infra/sql/schema.sql) to $sqlServerFqdn/$sqlDatabase..."
-            Invoke-SqlScript -ServerFqdn $sqlServerFqdn -Database $sqlDatabase -InputFile $schemaFile
+            Invoke-SqlScript -ServerFqdn $sqlServerFqdn -Database $sqlDatabase -InputFile $schemaFile `
+                -Variables @{ home_tenant_id = $homeTenantId }
 
             # Each system-assigned MI's Entra display name equals its resource name.
             $miNames = @($containerAppName, $collectJobName) | Where-Object { $_ } | Select-Object -Unique

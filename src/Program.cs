@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
+using Microsoft.IdentityModel.Tokens;
 using MudBlazor.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -45,6 +46,45 @@ builder.Services.Configure<OpenIdConnectOptions>(OpenIdConnectDefaults.Authentic
 {
     options.ResponseType = "code";
 });
+
+// ── Phase 9: multi-tenant sign-in (gated) ────────────────────────────────────
+// When AzureCostManagement:MultiTenancy:Enabled = true the Entra app registration is
+// multi-tenant: sign-in is accepted from any tenant, but the issuer is validated against
+// the home tenant + every active registered customer (CustomerStore). Off by default, so
+// the single-tenant deployment is unchanged (authority stays bound to the home tenant).
+var multiTenancyEnabled = builder.Configuration.GetValue<bool>(
+    $"{CostManagementOptions.SectionName}:MultiTenancy:Enabled");
+if (multiTenancyEnabled)
+{
+    builder.Services.AddOptions<OpenIdConnectOptions>(OpenIdConnectDefaults.AuthenticationScheme)
+        .PostConfigure<CustomerStore>((options, customerStore) =>
+        {
+            // Accept sign-in from any organisation; restrict via the issuer validator below.
+            options.Authority = "https://login.microsoftonline.com/organizations/v2.0";
+            options.TokenValidationParameters.ValidateIssuer = true;
+            options.TokenValidationParameters.IssuerValidator = (issuer, _, _) =>
+            {
+                var tid = ExtractTenantIdFromIssuer(issuer);
+                if (customerStore.IsValidTenant(tid))
+                    return issuer;
+                throw new SecurityTokenInvalidIssuerException(
+                    $"Issuer tenant '{tid}' is not the home tenant or an active registered customer.");
+            };
+        });
+}
+
+// Pulls the tenant GUID out of an Entra issuer URL — v2 (login.microsoftonline.com/{tid}/v2.0)
+// or v1 (sts.windows.net/{tid}/). Returns the first path segment that parses as a GUID.
+static string? ExtractTenantIdFromIssuer(string? issuer)
+{
+    if (string.IsNullOrWhiteSpace(issuer) || !Uri.TryCreate(issuer, UriKind.Absolute, out var uri))
+        return null;
+    foreach (var segment in uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        if (Guid.TryParse(segment, out _))
+            return segment;
+    return null;
+}
+
 builder.Services.AddAuthorization();
 
 // ── Forwarded headers (Azure Container Apps TLS termination) ─────────────────
@@ -105,6 +145,22 @@ else
 // user-persisted subscription IDs are merged into costOptions.SubscriptionIds before
 // any cost service starts up.
 builder.Services.AddSingleton<SubscriptionStoreService>();
+
+// CustomerStore (Phase 9): the SQL-backed registry of customers (one per tenant) and the
+// reverse subscription→customer lookup. Reports IsEnabled=false when SQL is absent, keeping
+// the app in its legacy single-tenant behaviour. Also feeds the multi-tenant OIDC issuer
+// validator above (resolved at runtime).
+builder.Services.AddSingleton<CustomerStore>();
+
+// GdapOnboardingService (Phase 9): GDAP-driven onboarding — builds the per-customer admin-consent
+// link and auto-discovers a customer tenant's subscriptions via a per-tenant ARM token, replacing
+// manual subscription-ID entry. Cross-tenant discovery requires service-principal mode.
+builder.Services.AddSingleton<GdapOnboardingService>();
+
+// TenantScopeAccessor (Phase 9): ambient holder of the current circuit's tenant scope, read by
+// the singleton cost service for cache-key prefixing + SQL scoping. Singleton because it wraps
+// an AsyncLocal whose value is per-async-flow (published by CostPageBase before each load).
+builder.Services.AddSingleton<TenantScopeAccessor>();
 
 // ── Azure services ─────────────────────────────────────────────
 // AzureTokenService is Singleton: MSAL manages its own internal token cache.
@@ -167,6 +223,11 @@ builder.Services.AddSingleton<JobControlService>();
 // DashboardStateService is Scoped: one instance per SignalR circuit so each
 // browser tab gets its own date-range filter.
 builder.Services.AddScoped<DashboardStateService>();
+
+// ITenantScopeProvider (Phase 9): resolves the signed-in user's tenant (tid claim) into the
+// set of customers the request may read. Scoped to the circuit so it's resolved once per
+// session. Returns TenantScope.Unscoped (no filtering) when MultiTenancy is disabled.
+builder.Services.AddScoped<ITenantScopeProvider, TenantScopeProvider>();
 
 // CostDetailsService: async report-based API for reservation and amortized-cost data.
 // Registered as Singleton — stateless fetch + shared cache; safe for concurrent use.

@@ -1,5 +1,8 @@
 ﻿@inject ICostManagementService CostService
 @inject DashboardStateService State
+@inject CostManagementOptions Options
+@inject CustomerStore Customers
+@inject ITenantScopeProvider ScopeProvider
 
 <MudNavMenu>
     <MudNavLink Href="/"
@@ -68,6 +71,15 @@
         Sustainability
     </MudNavLink>
 
+    @if (_showCustomers)
+    {
+        <MudDivider Class="my-2" />
+        <MudNavLink Href="/customers"
+                    Icon="@Icons.Material.Filled.Groups">
+            Customers
+        </MudNavLink>
+    }
+
     <MudDivider Class="my-2" />
 
     <MudNavLink Icon="@(_refreshing ? Icons.Material.Filled.HourglassEmpty : Icons.Material.Filled.Refresh)"
@@ -79,6 +91,17 @@
 
 @code {
     private bool _refreshing;
+    private bool _showCustomers;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Customers admin link is partner-only and gated behind multi-tenancy.
+        if (Options.MultiTenancy.Enabled && Customers.IsEnabled)
+        {
+            var scope = await ScopeProvider.GetScopeAsync();
+            _showCustomers = scope.IsPartner;
+        }
+    }
 
     private async Task RefreshAsync()
     {

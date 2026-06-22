@@ -76,6 +76,12 @@ builder.Services.AddSingleton<ExportProvisioningService>();
 builder.Services.AddSingleton<SubscriptionStoreService>();
 builder.Services.AddSingleton<CollectionAuditService>();
 
+// Phase 9: customer registry + ambient tenant-scope holder. In the collector the scope stays
+// Unscoped (no circuit), but CustomerStore lets the write path stamp CostFact rows with the
+// bootstrap "home" customer so per-customer scoping works once multi-tenancy is enabled.
+builder.Services.AddSingleton<CustomerStore>();
+builder.Services.AddSingleton<TenantScopeAccessor>();
+
 if (costOptions.ExportBlob.Enabled)
 {
     builder.Services.AddSingleton<CostManagementService>();
@@ -96,33 +102,20 @@ var costService = host.Services.GetRequiredService<ICostManagementService>();
 // are merged into costOptions.SubscriptionIds before collection starts.
 _ = host.Services.GetRequiredService<SubscriptionStoreService>();
 
-// ── Optional per-subscription partitioning (fan-out across executions) ──────────
-// Set COLLECT_PARTITION_COUNT > 1 and give each execution a distinct COLLECT_PARTITION_INDEX
-// (0..count-1) to split the subscription set across parallel runs. CostFact's natural key is
-// per-subscription, so disjoint partitions never conflict. Default (count = 1) collects every
-// subscription in a single run.
+// ── Partitioning + optional multi-tenant fan-out ───────────────────────────────
+// Single-tenant: COLLECT_PARTITION_COUNT/INDEX splits the *subscription* set across parallel
+// executions (CostFact's natural key is per-subscription, so disjoint partitions never conflict).
+// Multi-tenant (MultiTenancy:Enabled + customer registry present): the collector iterates active
+// *customers*, collecting each under its own tenant scope so CostFact rows are stamped with the
+// owning CustomerId and (in service-principal mode) read with a per-tenant GDAP token. The same
+// COLLECT_PARTITION_COUNT/INDEX then splits the *customer* set across executions for scale-out.
+var customerStore = host.Services.GetRequiredService<CustomerStore>();
+var scopeAccessor = host.Services.GetRequiredService<TenantScopeAccessor>();
+
 var partitionCount = Math.Max(1, ParseIntEnv("COLLECT_PARTITION_COUNT", 1));
 var partitionIndex = Math.Clamp(ParseIntEnv("COLLECT_PARTITION_INDEX", 0), 0, partitionCount - 1);
 
-if (partitionCount > 1)
-{
-    var all = costOptions.SubscriptionIds
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
-        .ToList();
-    var subset = all.Where((_, i) => i % partitionCount == partitionIndex).ToList();
-
-    costOptions.SubscriptionIds.Clear();
-    costOptions.SubscriptionIds.AddRange(subset);
-
-    // Restrict blob-export parsing/persistence to this partition's subscriptions too.
-    if (costService is BlobCostManagementService blob)
-        blob.SubscriptionFilter = new HashSet<string>(subset, StringComparer.OrdinalIgnoreCase);
-
-    logger.LogInformation(
-        "CostCollector: partition {Index}/{Count} handling {Subset} of {Total} subscription(s).",
-        partitionIndex, partitionCount, subset.Count, all.Count);
-}
+var multiTenant = costOptions.MultiTenancy.Enabled && customerStore.IsEnabled;
 
 var trigger       = (Environment.GetEnvironmentVariable("COLLECT_TRIGGER") ?? "manual").Trim().ToLowerInvariant();
 var correlationId = Guid.NewGuid().ToString("N");
@@ -130,36 +123,113 @@ var replicaName   = Environment.GetEnvironmentVariable("CONTAINER_APP_REPLICA_NA
 var startedUtc    = DateTimeOffset.UtcNow;
 var sw            = Stopwatch.StartNew();
 
-logger.LogInformation(
-    "CostCollector[{CorrelationId}]: starting {Trigger} collection for {SubCount} subscription(s) on replica {Replica}.",
-    correlationId, trigger, costOptions.SubscriptionIds.Count, replicaName);
+long mainRows = 0, rgRows = 0, tagRows = 0, amortRows = 0;
+var subscriptionCount = 0;
 
 var auditRecord = new CollectionAuditRecord
 {
-    Trigger           = trigger,
-    StartedUtc        = startedUtc,
-    SubscriptionCount = costOptions.SubscriptionIds.Count,
-    ReplicaName       = replicaName,
-    CorrelationId     = correlationId
+    Trigger       = trigger,
+    StartedUtc    = startedUtc,
+    ReplicaName   = replicaName,
+    CorrelationId = correlationId
 };
 
 try
 {
-    // RefreshAsync re-parses the export CSVs (the source feed) and, when the SQL data platform
-    // is enabled, upserts the aggregated rows into CostFact before warming the shared Redis cache.
-    // Amortized data is API-only (exports use ActualCost), so it is fetched separately.
-    var result = await costService.RefreshAsync();
-    var amort  = await costService.GetAmortizedMainCostDataAsync();
+    if (multiTenant)
+    {
+        var allCustomers = (await customerStore.GetActiveCustomersAsync())
+            .OrderBy(c => c.Id)
+            .ToList();
+        var customers = partitionCount > 1
+            ? allCustomers.Where((_, i) => i % partitionCount == partitionIndex).ToList()
+            : allCustomers;
 
-    auditRecord.MainRows  = result.Main;
-    auditRecord.RgRows    = result.Rg;
-    auditRecord.TagRows   = result.Tag;
-    auditRecord.AmortRows = amort.Count;
-    auditRecord.Status    = "Success";
+        logger.LogInformation(
+            "CostCollector[{CorrelationId}]: multi-tenant fan-out — partition {Index}/{Count} handling {Subset} of {Total} customer(s).",
+            correlationId, partitionIndex, partitionCount, customers.Count, allCustomers.Count);
+
+        foreach (var customer in customers)
+        {
+            var subs = (await customerStore.GetSubscriptionIdsAsync(customer.Id)).ToList();
+            if (subs.Count == 0)
+            {
+                logger.LogInformation(
+                    "CostCollector[{CorrelationId}]: customer {Customer} has no mapped subscriptions — skipping.",
+                    correlationId, customer.DisplayName);
+                continue;
+            }
+
+            // Publish the customer's scope: CostFact writes are stamped with this CustomerId and
+            // (service-principal mode) AzureTokenService acquires a per-tenant GDAP token.
+            scopeAccessor.Current = new TenantScope
+            {
+                IsUnscoped  = false,
+                IsPartner   = false,
+                CustomerIds = [customer.Id],
+                TenantId    = customer.TenantId
+            };
+
+            // Restrict export parsing/persistence + API queries to this customer's subscriptions.
+            costOptions.SubscriptionIds.Clear();
+            costOptions.SubscriptionIds.AddRange(subs);
+            if (costService is BlobCostManagementService blobMt)
+                blobMt.SubscriptionFilter = new HashSet<string>(subs, StringComparer.OrdinalIgnoreCase);
+
+            subscriptionCount += subs.Count;
+
+            logger.LogInformation(
+                "CostCollector[{CorrelationId}]: collecting customer {Customer} ({Subs} subscription(s)).",
+                correlationId, customer.DisplayName, subs.Count);
+
+            var result = await costService.RefreshAsync();
+            var amort  = await costService.GetAmortizedMainCostDataAsync();
+            mainRows += result.Main; rgRows += result.Rg; tagRows += result.Tag; amortRows += amort.Count;
+        }
+
+        scopeAccessor.Current = TenantScope.Unscoped;
+    }
+    else
+    {
+        // Single-tenant path: optional per-subscription partitioning across executions.
+        if (partitionCount > 1)
+        {
+            var all = costOptions.SubscriptionIds
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var subset = all.Where((_, i) => i % partitionCount == partitionIndex).ToList();
+
+            costOptions.SubscriptionIds.Clear();
+            costOptions.SubscriptionIds.AddRange(subset);
+
+            if (costService is BlobCostManagementService blob)
+                blob.SubscriptionFilter = new HashSet<string>(subset, StringComparer.OrdinalIgnoreCase);
+
+            logger.LogInformation(
+                "CostCollector[{CorrelationId}]: partition {Index}/{Count} handling {Subset} of {Total} subscription(s).",
+                correlationId, partitionIndex, partitionCount, subset.Count, all.Count);
+        }
+
+        subscriptionCount = costOptions.SubscriptionIds.Count;
+
+        logger.LogInformation(
+            "CostCollector[{CorrelationId}]: starting {Trigger} collection for {SubCount} subscription(s) on replica {Replica}.",
+            correlationId, trigger, subscriptionCount, replicaName);
+
+        // RefreshAsync re-parses the export CSVs (the source feed) and, when the SQL data platform
+        // is enabled, upserts the aggregated rows into CostFact before warming the shared Redis cache.
+        // Amortized data is API-only (exports use ActualCost), so it is fetched separately.
+        var result = await costService.RefreshAsync();
+        var amort  = await costService.GetAmortizedMainCostDataAsync();
+        mainRows += result.Main; rgRows += result.Rg; tagRows += result.Tag; amortRows += amort.Count;
+    }
+
+    auditRecord.Status = "Success";
 
     logger.LogInformation(
         "CostCollector[{CorrelationId}]: collection complete. main={Main}, rg={Rg}, tag={Tag}, amort={Amort}.",
-        correlationId, result.Main, result.Rg, result.Tag, amort.Count);
+        correlationId, mainRows, rgRows, tagRows, amortRows);
 }
 catch (Exception ex)
 {
@@ -169,8 +239,13 @@ catch (Exception ex)
 }
 
 sw.Stop();
-auditRecord.FinishedUtc = DateTimeOffset.UtcNow;
-auditRecord.DurationMs  = sw.ElapsedMilliseconds;
+auditRecord.SubscriptionCount = subscriptionCount;
+auditRecord.MainRows          = (int)mainRows;
+auditRecord.RgRows            = (int)rgRows;
+auditRecord.TagRows           = (int)tagRows;
+auditRecord.AmortRows         = (int)amortRows;
+auditRecord.FinishedUtc       = DateTimeOffset.UtcNow;
+auditRecord.DurationMs        = sw.ElapsedMilliseconds;
 
 await audit.WriteAsync(auditRecord);
 

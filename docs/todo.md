@@ -42,7 +42,7 @@ detail page (goal + sub-task breakdown) under [`docs/phases/`](phases/).
 | Phase 6 | Cost-insight enrichment (same ARM token): native forecast, Marketplace spend split, anomaly detection, reservation utilization trend | — | ✅ Shipped | [phase6.md](phases/phase6.md) |
 | Phase 7 | Azure inventory & optimization: Resource Graph enrichment, orphaned-resource finder, reservation/savings-plan purchase recommendations | — | ✅ Shipped | [phase7.md](phases/phase7.md) |
 | Phase 8 | Azure security & sustainability: Defender for Cloud Secure Score (Azure only), Carbon Optimization emissions | — | ✅ Shipped | [phase8.md](phases/phase8.md) |
-| Phase 9 | CSP multi-tenancy: customer→tenant→subscription model, per-tenant tokens (GDAP + multi-tenant Entra app), tenant-isolated cache/data | — | 📋 Planned | [phase9.md](phases/phase9.md) |
+| Phase 9 | CSP multi-tenancy: customer→tenant→subscription model, per-tenant tokens (GDAP + multi-tenant Entra app), tenant-isolated cache/data | — | ✅ Shipped | [phase9.md](phases/phase9.md) |
 
 ---
 
@@ -50,7 +50,14 @@ detail page (goal + sub-task breakdown) under [`docs/phases/`](phases/).
 
 | Item | Phase | Priority | Status | Owner | Notes |
 |---|---|---|---|---|---|
-| _No active items._ | — | — | — | — | — |
+| Data model: customer → tenant → subscriptions | Phase 9 | P1 | ✅ Shipped | — | `CustomerEntity`/`CustomerSubscriptionEntity` + `CostFact` tenant columns + index; `schema.sql` idempotent + bootstrap home customer; gated by `MultiTenancy` flag |
+| Multi-tenant sign-in + tenant-scope resolver | Phase 9 | P1 | ✅ Shipped | — | `CustomerStore` registry + issuer-validated multi-tenant OIDC (gated); `ITenantScopeProvider` resolves `tid`→customer scope |
+| Tenant-isolated cache + SQL reads (P0 boundary) | Phase 9 | P0 | ✅ Shipped | — | `TenantScope.CacheKeyPrefix` + `TenantScopeAccessor` (ambient); `BlobCostManagementService` scopes SQL reads (`WHERE CustomerId IN`), prefixes cache keys, stamps writes; `CostPageBase` publishes scope; API-mode `CostManagementService` keys prefixed via `Scoped()`; `CacheWarmupService` warms per-customer partitions |
+| Per-tenant ARM token acquisition | Phase 9 | P1 | ✅ Shipped | — | `AzureTokenService` reads ambient scope → client-secret mode acquires tokens with `.WithTenantId(customerTenantId)` (MSAL per-tenant cache); MI mode stays home-tenant (can't cross tenants) |
+| Per-tenant collector fan-out | Phase 9 | P2 | ✅ Shipped | — | `CostCollectorJob` iterates active customers partitioned by `COLLECT_PARTITION_INDEX/COUNT`, sets ambient scope per slice (per-tenant token + scoped cache/SQL), accumulates audit totals; single-tenant unchanged |
+| Scale-out collection (large estates) | Phase 9 | P2 | ✅ Shipped | — | `JobControlService.StartScaledAsync` POSTs N `jobs/start` executions with per-partition `COLLECT_PARTITION_*` overrides (no native task index); count from `CollectorJob:PartitionCount`, wired via `collectorPartitionCount` in bicep |
+| Customer picker + onboarding UI | Phase 9 | P1 | ✅ Shipped | — | Partner-only `/customers` admin page (onboard/suspend/map subs) via `CustomerStore` write methods; gated partner picker in `MainLayout` + nav link drive `SelectedCustomerId`; `CostPageBase` narrows partner scope to one customer |
+| GDAP delegated-access onboarding | Phase 9 | P1 | ✅ Shipped | — | `GdapOnboardingService`: per-customer admin-consent link + ARM subscription auto-discovery (per-tenant GDAP token) auto-maps subscriptions, replacing manual GUID entry; GDAP relationship id stored on the customer. Partner Center API stays out of scope (relationship created in the portal) |
 
 ---
 
@@ -60,7 +67,7 @@ Planned phases, newest first. Open the detail page for each phase's goal and sub
 
 | Phase | Theme | Priority | Status | Detail |
 |---|---|---|---|---|
-| Phase 9 | CSP multi-tenancy | P0 | 📋 Planned | [phase9.md](phases/phase9.md) |
+| Phase 9 | CSP multi-tenancy | P0 | ✅ Shipped | [phase9.md](phases/phase9.md) |
 
 ---
 

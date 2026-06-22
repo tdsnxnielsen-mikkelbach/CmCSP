@@ -384,7 +384,7 @@
         _collectMessage = null;
         try
         {
-            var status = await JobControl.StartOrCoalesceAsync();
+            var status = await JobControl.StartScaledAsync(JobControl.DefaultPartitionCount);
 
             switch (status.Status)
             {

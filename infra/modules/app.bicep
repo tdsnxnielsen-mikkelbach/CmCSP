@@ -40,6 +40,17 @@ param maxReplicas int = 4
 @description('HTTP concurrent-requests threshold per replica before scaling out.')
 param scaleHttpConcurrentRequests int = 50
 
+@description('Number of parallel collector executions a single "Collect now" fans out to (scale lever for larger CSP estates: each execution handles a disjoint COLLECT_PARTITION_INDEX slice of the customer/subscription set). 1 = single execution.')
+@minValue(1)
+@maxValue(20)
+param collectorPartitionCount int = 1
+
+@description('Phase 9 (CSP multi-tenancy) master switch. false = single-tenant (home tenant only); true = partners see all registered customers and per-tenant scoping/GDAP applies. Requires the SQL data platform.')
+param multiTenancyEnabled bool = false
+
+@description('Phase 9: the CSP\'s own (home) Entra tenant GUID. A user whose token tid matches this is the partner. Leave empty to default to AzureCostManagement:TenantId.')
+param homeTenantId string = ''
+
 @description('Tags to apply to all resources.')
 param tags object = {}
 
@@ -275,6 +286,24 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'CollectorJob__JobName'
               value: '${appName}-collect'
             }
+            {
+              // How many parallel executions "Collect now" launches (scale-out for larger
+              // estates). Each execution self-selects COLLECT_PARTITION_INDEX 0..count-1.
+              name: 'CollectorJob__PartitionCount'
+              value: '${collectorPartitionCount}'
+            }
+            // ── Phase 9: CSP multi-tenancy ──────────────────────────────────
+            // Off by default = single-tenant. When true, partners see all registered
+            // customers and per-tenant scoping/GDAP applies (requires the SQL data platform).
+            {
+              name: 'AzureCostManagement__MultiTenancy__Enabled'
+              value: '${multiTenancyEnabled}'
+            }
+            {
+              // Empty -> the app falls back to AzureCostManagement:TenantId (the home tenant).
+              name: 'AzureCostManagement__MultiTenancy__HomeTenantId'
+              value: homeTenantId
+            }
           ]
         }
       ]
@@ -413,6 +442,13 @@ resource collectJob 'Microsoft.App/jobs@2024-03-01' = {
               name: 'COLLECT_TRIGGER'
               value: 'schedule' // overridden to 'manual' on UI-started executions
             }
+            {
+              // Default partition count for scheduled runs (1 = single execution collects
+              // everything; the collector fans out over customers internally). UI-started
+              // scaled runs override COLLECT_PARTITION_COUNT/INDEX per execution.
+              name: 'COLLECT_PARTITION_COUNT'
+              value: '${collectorPartitionCount}'
+            }
             // ── Cost Management API (Query mode fallback) ───────────────────
             {
               name: 'AzureCostManagement__TenantId'
@@ -463,6 +499,16 @@ resource collectJob 'Microsoft.App/jobs@2024-03-01' = {
             {
               name: 'AzureCostManagement__AzureCache__CacheContainerName'
               value: 'cmcspcache'
+            }
+            // ── Phase 9: CSP multi-tenancy ──────────────────────────────────
+            // Gates the collector's per-customer fan-out. Off = single-tenant collection.
+            {
+              name: 'AzureCostManagement__MultiTenancy__Enabled'
+              value: '${multiTenancyEnabled}'
+            }
+            {
+              name: 'AzureCostManagement__MultiTenancy__HomeTenantId'
+              value: homeTenantId
             }
           ]
         }
