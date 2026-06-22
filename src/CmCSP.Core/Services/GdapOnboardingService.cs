@@ -79,7 +79,12 @@ public sealed class GdapOnboardingService
         {
             ["client_id"]    = _options.ClientId,
             ["redirect_uri"] = redirectUri,
-            ["state"]        = customerTenantId.Trim()
+            ["state"]        = customerTenantId.Trim(),
+            // Force an account picker so Entra does not silently reuse the partner/home-tenant
+            // session. The admin MUST consent with a Global Administrator native to the customer
+            // tenant; reusing a foreign account triggers AADSTS50020 ("account does not exist in
+            // this tenant"). prompt=select_account makes that choice explicit.
+            ["prompt"]       = "select_account"
         };
 
         var qs = string.Join('&', query

@@ -287,6 +287,63 @@ az containerapp job update --name $collectJobName --resource-group $appRg `
     --set-env-vars @envPairs --only-show-errors 2>$null | Out-Null
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Phase 6a – Entra app registration redirect URIs
+# ──────────────────────────────────────────────────────────────────────────────
+# Ensure the Container App's public FQDN is registered as a redirect URI on the
+# Entra app registration, so both OIDC sign-in and GDAP admin-consent return work:
+#   /signin-oidc            → Microsoft.Identity.Web OIDC callback (always required for auth)
+#   /gdap/consent-callback  → GDAP admin-consent return (anonymous landing page; the customer
+#                             admin is NOT a dashboard user, so this must be a public endpoint —
+#                             a protected page would force an OIDC sign-in and fail AADSTS50020).
+# Without the consent-callback URI, the consent flow fails with AADSTS50011 (redirect_uri mismatch).
+# Idempotent: merges with any existing URIs (e.g. localhost dev) and only updates
+# when something is missing. Best-effort — the deployer needs Application.ReadWrite
+# on the app object; a failure here warns and continues (sign-in still works if the
+# URI was registered previously).
+
+Write-Step "Phase 6a – Entra app registration redirect URIs"
+
+try {
+    $appFqdn = az containerapp show --name $containerAppName --resource-group $appRg `
+        --query 'properties.configuration.ingress.fqdn' -o tsv --only-show-errors 2>$null
+    if ([string]::IsNullOrWhiteSpace($appFqdn)) {
+        Write-Warning "  Could not resolve the Container App FQDN; skipping redirect-URI wiring."
+    }
+    else {
+        $desiredUris = @(
+            "https://$appFqdn/signin-oidc"
+            "https://$appFqdn/gdap/consent-callback"
+        )
+
+        # The Entra app is referenced by client id; resolve its Graph object id.
+        $appObjectId = az ad app show --id $clientId --query id -o tsv --only-show-errors 2>$null
+        if ([string]::IsNullOrWhiteSpace($appObjectId)) {
+            Write-Warning "  Could not find app registration '$clientId' in this tenant; skipping redirect-URI wiring."
+        }
+        else {
+            $existingUris = @(az ad app show --id $clientId --query 'web.redirectUris' -o tsv --only-show-errors 2>$null |
+                Where-Object { $_ })
+
+            $missing = $desiredUris | Where-Object { $existingUris -notcontains $_ }
+            if ($missing.Count -eq 0) {
+                Write-Host "  Redirect URIs already registered for $appFqdn." -ForegroundColor DarkGray
+            }
+            else {
+                # --web-redirect-uris REPLACES the whole list, so re-send existing + missing.
+                $mergedUris = @($existingUris + $missing | Select-Object -Unique)
+                Write-Host "  Registering $($missing.Count) redirect URI(s) for $appFqdn..."
+                az ad app update --id $clientId --web-redirect-uris @mergedUris --only-show-errors | Out-Null
+                Write-Host "  Redirect URIs updated." -ForegroundColor Green
+            }
+        }
+    }
+}
+catch {
+    Write-Warning "  Redirect-URI wiring failed: $($_.Exception.Message)"
+    Write-Warning "  Add 'https://<app-fqdn>/signin-oidc' and 'https://<app-fqdn>/customers' to the app registration manually."
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Phase 6b – Cost Management Contributor for the Entra App SP
 # ──────────────────────────────────────────────────────────────────────────────
 # Grants the Entra App SP 'Cost Management Contributor' on each target

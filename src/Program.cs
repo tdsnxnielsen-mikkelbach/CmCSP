@@ -273,6 +273,61 @@ app.MapGet("/logout", async (HttpContext ctx) =>
         new AuthenticationProperties { RedirectUri = "/" });
 }).RequireAuthorization();
 
+// ── GDAP admin-consent callback ────────────────────────────────────────────────
+// Where Entra returns a CUSTOMER's Global Admin after they grant this multi-tenant
+// app delegated access (see GdapOnboardingService.BuildAdminConsentUrl). This MUST
+// be anonymous: the customer admin is not a dashboard user, so it must NOT trigger
+// an OIDC sign-in challenge (that would bounce them to the home tenant and fail with
+// AADSTS50020). It just renders a terminal "you can close this window" page.
+// Entra appends: admin_consent=True & tenant={customerTid} & state={customerTid} on
+// success, or error & error_description on failure.
+app.MapGet("/gdap/consent-callback", (HttpContext ctx) =>
+{
+    static string Enc(string? s) => System.Net.WebUtility.HtmlEncode(s ?? string.Empty);
+
+    var consented = string.Equals(ctx.Request.Query["admin_consent"], "True", StringComparison.OrdinalIgnoreCase);
+    var tenant = Enc(ctx.Request.Query["tenant"]);
+    var error = Enc(ctx.Request.Query["error"]);
+    var errorDescription = Enc(ctx.Request.Query["error_description"]);
+
+    string title, message, colour;
+    if (consented)
+    {
+        title = "Access granted";
+        message = $"Delegated access was granted for tenant <code>{tenant}</code>. " +
+                  "You can close this window and return to your partner. " +
+                  "They can now discover your subscriptions in the dashboard.";
+        colour = "#107c10";
+    }
+    else
+    {
+        title = "Consent not completed";
+        message = string.IsNullOrEmpty(error)
+            ? "Consent was cancelled or did not complete. You can close this window and try the link again."
+            : $"Consent failed: <code>{error}</code> – {errorDescription}. You can close this window and try again.";
+        colour = "#a4262c";
+    }
+
+    var html = $$"""
+        <!DOCTYPE html>
+        <html lang="en"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>{{Enc(title)}}</title>
+        <style>
+          body{font-family:Segoe UI,system-ui,sans-serif;background:#faf9f8;color:#201f1e;
+               display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+          .card{background:#fff;border:1px solid #edebe9;border-radius:8px;padding:2rem 2.5rem;
+                max-width:30rem;box-shadow:0 1.6px 3.6px rgba(0,0,0,.13)}
+          h1{font-size:1.25rem;margin:0 0 .75rem;color:{{colour}}}
+          p{font-size:.95rem;line-height:1.5;margin:0}
+          code{background:#f3f2f1;padding:.1rem .3rem;border-radius:3px;font-size:.85em}
+        </style></head>
+        <body><div class="card"><h1>{{Enc(title)}}</h1><p>{{message}}</p></div></body></html>
+        """;
+
+    return Results.Content(html, "text/html");
+}).AllowAnonymous();
+
 app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();

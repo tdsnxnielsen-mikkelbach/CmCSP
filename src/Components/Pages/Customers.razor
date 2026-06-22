@@ -178,6 +178,14 @@ else
                             </div>
 
                             <MudText Typo="Typo.subtitle2" Class="mb-2 fw-bold">Subscriptions</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-2 d-block">
+                                Use <b>Discover subscriptions</b> above to map automatically (needs the app to
+                                hold <b>Reader</b> in the customer tenant). Can't use discovery? Map a
+                                subscription <b>manually</b> below by pasting its GUID. Note: mapping only links
+                                the subscription here &mdash; cost data still requires the app to have
+                                <b>Reader</b> (or <b>Cost Management Reader</b>) on that subscription so the
+                                collector can read its usage.
+                            </MudText>
                             @{
                                 var subs = _subsByCustomer.TryGetValue(c.Id, out var s) ? s : [];
                             }
@@ -268,7 +276,16 @@ else
             var scope = await ScopeProvider.GetScopeAsync();
             _isPartner = scope.IsPartner;
             if (_isPartner)
+            {
                 await ReloadAsync();
+            }
+            else
+            {
+                // Customer management is partner-only. A signed-in customer user has no business
+                // here, so send them back to their dashboard rather than rendering a dead page.
+                Nav.NavigateTo("/", forceLoad: false, replace: true);
+                return;
+            }
         }
         _ready = true;
     }
@@ -374,7 +391,7 @@ else
     {
         try
         {
-            var redirect = Nav.ToAbsoluteUri("/customers").ToString();
+            var redirect = Nav.ToAbsoluteUri("/gdap/consent-callback").ToString();
             var url = Gdap.BuildAdminConsentUrl(tenantId, redirect);
             await JS.InvokeVoidAsync("navigator.clipboard.writeText", url);
             Snackbar.Add("Admin-consent link copied to clipboard. Send it to the customer admin.", Severity.Success);
@@ -392,7 +409,12 @@ else
         {
             var result = await Gdap.SyncSubscriptionsAsync(customerId, tenantId);
             if (result.Discovered == 0)
-                Snackbar.Add("No subscriptions found. Has the customer consented and the GDAP relationship been set up?", Severity.Warning);
+                Snackbar.Add(
+                    "No subscriptions found. Admin consent only grants Microsoft Graph access — it does " +
+                    "NOT grant Azure resource access. The customer must also assign this app the " +
+                    "'Reader' (or 'Cost Management Reader') role on their subscription(s) or management " +
+                    "group in Access control (IAM), or include those Azure roles in the GDAP relationship.",
+                    Severity.Warning);
             else
                 Snackbar.Add($"Discovered {result.Discovered} subscription(s); mapped {result.Added} new.", Severity.Success);
             await ReloadAsync();
