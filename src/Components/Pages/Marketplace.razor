@@ -116,7 +116,12 @@
             var data = await CostService.GetPublisherBreakdownAsync();
 
             // Anything that isn't Azure first-party counts as third-party Marketplace.
-            static bool IsAzure(string p) => p.Equals("azure", StringComparison.OrdinalIgnoreCase);
+            // The Cost Management PublisherType dimension reports first-party spend as
+            // "Microsoft" (newer API) or "Azure" (older); blank also means first-party.
+            static bool IsAzure(string p) =>
+                string.IsNullOrWhiteSpace(p)
+                || p.Equals("azure", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("microsoft", StringComparison.OrdinalIgnoreCase);
 
             _azure       = data.Where(r => IsAzure(r.PublisherType)).Sum(r => r.NormalizedCost);
             _marketplace = data.Where(r => !IsAzure(r.PublisherType)).Sum(r => r.NormalizedCost);
