@@ -167,11 +167,13 @@ Values only available when CostDetails:Enabled = true." Arrow>
                 .ToList();
 
             // The universe of subscriptions = those present in the data (across every in-scope
-            // tenant) unioned with the home registry, narrowed by the active view-filter. The old
-            // code only listed SubStore.AllIds, so a partner never saw customer subscriptions here.
+            // tenant) unioned with every subscription in scope (home registry + each in-scope
+            // customer's mapped subscriptions), narrowed by the active view-filter. Using the
+            // scope set (not just SubStore.AllIds) guarantees a partner sees every customer
+            // subscription here even when a sub currently has no cost rows.
             var sel = State.SelectedSubscriptionIds;
             var universe = data.Select(r => r.SubscriptionId)
-                .Concat(SubStore.AllIds)
+                .Concat(_scopeSubIds)
                 .Where(id => !string.IsNullOrWhiteSpace(id))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Where(id => sel.Count == 0 || sel.Contains(id))
@@ -196,25 +198,18 @@ Values only available when CostDetails:Enabled = true." Arrow>
                         Total = existing?.Total ?? 0m,
                         Mtd = existing?.Mtd ?? 0m,
                         Amortized = amortTotal,
-                        Tenant = subTenant.TryGetValue(id, out var t) ? t : string.Empty
+                        // Prefer the tenant from the rows; fall back to the scope map (covers subs
+                        // with no cost rows yet) so every subscription is tenant-attributed.
+                        Tenant = subTenant.TryGetValue(id, out var t) && !string.IsNullOrWhiteSpace(t)
+                            ? t
+                            : (_subTenantMap.TryGetValue(id, out var mt) ? mt : string.Empty)
                     };
                 })
                 .OrderByDescending(x => x.Total)
                 .ToList();
 
             _barData = merged
-                .Select(x =>
-                {
-                    var name = string.IsNullOrWhiteSpace(x.SubscriptionName) ? x.SubscriptionId : x.SubscriptionName;
-                    // Label with the subscription name (never a bare GUID) plus its tenant when
-                    // multi-tenancy is on, so a partner can see which tenant each bar belongs to.
-                    var tenant = TenantNames.GetCachedOrId(x.Tenant);
-                    var label = Options.MultiTenancy.Enabled && !string.IsNullOrWhiteSpace(tenant)
-                                && !tenant.Equals(name, StringComparison.OrdinalIgnoreCase)
-                        ? $"{name} · {tenant}"
-                        : name;
-                    return new SubPoint(label, x.Total);
-                })
+                .Select(x => new SubPoint(SubChartLabel(x.SubscriptionId), x.Total))
                 .ToList();
 
             _rows = merged

@@ -77,6 +77,7 @@ public sealed class CostManagementService : ICostManagementService
     private readonly DataLoadingStateService        _loadingState;
     private readonly ILogger<CostManagementService> _logger;
     private readonly TenantScopeAccessor?           _scopeAccessor;
+    private readonly CustomerStore?                 _customers;
 
     public CostManagementService(
         IHttpClientFactory           httpFactory,
@@ -85,7 +86,8 @@ public sealed class CostManagementService : ICostManagementService
         CostManagementOptions         options,
         DataLoadingStateService        loadingState,
         ILogger<CostManagementService> logger,
-        TenantScopeAccessor?           scopeAccessor = null)
+        TenantScopeAccessor?           scopeAccessor = null,
+        CustomerStore?                 customers = null)
     {
         _httpFactory  = httpFactory;
         _cache        = cache;
@@ -94,6 +96,7 @@ public sealed class CostManagementService : ICostManagementService
         _loadingState = loadingState;
         _logger       = logger;
         _scopeAccessor = scopeAccessor;
+        _customers     = customers;
     }
 
     // The current request's tenant scope (Unscoped in the single-tenant path or background work).
@@ -723,14 +726,20 @@ public sealed class CostManagementService : ICostManagementService
             "Fetching publisher-type (Marketplace) breakdown for {Count} subscription(s).",
             _options.SubscriptionIds.Count);
 
+        // Resolve which subscriptions to query and the tenant authority each one needs. In the
+        // single-tenant path this is just the configured home subs on the home token; under
+        // multi-tenancy it is the scope's customer subs, each read with that customer's tenant
+        // (GDAP) token so cross-tenant Marketplace data is actually returned.
+        var targets = await ResolvePublisherTargetsAsync(ct);
+
         // Aggregate month-to-date per (PublisherType, MeterCategory) across subscriptions.
         var agg = new Dictionary<(string Publisher, string Service), decimal>();
 
-        foreach (var subId in _options.SubscriptionIds)
+        foreach (var (subId, tenantId) in targets)
         {
             try
             {
-                foreach (var row in await FetchPublisherBreakdownForSubAsync(subId, ct))
+                foreach (var row in await FetchPublisherBreakdownForSubAsync(subId, tenantId, ct))
                 {
                     var key = (row.PublisherType, row.ServiceName);
                     agg.TryGetValue(key, out var sum);
@@ -754,8 +763,51 @@ public sealed class CostManagementService : ICostManagementService
         return result;
     }
 
+    /// <summary>
+    /// The (subscriptionId, tenantId) pairs to query for the current scope. <c>tenantId</c> is
+    /// <c>null</c> for the home authority. Single-tenant/unscoped → the configured home subs.
+    /// A single customer → that customer's subs on its tenant. The partner aggregate → every
+    /// active customer's subs (each on its own tenant) plus the configured home subs.
+    /// </summary>
+    private async Task<IReadOnlyList<(string SubscriptionId, string? TenantId)>> ResolvePublisherTargetsAsync(
+        CancellationToken ct)
+    {
+        var scope = Scope;
+        var map = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+        // Legacy single-tenant path (or registry unavailable): exactly as before — home subs, home token.
+        if (scope.IsUnscoped || _customers is null || !_customers.IsEnabled)
+        {
+            foreach (var s in _options.SubscriptionIds) map[s] = null;
+            return [.. map.Select(kv => (kv.Key, kv.Value))];
+        }
+
+        if (scope.IsDenied) return [];
+
+        var customers = scope.IsPartner
+            ? await _customers.GetActiveCustomersAsync(ct)
+            : (await _customers.GetActiveCustomersAsync(ct))
+                .Where(c => scope.CustomerIds.Contains(c.Id))
+                .ToList();
+
+        foreach (var c in customers)
+        {
+            var tid = string.IsNullOrWhiteSpace(c.TenantId) ? null : c.TenantId;
+            foreach (var sub in await _customers.GetSubscriptionsAsync(c.Id, ct))
+                map[sub.SubscriptionId] = tid;
+        }
+
+        // Include the partner's own (statically-configured) subscriptions in the aggregate view,
+        // queried on the home token, without overwriting any explicit per-customer mapping.
+        if (scope.IsPartner)
+            foreach (var s in _options.SubscriptionIds)
+                if (!map.ContainsKey(s)) map[s] = null;
+
+        return [.. map.Select(kv => (kv.Key, kv.Value))];
+    }
+
     private async Task<List<PublisherTypeCostRow>> FetchPublisherBreakdownForSubAsync(
-        string subscriptionId, CancellationToken ct)
+        string subscriptionId, string? tenantId, CancellationToken ct)
     {
         var rows = new List<PublisherTypeCostRow>();
         var url = $"https://management.azure.com/subscriptions/{subscriptionId}" +
@@ -783,7 +835,7 @@ public sealed class CostManagementService : ICostManagementService
         await ThrottleAsync(subscriptionId, ct);
 
         using var client = _httpFactory.CreateClient("AzureMgmt");
-        var token = await _tokenService.GetAccessTokenAsync(ct);
+        var token = await _tokenService.GetAccessTokenAsync(tenantId, ct);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         var response = await client.PostAsJsonAsync(url, body, JsonOpts, ct);

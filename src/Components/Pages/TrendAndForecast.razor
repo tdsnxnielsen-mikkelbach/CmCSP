@@ -306,7 +306,7 @@ purchases skew ActualCost." Arrow>
                     var cost = rangeFiltered
                         .Where(r => r.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase))
                         .Sum(r => r.NormalizedCost);
-                    var name = _subNames.TryGetValue(id, out var n) ? n : id;
+                    var name = GetSubName(id);
                     return new SubRangePoint(id, name, SubTenantName(id), cost);
                 })
                 .OrderByDescending(s => s.Cost)

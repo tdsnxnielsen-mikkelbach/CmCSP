@@ -220,7 +220,7 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
                     var subTotal = rows.Sum(r => r.NormalizedCost);
                     var subTagged = rows.Where(r => !string.IsNullOrWhiteSpace(r.Tag)).Sum(r => r.NormalizedCost);
                     var subUntagged = rows.Where(r => string.IsNullOrWhiteSpace(r.Tag)).Sum(r => r.NormalizedCost);
-                    var name = _subNames.TryGetValue(id, out var n) ? n : id;
+                    var name = GetSubName(id);
                     return new SubCoverage(id, name, SubTenantName(id), subTotal, subTagged, subUntagged);
                 })
                 .OrderByDescending(s => s.TotalCost)

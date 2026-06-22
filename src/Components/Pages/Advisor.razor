@@ -18,10 +18,10 @@
                Dense="true"
                Class="advisor-scope-select">
         <MudSelectItem T="string" Value="@AllSubsToken">All selected subscriptions</MudSelectItem>
-        @foreach (var id in SubStore.AllIds)
+        @foreach (var id in GetOrderedSubscriptionIds())
         {
             var capturedId = id;
-            <MudSelectItem T="string" Value="@capturedId">@GetSubName(capturedId)</MudSelectItem>
+            <MudSelectItem T="string" Value="@capturedId">@SubChartLabel(capturedId)</MudSelectItem>
         }
     </MudSelect>
 </MudPaper>
@@ -173,6 +173,12 @@ else if (_summaryRecCount > 0)
                      Hover="true">
             <Columns>
                 <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" Sortable="true" />
+                @if (ShowTenantColumn)
+                {
+                    <TemplateColumn Title="Tenant" Sortable="true" SortBy="r => SubTenantName(r.SubscriptionId)">
+                        <CellTemplate>@SubTenantName(context.Item.SubscriptionId)</CellTemplate>
+                    </TemplateColumn>
+                }
                 <PropertyColumn Property="r => r.ImpactedValue" Title="Resource" Sortable="true" />
                 <TemplateColumn Title="Resource Type" Sortable="true" SortBy="r => r.ImpactedField">
                     <CellTemplate>
@@ -262,7 +268,7 @@ else if (_summaryRecCount > 0)
             _subNames = await namesTask;
 
             if (_selectedAdvisorSubId != AllSubsToken
-                && !SubStore.AllIds.Any(id => id.Equals(_selectedAdvisorSubId, StringComparison.OrdinalIgnoreCase)))
+                && !_scopeSubIds.Contains(_selectedAdvisorSubId))
             {
                 _selectedAdvisorSubId = AllSubsToken;
             }
@@ -273,17 +279,15 @@ else if (_summaryRecCount > 0)
 
     private void Compute()
     {
-        var allSelectedIds = SubStore.AllIds
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var allSelectedIds = GetOrderedSubscriptionIds();
 
         var scopedIds = _selectedAdvisorSubId == AllSubsToken
-            ? SubStore.AllIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            ? allSelectedIds
             : [ _selectedAdvisorSubId ];
 
         _advisorScopeLabel = _selectedAdvisorSubId == AllSubsToken
             ? "All selected subscriptions"
-            : GetSubName(_selectedAdvisorSubId);
+            : SubChartLabel(_selectedAdvisorSubId);
 
         var summaryScores = _scores
             .Where(s => allSelectedIds.Contains(s.SubscriptionId, StringComparer.OrdinalIgnoreCase))
@@ -340,11 +344,9 @@ else if (_summaryRecCount > 0)
             .ToDictionary(g => g.Key, g => Math.Round(g.Sum(r => r.NormalizedAnnualSavings), 0), StringComparer.OrdinalIgnoreCase);
 
         _bySub = scopedIds
-            .Select(id =>
-            {
-                var name = GetSubName(id);
-                return new SubPoint(name, savingsBySubId.TryGetValue(id, out var saving) ? saving : 0m);
-            })
+            .Select(id => new SubPoint(
+                SubChartLabel(id),
+                savingsBySubId.TryGetValue(id, out var saving) ? saving : 0m))
             .OrderByDescending(p => p.Saving)
             .ToList();
 

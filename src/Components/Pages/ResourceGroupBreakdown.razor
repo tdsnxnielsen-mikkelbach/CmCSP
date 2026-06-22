@@ -45,6 +45,10 @@
                 <Columns>
                     <PropertyColumn Property="r => r.RgName"       Title="Resource Group" />
                     <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" />
+                    @if (ShowTenantColumn)
+                    {
+                        <PropertyColumn Property="r => r.Tenant" Title="Tenant" />
+                    }
                     <PropertyColumn Property="r => r.TotalCost"     Title="Total Cost"    Format="N0" />
                     <PropertyColumn Property="r => r.MtdCost"       Title="MTD"           Format="N0" />
                     <TemplateColumn Title="Share %">
@@ -62,6 +66,7 @@
     private record RgPoint(
         string RgName,
         string SubscriptionName,
+        string Tenant,
         decimal TotalCost,
         decimal MtdCost,
         decimal SharePct,
@@ -140,18 +145,23 @@
                 .ToList();
 
             _barData = top15
-                .Select(x => new RgPoint(
-                    x.Name,
-                    GetTopSubForRg(filtered, x.Name),
-                    x.Total,
-                    x.Mtd,
-                    _totalCost > 0 ? x.Total / _totalCost * 100m : 0m,
-                    x.AvgMthly))
+                .Select(x =>
+                {
+                    var topSubId = GetTopSubIdForRg(filtered, x.Name);
+                    return new RgPoint(
+                        x.Name,
+                        GetSubName(topSubId),
+                        SubTenantName(topSubId),
+                        x.Total,
+                        x.Mtd,
+                        _totalCost > 0 ? x.Total / _totalCost * 100m : 0m,
+                        x.AvgMthly);
+                })
                 .ToList();
         });
     }
 
-    private string GetTopSubForRg(List<CostRow> filtered, string rgName)
+    private string GetTopSubIdForRg(List<CostRow> filtered, string rgName)
     {
         var best = filtered
             .Where(r => (string.IsNullOrWhiteSpace(r.ResourceGroupName) ? "(unassigned)" : r.ResourceGroupName) == rgName)
@@ -159,7 +169,7 @@
             .Select(g => new { Id = g.Key, Cost = g.Sum(r => r.NormalizedCost) })
             .OrderByDescending(x => x.Cost)
             .FirstOrDefault();
-        return best is null ? string.Empty : GetSubName(best.Id);
+        return best?.Id ?? string.Empty;
     }
 
 }

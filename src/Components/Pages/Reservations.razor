@@ -4,6 +4,8 @@
 @inject OptimizationService Optimization
 @inject CostManagementOptions Options
 @inject SubscriptionStoreService SubStore
+@inject CustomerStore Customers
+@inject TenantNameService TenantNames
 @implements IDisposable
 
 <PageTitle>Reservations – CSP Dashboard</PageTitle>
@@ -259,6 +261,12 @@ else
                 <TemplateColumn Title="Subscription">
                     <CellTemplate>@SubName(context.Item.SubscriptionId)</CellTemplate>
                 </TemplateColumn>
+                @if (ShowTenant)
+                {
+                    <TemplateColumn Title="Tenant">
+                        <CellTemplate>@SubTenant(context.Item.SubscriptionId)</CellTemplate>
+                    </TemplateColumn>
+                }
                 <PropertyColumn Property="r => r.RecommendedQuantity" Title="Qty" Format="N0" />
                 <PropertyColumn Property="r => r.NormalizedNetSavings"
                                 Title=@($"Est. Savings ({Options.TargetCurrency})")
@@ -375,6 +383,7 @@ else
             _recommendations = await recsTask;
             _orders          = await ordersTask;
             _subNames        = await namesTask;
+            await BuildTenantMapAsync();
         }
         catch
         {
@@ -521,7 +530,57 @@ else
         $"{Options.TargetCurrency} {value:N0}";
 
     private string SubName(string subscriptionId) =>
-        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
+        _subNames.TryGetValue(subscriptionId, out var name) && !string.IsNullOrWhiteSpace(name)
+            ? name
+            : subscriptionId;
+
+    private bool ShowTenant => Options.MultiTenancy.Enabled;
+
+    private string SubTenant(string subscriptionId) =>
+        _subTenant.TryGetValue(subscriptionId, out var tid) ? TenantNames.GetCachedOrId(tid) : string.Empty;
+
+    private readonly Dictionary<string, string> _subTenant = new(StringComparer.OrdinalIgnoreCase);
+
+    // Builds subId -> tenantId from the customer registry and merges missing subscription names.
+    private async Task BuildTenantMapAsync()
+    {
+        if (!Customers.IsEnabled) return;
+        foreach (var c in await Customers.GetActiveCustomersAsync())
+        {
+            if (!string.IsNullOrWhiteSpace(c.TenantId))
+                await TenantNames.GetDisplayNameAsync(c.TenantId);
+
+            foreach (var sub in await Customers.GetSubscriptionsAsync(c.Id))
+            {
+                if (!string.IsNullOrWhiteSpace(c.TenantId))
+                    _subTenant[sub.SubscriptionId] = c.TenantId;
+                if (!_subNames.ContainsKey(sub.SubscriptionId) && !string.IsNullOrWhiteSpace(sub.SubscriptionName))
+                    _subNames[sub.SubscriptionId] = sub.SubscriptionName;
+            }
+        }
+
+        await MapHomeSubscriptionsAsync();
+    }
+
+    // The home/partner's own subscriptions live in the SubStore registry, not the
+    // CustomerSubscription table, so attribute them to the home tenant explicitly — otherwise
+    // home subscriptions render without a [tenant] label while customer ones have it, making it
+    // look like only one subscription per tenant is labelled.
+    private async Task MapHomeSubscriptionsAsync()
+    {
+        var home = await Customers.GetHomeCustomerAsync();
+        var homeTenant = !string.IsNullOrWhiteSpace(home?.TenantId)
+            ? home!.TenantId
+            : !string.IsNullOrWhiteSpace(Options.MultiTenancy.HomeTenantId)
+                ? Options.MultiTenancy.HomeTenantId
+                : Options.TenantId;
+        if (string.IsNullOrWhiteSpace(homeTenant)) return;
+
+        await TenantNames.GetDisplayNameAsync(homeTenant);
+        foreach (var id in SubStore.AllIds)
+            if (!_subTenant.ContainsKey(id))
+                _subTenant[id] = homeTenant;
+    }
 
     private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
 

@@ -1,3 +1,4 @@
+using CmCSP.Data;
 using CmCSP.Models;
 using CmCSP.Services;
 using Microsoft.AspNetCore.Components;
@@ -45,6 +46,14 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// just the home registry.
     /// </summary>
     protected readonly HashSet<string> _scopeSubIds = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Authoritative customer subscription id → name fallback, populated from the
+    /// <c>CustomerSubscription</c> registry each load. Kept separate from <see cref="_subNames"/>
+    /// (which pages reassign from the home-only display-name API) so customer subscription names
+    /// are never lost and never render as a bare GUID.
+    /// </summary>
+    protected readonly Dictionary<string, string> _customerSubNames = new(StringComparer.OrdinalIgnoreCase);
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -103,10 +112,16 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     private async Task ComputeSelectedSubCountAsync(TenantScope scope)
     {
         _scopeSubIds.Clear();
+        _customerSubNames.Clear();
 
         if (scope.IsUnscoped)
         {
             foreach (var id in SubStore.AllIds) _scopeSubIds.Add(id);
+
+            // Single-tenant: attribute the home subscriptions to the home tenant so any tenant
+            // label (when multi-tenancy display is toggled) resolves to a name, not a GUID.
+            if (Options.MultiTenancy.Enabled)
+                await IndexHomeTenantAsync();
         }
         else
         {
@@ -115,12 +130,35 @@ public abstract class CostPageBase : ComponentBase, IDisposable
             // (partner aggregate, or a partner drill-in to the home customer itself).
             var home = await Customers.GetHomeCustomerAsync();
             if (home is not null && scope.CustomerIds.Contains(home.Id))
+            {
                 foreach (var id in SubStore.AllIds)
                     _scopeSubIds.Add(id);
+                await IndexHomeTenantAsync(home);
+            }
 
+            // For every in-scope customer pull the authoritative subscription names + tenant from
+            // the CustomerSubscription registry. This guarantees customer subscriptions render a
+            // friendly name (and tenant) in every visual even when the cost rows carry no name.
+            // Names go into _customerSubNames (a fallback that pages never overwrite) so a page
+            // reassigning _subNames from the home-only display-name API can't drop customer names.
             foreach (var customerId in scope.CustomerIds)
-                foreach (var id in await Customers.GetSubscriptionIdsAsync(customerId))
-                    _scopeSubIds.Add(id);
+            {
+                var customer = home is not null && customerId == home.Id
+                    ? home
+                    : await Customers.GetByIdAsync(customerId);
+                var tenantId = customer?.TenantId;
+                if (!string.IsNullOrWhiteSpace(tenantId))
+                    await TenantNames.GetDisplayNameAsync(tenantId);
+
+                foreach (var sub in await Customers.GetSubscriptionsAsync(customerId))
+                {
+                    _scopeSubIds.Add(sub.SubscriptionId);
+                    if (!string.IsNullOrWhiteSpace(sub.SubscriptionName))
+                        _customerSubNames[sub.SubscriptionId] = sub.SubscriptionName;
+                    if (!string.IsNullOrWhiteSpace(tenantId))
+                        _subTenantMap[sub.SubscriptionId] = tenantId!;
+                }
+            }
         }
 
         // The badge reflects what is actually in view: the scope narrowed by the picker's
@@ -129,6 +167,27 @@ public abstract class CostPageBase : ComponentBase, IDisposable
         _selectedSubCount = sel.Count == 0
             ? _scopeSubIds.Count
             : _scopeSubIds.Count(sel.Contains);
+    }
+
+    /// <summary>
+    /// Attributes the home registry's subscriptions to the home tenant in <see cref="_subTenantMap"/>
+    /// and warms that tenant's display name, so home subscriptions carry a tenant label (and never a
+    /// bare GUID) in multi-tenant visuals. The home tenant is the configured home tenant id (falling
+    /// back to the deployment tenant id).
+    /// </summary>
+    private async Task IndexHomeTenantAsync(CustomerEntity? home = null)
+    {
+        home ??= await Customers.GetHomeCustomerAsync();
+        var homeTenant = !string.IsNullOrWhiteSpace(home?.TenantId)
+            ? home!.TenantId
+            : !string.IsNullOrWhiteSpace(Options.MultiTenancy.HomeTenantId)
+                ? Options.MultiTenancy.HomeTenantId
+                : Options.TenantId;
+        if (string.IsNullOrWhiteSpace(homeTenant)) return;
+
+        await TenantNames.GetDisplayNameAsync(homeTenant);
+        foreach (var id in SubStore.AllIds)
+            _subTenantMap[id] = homeTenant;
     }
 
     // ── Template method ───────────────────────────────────────────────────────
@@ -173,7 +232,12 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     protected string Fmt(decimal v) => $"{v:N0} {Options.TargetCurrency}";
 
     protected string GetSubName(string subscriptionId) =>
-        _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
+        _subNames.TryGetValue(subscriptionId, out var name) && !string.IsNullOrWhiteSpace(name) &&
+        !name.Equals(subscriptionId, StringComparison.OrdinalIgnoreCase)
+            ? name
+            : _customerSubNames.TryGetValue(subscriptionId, out var cn) && !string.IsNullOrWhiteSpace(cn)
+                ? cn
+                : subscriptionId;
 
     // ── Subscription view-filter + tenant display (Phase 9) ───────────────────
 
@@ -251,7 +315,8 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// <summary>
     /// The label to use for a subscription in a chart series/legend: the subscription name, suffixed
     /// with its tenant name when multi-tenancy is on so a partner can see which tenant each series
-    /// belongs to. Never a bare GUID when a name is known.
+    /// belongs to, in the form <c>subscription name [tenant name]</c>. Never a bare GUID when a name
+    /// is known.
     /// </summary>
     protected string SubChartLabel(string subscriptionId)
     {
@@ -261,7 +326,7 @@ public abstract class CostPageBase : ComponentBase, IDisposable
             var tenant = SubTenantName(subscriptionId);
             if (!string.IsNullOrWhiteSpace(tenant) &&
                 !tenant.Equals(name, StringComparison.OrdinalIgnoreCase))
-                return $"{name} · {tenant}";
+                return $"{name} [{tenant}]";
         }
         return name;
     }

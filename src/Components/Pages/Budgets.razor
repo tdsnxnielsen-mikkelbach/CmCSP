@@ -105,16 +105,23 @@ else if (_budgets.Count > 0)
         <MudItem xs="12">
             <MudPaper Class="pa-4" Elevation="2">
                 <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Spend vs Total Budget (Last 6 Months)</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-2">
+                    Actual spend is stacked by subscription@(ShowTenantColumn ? " and tenant" : "") against the total budget line.
+                </MudText>
                 <ApexChart TItem="MonthBudgetPoint" Options="_groupedBarOpts">
+                    @foreach (var subId in _monthlySubIds)
+                    {
+                        var capturedSubId = subId;
+                        <ApexPointSeries TItem="MonthBudgetPoint"
+                                         Items="_monthlySpend.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
+                                         Name="@SubChartLabel(capturedSubId)"
+                                         XValue="@(e => e.Label)"
+                                         YValue="@(e => (decimal?)e.Actual)"
+                                         SeriesType="SeriesType.Bar" />
+                    }
                     <ApexPointSeries TItem="MonthBudgetPoint"
-                                     Items="_monthlySpend"
-                                     Name="Actual Spend"
-                                     XValue="@(e => e.Label)"
-                                     YValue="@(e => (decimal?)e.Actual)"
-                                     SeriesType="SeriesType.Bar" />
-                    <ApexPointSeries TItem="MonthBudgetPoint"
-                                     Items="_monthlySpend"
-                                     Name="Budget"
+                                     Items="_monthlyBudgetLine"
+                                     Name="Total Budget"
                                      XValue="@(e => e.Label)"
                                      YValue="@(e => (decimal?)e.Budget)"
                                      SeriesType="SeriesType.Line" />
@@ -133,6 +140,10 @@ else if (_budgets.Count > 0)
                              FilterMode="DataGridFilterMode.ColumnFilterRow">
                     <Columns>
                         <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" />
+                        @if (ShowTenantColumn)
+                        {
+                            <PropertyColumn Property="r => r.Tenant" Title="Tenant" />
+                        }
                         <PropertyColumn Property="r => r.SubscriptionId" Title="Subscription ID" />
                         <PropertyColumn Property="r => r.BudgetName" Title="Budget" />
                         <PropertyColumn Property="r => r.Amount" Title="Budget Amount" Format="N0" />
@@ -151,11 +162,12 @@ else if (_budgets.Count > 0)
 
 @code {
     private record GaugePoint(string Label, decimal Pct);
-    private record MonthBudgetPoint(string Label, decimal Actual, decimal Budget);
+    private record MonthBudgetPoint(string Label, string SubscriptionId, decimal Actual, decimal Budget);
     private record SubBudgetPoint(string SubName, decimal Budget, decimal Spend);
     private record BudgetRow(
         string SubscriptionId,
         string SubscriptionName,
+        string Tenant,
         string BudgetName,
         decimal Amount,
         decimal CurrentSpend,
@@ -170,6 +182,8 @@ else if (_budgets.Count > 0)
     private List<GaugePoint>      _gaugeData     = [];
     private List<SubBudgetPoint>  _subBudgetData = [];
     private List<MonthBudgetPoint> _monthlySpend = [];
+    private List<MonthBudgetPoint> _monthlyBudgetLine = [];
+    private List<string>          _monthlySubIds = [];
     private List<BudgetRow> _budgetRows = [];
 
     private readonly ApexChartOptions<GaugePoint> _gaugeOpts = new()
@@ -193,7 +207,7 @@ else if (_budgets.Count > 0)
 
     private readonly ApexChartOptions<SubBudgetPoint> _subBarOpts = ApexChartPresets.VerticalBar<SubBudgetPoint>();
 
-    private readonly ApexChartOptions<MonthBudgetPoint> _groupedBarOpts = ApexChartPresets.VerticalBar<MonthBudgetPoint>();
+    private readonly ApexChartOptions<MonthBudgetPoint> _groupedBarOpts = ApexChartPresets.StackedBar<MonthBudgetPoint>();
 
     protected override async Task LoadAsync()
     {
@@ -206,12 +220,8 @@ else if (_budgets.Count > 0)
             var costData   = ApplySubFilter(await costTask);
             var budgets    = await budgetTask;
             var apiSubNames = await subNameTask;
-
-            // Build subscription ID → display name lookup from cost rows.
-            var costSubNames = costData
-                .GroupBy(r => r.SubscriptionId)
-                .ToDictionary(g => g.Key, g => g.First().SubscriptionName,
-                              StringComparer.OrdinalIgnoreCase);
+            _subNames = new Dictionary<string, string>(apiSubNames, StringComparer.OrdinalIgnoreCase);
+            await IndexSubscriptionData(costData);
 
             // Compute month-to-date spend per subscription from cost data.
             // The Consumption Budgets API's currentSpend is unreliable for CSP
@@ -242,33 +252,47 @@ else if (_budgets.Count > 0)
                 : 0d;
             _gaugeData = [new GaugePoint("Budget", (decimal)spendPct)];
 
-            // Per-subscription: aggregate in case a subscription has multiple budgets.
-            _subBudgetData = budgets
+            // Per-subscription: aggregate in case a subscription has multiple budgets. Span every
+            // subscription in scope (not just those with a budget) so a partner sees all of them.
+            var budgetBySub = budgets
                 .GroupBy(b => b.SubscriptionId, StringComparer.OrdinalIgnoreCase)
-                .Select(g =>
+                .ToDictionary(g => g.Key, g => g.Sum(b => b.Amount), StringComparer.OrdinalIgnoreCase);
+            var scopeSubIds = GetOrderedSubscriptionIds();
+            _subBudgetData = scopeSubIds
+                .Select(id =>
                 {
-                    var name  = apiSubNames.TryGetValue(g.Key, out var n) ? n
-                                : costSubNames.TryGetValue(g.Key, out var cn) ? cn
-                                : g.Key[..Math.Min(8, g.Key.Length)] + "\u2026";
-                    var spend = mtdBySub.TryGetValue(g.Key, out var mtd) ? mtd : g.Sum(b => b.CurrentSpend);
-                    return new SubBudgetPoint(name, g.Sum(b => b.Amount), spend);
+                    var budget = budgetBySub.TryGetValue(id, out var amt) ? amt : 0m;
+                    var spend  = mtdBySub.TryGetValue(id, out var mtd) ? mtd
+                                 : budgets.Where(b => b.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase))
+                                          .Sum(b => b.CurrentSpend);
+                    return new SubBudgetPoint(SubChartLabel(id), budget, spend);
                 })
+                .Where(p => p.Budget > 0 || p.Spend > 0)
                 .OrderByDescending(p => p.Budget)
                 .ToList();
 
-            _budgetRows = budgets
-                .Select(b =>
+            // One detail row per subscription in scope (a subscription may have 0..n budgets).
+            _budgetRows = scopeSubIds
+                .Select(id =>
                 {
-                    var subName = apiSubNames.TryGetValue(b.SubscriptionId, out var n) ? n
-                        : costSubNames.TryGetValue(b.SubscriptionId, out var cn) ? cn
-                        : b.SubscriptionId;
-                    var spend = mtdBySub.TryGetValue(b.SubscriptionId, out var mtd) ? mtd : b.CurrentSpend;
-                    var usage = b.Amount > 0 ? spend / b.Amount * 100m : 0m;
+                    var subBudgets = budgets
+                        .Where(b => b.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    var amount = subBudgets.Sum(b => b.Amount);
+                    var spend  = mtdBySub.TryGetValue(id, out var mtd) ? mtd : subBudgets.Sum(b => b.CurrentSpend);
+                    var usage  = amount > 0 ? spend / amount * 100m : 0m;
+                    var budgetName = subBudgets.Count switch
+                    {
+                        0 => "—",
+                        1 => subBudgets[0].BudgetName,
+                        _ => $"{subBudgets.Count} budgets"
+                    };
                     return new BudgetRow(
-                        b.SubscriptionId,
-                        subName,
-                        b.BudgetName,
-                        b.Amount,
+                        id,
+                        GetSubName(id),
+                        SubTenantName(id),
+                        budgetName,
+                        amount,
                         spend,
                         usage);
                 })
@@ -281,15 +305,26 @@ else if (_budgets.Count > 0)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Count();
 
-            // Historical monthly spend vs total budget line (last 6 months).
-            _monthlySpend = costData
-                .GroupBy(r => new { r.Date.Year, r.Date.Month })
-                .Select(g => new MonthBudgetPoint(
-                    new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMM yy"),
-                    Math.Round(g.Sum(r => r.NormalizedCost), 2),
-                    _totalBudget))
-                .OrderBy(p => DateTime.ParseExact(p.Label, "MMM yy", null))
+            // Historical monthly spend stacked by subscription, plus a total-budget line.
+            _monthlySubIds = scopeSubIds;
+            var months = costData
+                .Select(r => new DateTime(r.Date.Year, r.Date.Month, 1))
+                .Distinct()
+                .OrderBy(d => d)
                 .TakeLast(6)
+                .ToList();
+            _monthlySpend = months
+                .SelectMany(m => scopeSubIds.Select(id =>
+                {
+                    var actual = costData
+                        .Where(r => r.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase)
+                                 && r.Date.Year == m.Year && r.Date.Month == m.Month)
+                        .Sum(r => r.NormalizedCost);
+                    return new MonthBudgetPoint(m.ToString("MMM yy"), id, Math.Round(actual, 2), _totalBudget);
+                }))
+                .ToList();
+            _monthlyBudgetLine = months
+                .Select(m => new MonthBudgetPoint(m.ToString("MMM yy"), string.Empty, 0m, _totalBudget))
                 .ToList();
         });
     }

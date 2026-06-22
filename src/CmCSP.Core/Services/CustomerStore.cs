@@ -110,6 +110,14 @@ public sealed class CustomerStore
             .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Status == "active", ct);
     }
 
+    /// <summary>The customer with the given id, or <c>null</c>.</summary>
+    public async Task<CustomerEntity?> GetByIdAsync(long customerId, CancellationToken ct = default)
+    {
+        if (_dbFactory is null) return null;
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        return await db.Customers.FindAsync([customerId], ct);
+    }
+
     /// <summary>Reverse lookup: the customer that owns a subscription, or <c>null</c>.</summary>
     public async Task<CustomerEntity?> GetBySubscriptionAsync(string subscriptionId, CancellationToken ct = default)
     {

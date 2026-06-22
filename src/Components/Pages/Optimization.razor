@@ -203,7 +203,7 @@
         var tenant = SubTenant(subscriptionId);
         return string.IsNullOrWhiteSpace(tenant) || tenant.Equals(name, StringComparison.OrdinalIgnoreCase)
             ? name
-            : $"{name} · {tenant}";
+            : $"{name} [{tenant}]";
     }
 
     // Builds subId -> tenantId from the customer registry and merges any missing subscription
@@ -225,6 +225,28 @@
                     _subNames[sub.SubscriptionId] = sub.SubscriptionName;
             }
         }
+
+        await MapHomeSubscriptionsAsync();
+    }
+
+    // The home/partner's own subscriptions live in the SubStore registry, not the
+    // CustomerSubscription table, so attribute them to the home tenant explicitly — otherwise
+    // home subscriptions render without a [tenant] label while customer ones have it, making it
+    // look like only one subscription per tenant is labelled.
+    private async Task MapHomeSubscriptionsAsync()
+    {
+        var home = await Customers.GetHomeCustomerAsync();
+        var homeTenant = !string.IsNullOrWhiteSpace(home?.TenantId)
+            ? home!.TenantId
+            : !string.IsNullOrWhiteSpace(Options.MultiTenancy.HomeTenantId)
+                ? Options.MultiTenancy.HomeTenantId
+                : Options.TenantId;
+        if (string.IsNullOrWhiteSpace(homeTenant)) return;
+
+        await TenantNames.GetDisplayNameAsync(homeTenant);
+        foreach (var id in SubStore.AllIds)
+            if (!_subTenant.ContainsKey(id))
+                _subTenant[id] = homeTenant;
     }
 
     private static string ShortType(string type)
