@@ -35,7 +35,7 @@
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="MomPoint"
                                      Items="_momData.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@GetSubName(capturedSubId)"
+                                     Name="@SubChartLabel(capturedSubId)"
                                      XValue="@(e => e.Label)"
                                      YValue="@(e => (decimal?)e.Change)"
                                      SeriesType="SeriesType.Bar" />
@@ -54,7 +54,7 @@
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="SubMomPoint"
                                      Items="_subMomData.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@GetSubName(capturedSubId)"
+                                     Name="@SubChartLabel(capturedSubId)"
                                      XValue="@(e => e.SubName)"
                                      YValue="@(e => (decimal?)e.Change)"
                                      SeriesType="SeriesType.Bar" />
@@ -126,6 +126,7 @@
             var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
             var data  = ApplySubFilter(await dataTask);
             _subNames = await nameTask;
+            await IndexSubscriptionData(data);
             // Anchor "today" to the most recent date present in the data rather than the wall
             // clock. Azure cost data lags by 1-3 days and a brand-new calendar month often has
             // no rows yet, which would otherwise make Current Month Spend read 0. Fall back to

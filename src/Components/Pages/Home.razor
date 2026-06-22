@@ -31,13 +31,13 @@
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="DailyPoint"
                                      Items="_currentMonthDaily.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@($"{GetSubName(capturedSubId)} (Current)")"
+                                     Name="@($"{SubChartLabel(capturedSubId)} (Current)")"
                                      XValue="@(e => e.Day)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Line" />
                     <ApexPointSeries TItem="DailyPoint"
                                      Items="_priorMonthDaily.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@($"{GetSubName(capturedSubId)} (Prior)")"
+                                     Name="@($"{SubChartLabel(capturedSubId)} (Prior)")"
                                      XValue="@(e => e.Day)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Line" />
@@ -56,7 +56,7 @@
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="MonthlyPoint"
                                      Items="_monthlyTrend.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@GetSubName(capturedSubId)"
+                                     Name="@SubChartLabel(capturedSubId)"
                                      XValue="@(e => e.Label)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Bar" />
@@ -75,7 +75,7 @@
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="ServicePoint"
                                      Items="_topServices.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@GetSubName(capturedSubId)"
+                                     Name="@SubChartLabel(capturedSubId)"
                                      XValue="@(e => e.Label)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Bar" />
@@ -442,7 +442,7 @@
         await RunLoadAsync(async () =>
         {
             _data = ApplySubFilter(await CostService.GetMainCostDataAsync()).ToList();
-            await WarmTenantNamesAsync(_data);
+            await IndexSubscriptionData(_data);
             Compute();
 
             // The landing page is the natural place to warm every dataset so the loading

@@ -25,7 +25,7 @@
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="RgSeriesPoint"
                                      Items="_chartData.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@GetSubName(capturedSubId)"
+                                     Name="@SubChartLabel(capturedSubId)"
                                      XValue="@(e => e.RgName)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Bar" />
@@ -85,6 +85,7 @@
             var subNameTask = CostService.GetSubscriptionDisplayNamesAsync();
             var data  = ApplySubFilter(await dataTask);
             _subNames = await subNameTask;
+            await IndexSubscriptionData(data);
             var start = RangeStart;
             var end   = RangeEnd;
             // Anchor "today" to the most recent date present in the data rather than the wall

@@ -131,7 +131,7 @@ Values only available when CostDetails:Enabled = true." Arrow>
             // Apply the partner's subscription view-filter before any aggregation.
             var data      = ApplySubFilter(rawData);
             var amortData = ApplySubFilter(await amortTask);
-            await WarmTenantNamesAsync(data);
+            await IndexSubscriptionData(data);
             var start = RangeStart;
             var end   = RangeEnd;
             // Anchor "today" to the most recent date present in the data rather than the wall
@@ -203,9 +203,18 @@ Values only available when CostDetails:Enabled = true." Arrow>
                 .ToList();
 
             _barData = merged
-                .Select(x => new SubPoint(
-                    $"{(string.IsNullOrWhiteSpace(x.SubscriptionName) ? x.SubscriptionId : x.SubscriptionName)} [{x.SubscriptionId}]",
-                    x.Total))
+                .Select(x =>
+                {
+                    var name = string.IsNullOrWhiteSpace(x.SubscriptionName) ? x.SubscriptionId : x.SubscriptionName;
+                    // Label with the subscription name (never a bare GUID) plus its tenant when
+                    // multi-tenancy is on, so a partner can see which tenant each bar belongs to.
+                    var tenant = TenantNames.GetCachedOrId(x.Tenant);
+                    var label = Options.MultiTenancy.Enabled && !string.IsNullOrWhiteSpace(tenant)
+                                && !tenant.Equals(name, StringComparison.OrdinalIgnoreCase)
+                        ? $"{name} · {tenant}"
+                        : name;
+                    return new SubPoint(label, x.Total);
+                })
                 .ToList();
 
             _rows = merged

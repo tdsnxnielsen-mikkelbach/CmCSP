@@ -55,6 +55,10 @@ purchases skew ActualCost." Arrow>
                  SortMode="SortMode.Single">
         <Columns>
             <PropertyColumn Property="s => s.SubscriptionName" Title="Subscription" />
+            @if (ShowTenantColumn)
+            {
+                <PropertyColumn Property="s => s.Tenant" Title="Tenant" />
+            }
             <PropertyColumn Property="s => s.SubscriptionId" Title="Subscription ID" />
             <PropertyColumn Property="s => s.Cost" Title="Range Cost" Format="N0" />
         </Columns>
@@ -72,7 +76,7 @@ purchases skew ActualCost." Arrow>
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="DailyPoint"
                                      Items="_actualDaily.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@GetSubName(capturedSubId)"
+                                     Name="@SubChartLabel(capturedSubId)"
                                      XValue="@(e => e.Date)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Line" />
@@ -106,7 +110,7 @@ purchases skew ActualCost." Arrow>
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="MonthlyPoint"
                                      Items="_monthlyTrend.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@GetSubName(capturedSubId)"
+                                     Name="@SubChartLabel(capturedSubId)"
                                      XValue="@(e => e.Label)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Bar" />
@@ -131,13 +135,13 @@ purchases skew ActualCost." Arrow>
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="MonthlyPoint"
                                      Items="_currentYearMonthly.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@($"{GetSubName(capturedSubId)} (Current)")"
+                                     Name="@($"{SubChartLabel(capturedSubId)} (Current)")"
                                      XValue="@(e => e.Label)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Line" />
                     <ApexPointSeries TItem="MonthlyPoint"
                                      Items="_priorYearMonthly.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@($"{GetSubName(capturedSubId)} (Prior)")"
+                                     Name="@($"{SubChartLabel(capturedSubId)} (Prior)")"
                                      XValue="@(e => e.Label)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Line" />
@@ -150,7 +154,7 @@ purchases skew ActualCost." Arrow>
 @code {
     private record DailyPoint(DateTime Date, string SubscriptionId, decimal Cost);
     private record MonthlyPoint(string Label, string SubscriptionId, decimal Cost);
-    private record SubRangePoint(string SubscriptionId, string SubscriptionName, decimal Cost);
+    private record SubRangePoint(string SubscriptionId, string SubscriptionName, string Tenant, decimal Cost);
 
     private string _metric = "ActualCost";
     private DateRange _selectedRange = new(
@@ -205,6 +209,7 @@ purchases skew ActualCost." Arrow>
             var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
             var data  = ApplySubFilter(await dataTask);
             _subNames = await nameTask;
+            await IndexSubscriptionData(data);
             // Anchor the forecast month to the real current calendar month when it has data.
             // Azure cost data lags by 1-3 days and a brand-new calendar month often has no rows
             // yet; in that case fall back to the latest month present in the data so Cost MTD
@@ -295,17 +300,25 @@ purchases skew ActualCost." Arrow>
                 .Where(r => r.Date >= rangeStart && r.Date <= rangeEnd)
                 .ToList();
 
-            _subRangeData = SubStore.AllIds
+            _subRangeData = filteredRangeSubIds()
                 .Select(id =>
                 {
                     var cost = rangeFiltered
                         .Where(r => r.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase))
                         .Sum(r => r.NormalizedCost);
                     var name = _subNames.TryGetValue(id, out var n) ? n : id;
-                    return new SubRangePoint(id, name, cost);
+                    return new SubRangePoint(id, name, SubTenantName(id), cost);
                 })
                 .OrderByDescending(s => s.Cost)
                 .ToList();
+
+            // Local: every subscription in scope (selected) unioned with those present in the range
+            // data, so a partner sees customer subscriptions — not just the home registry.
+            IEnumerable<string> filteredRangeSubIds() => rangeFiltered
+                .Select(r => r.SubscriptionId)
+                .Concat(GetOrderedSubscriptionIds())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
 
             _withDataSubCount = _subRangeData.Count(s => s.Cost > 0);
 

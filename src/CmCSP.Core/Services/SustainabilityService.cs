@@ -52,6 +52,7 @@ public sealed class SustainabilityService
     private (DateTime At, CarbonEmissionSummary? Data)?      _summary;
     private (DateTime At, List<CarbonEmissionMonth> Data)?   _monthly;
     private (DateTime At, List<CarbonEmissionByType> Data)?  _byType;
+    private (DateTime At, List<CarbonEmissionBySubscription> Data)? _bySub;
     private (DateOnly Start, DateOnly End)?                  _range;
 
     /// <summary>True when the most recent ARM read was denied (403/404) — the UI shows a Reader banner.</summary>
@@ -195,6 +196,48 @@ public sealed class SustainabilityService
     /// <summary>Resolves subscription display names via the cost service's cached lookup.</summary>
     public Task<Dictionary<string, string>> GetSubscriptionNamesAsync(CancellationToken ct = default) =>
         _costService.GetSubscriptionDisplayNamesAsync(ct);
+
+    // ── 4. Emissions by subscription ─────────────────────────────────────────
+
+    /// <summary>
+    /// Latest-month emissions (kg CO₂e) by subscription, highest first. Lets the UI show which
+    /// subscription (and tenant) drives the footprint. Covers the configured subscriptions the app
+    /// identity can read directly.
+    /// </summary>
+    public async Task<List<CarbonEmissionBySubscription>> GetEmissionsBySubscriptionAsync(CancellationToken ct = default)
+    {
+        if (_bySub is { } c && Fresh(c.At)) return c.Data;
+
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (_bySub is { } c2 && Fresh(c2.At)) return c2.Data;
+
+            var range = await ResolveRangeAsync(ct);
+            if (range is null) { _bySub = (DateTime.UtcNow, []); return []; }
+
+            var body = BuildBody("TopItemsSummaryReport", range.Value.End, range.Value.End,
+                categoryType: "SubscriptionId", topItems: 100);
+            var rows = await PostReportAsync(body, ct);
+
+            var items = rows
+                .Select(el => new CarbonEmissionBySubscription(
+                    SubscriptionId:            Str(el, "itemName"),
+                    LatestMonthEmissions:      Num(el, "latestMonthEmissions"),
+                    PreviousMonthEmissions:    Num(el, "previousMonthEmissions"),
+                    MonthOverMonthChangeRatio: Num(el, "monthOverMonthEmissionsChangeRatio")))
+                .Where(i => !i.SubscriptionId.StartsWith("Others-Exclude", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(i => i.LatestMonthEmissions)
+                .ToList();
+
+            _bySub = (DateTime.UtcNow, items);
+            return items;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 
     // ── plumbing ─────────────────────────────────────────────────────────────
 

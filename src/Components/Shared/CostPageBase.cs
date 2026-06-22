@@ -197,6 +197,35 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// <summary>True when tenant attribution is meaningful (multi-tenancy on with rows tagged).</summary>
     protected bool ShowTenantColumn => Options.MultiTenancy.Enabled;
 
+    /// <summary>Subscription id → owning tenant id, built from the loaded rows by <see cref="IndexSubscriptionData"/>.</summary>
+    protected readonly Dictionary<string, string> _subTenantMap = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Indexes the loaded cost rows so every visual can render names instead of GUIDs and attribute
+    /// each subscription to its tenant. It (1) merges the row-level <c>SubscriptionName</c> into
+    /// <see cref="_subNames"/> so customer subscriptions — which aren't in the home display-name
+    /// lookup — still show a friendly name in charts/tables, (2) builds <see cref="_subTenantMap"/>,
+    /// and (3) warms the tenant-name cache. Call this right after fetching data in each page.
+    /// </summary>
+    protected async Task IndexSubscriptionData(IEnumerable<CostRow> rows)
+    {
+        var list = rows as ICollection<CostRow> ?? rows.ToList();
+        foreach (var r in list)
+        {
+            if (string.IsNullOrWhiteSpace(r.SubscriptionId)) continue;
+            if (!string.IsNullOrWhiteSpace(r.SubscriptionName) &&
+                (!_subNames.TryGetValue(r.SubscriptionId, out var existing) ||
+                 string.IsNullOrWhiteSpace(existing) ||
+                 existing.Equals(r.SubscriptionId, StringComparison.OrdinalIgnoreCase)))
+            {
+                _subNames[r.SubscriptionId] = r.SubscriptionName;
+            }
+            if (!string.IsNullOrWhiteSpace(r.TenantId))
+                _subTenantMap[r.SubscriptionId] = r.TenantId;
+        }
+        await WarmTenantNamesAsync(list);
+    }
+
     /// <summary>
     /// Warms the tenant-id → display-name cache for every tenant appearing in <paramref name="rows"/>
     /// so subsequent synchronous <see cref="TenantLabel"/> calls render names rather than GUIDs.
@@ -214,6 +243,28 @@ public abstract class CostPageBase : ComponentBase, IDisposable
 
     /// <summary>A friendly tenant label for a row (resolved name, else GUID, else empty).</summary>
     protected string TenantLabel(CostRow r) => TenantNames.GetCachedOrId(r.TenantId);
+
+    /// <summary>The friendly tenant name that owns <paramref name="subscriptionId"/> (empty if unknown).</summary>
+    protected string SubTenantName(string subscriptionId) =>
+        _subTenantMap.TryGetValue(subscriptionId, out var tid) ? TenantNames.GetCachedOrId(tid) : string.Empty;
+
+    /// <summary>
+    /// The label to use for a subscription in a chart series/legend: the subscription name, suffixed
+    /// with its tenant name when multi-tenancy is on so a partner can see which tenant each series
+    /// belongs to. Never a bare GUID when a name is known.
+    /// </summary>
+    protected string SubChartLabel(string subscriptionId)
+    {
+        var name = GetSubName(subscriptionId);
+        if (Options.MultiTenancy.Enabled)
+        {
+            var tenant = SubTenantName(subscriptionId);
+            if (!string.IsNullOrWhiteSpace(tenant) &&
+                !tenant.Equals(name, StringComparison.OrdinalIgnoreCase))
+                return $"{name} · {tenant}";
+        }
+        return name;
+    }
 
     /// <summary>
     /// Returns subscription IDs in alphabetical order by display name, deduped. Spans every

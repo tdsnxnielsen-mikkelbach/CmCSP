@@ -62,6 +62,10 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
                  SortMode="SortMode.Single">
         <Columns>
             <PropertyColumn Property="s => s.SubscriptionName" Title="Subscription" />
+            @if (ShowTenantColumn)
+            {
+                <PropertyColumn Property="s => s.Tenant" Title="Tenant" />
+            }
             <PropertyColumn Property="s => s.SubscriptionId" Title="Subscription ID" />
             <PropertyColumn Property="s => s.TotalCost" Title="Total Cost" Format="N0" />
             <PropertyColumn Property="s => s.TaggedCost" Title="Tagged Cost" Format="N0" />
@@ -81,7 +85,7 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="TagSeriesPoint"
                                      Items="_tagSeriesData.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@GetSubName(capturedSubId)"
+                                     Name="@SubChartLabel(capturedSubId)"
                                      XValue="@(e => e.Tag)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Bar" />
@@ -100,7 +104,7 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
                     var capturedSubId = subId;
                     <ApexPointSeries TItem="TagSeriesPoint"
                                      Items="_tagSeriesData.Where(p => p.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
-                                     Name="@GetSubName(capturedSubId)"
+                                     Name="@SubChartLabel(capturedSubId)"
                                      XValue="@(e => e.Tag)"
                                      YValue="@(e => (decimal?)e.Cost)"
                                      SeriesType="SeriesType.Bar" />
@@ -136,7 +140,7 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
 @code {
     private record TagPoint(string Tag, decimal Cost, decimal SharePct);
     private record TagSeriesPoint(string Tag, string SubscriptionId, decimal Cost);
-    private record SubCoverage(string SubscriptionId, string SubscriptionName, decimal TotalCost, decimal TaggedCost, decimal UntaggedCost);
+    private record SubCoverage(string SubscriptionId, string SubscriptionName, string Tenant, decimal TotalCost, decimal TaggedCost, decimal UntaggedCost);
 
     private decimal _taggedCost;
     private decimal _untaggedCost;
@@ -160,6 +164,7 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
             var coverageTask = Optimization.GetTagCoverageAsync();
             var data  = ApplySubFilter(await dataTask);
             _subNames = await nameTask;
+            await IndexSubscriptionData(data);
             _tagCoverage = await coverageTask;
             _tagKeyCounts = _tagCoverage.ResourcesPerTagKey
                 .OrderByDescending(kv => kv.Value)
@@ -200,7 +205,15 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
                     tagBySub.TryGetValue((tag, subId), out var cost) ? cost : 0m)))
                 .ToList();
 
-            _subCoverage = SubStore.AllIds
+            // Span every subscription in scope (home + customers) that is selected, unioned with
+            // any subscription actually present in the data — so a partner sees customer
+            // subscriptions here, not just the home registry.
+            var coverageSubIds = filtered.Select(r => r.SubscriptionId)
+                .Concat(GetOrderedSubscriptionIds())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+
+            _subCoverage = coverageSubIds
                 .Select(id =>
                 {
                     var rows = filtered.Where(r => r.SubscriptionId.Equals(id, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -208,7 +221,7 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
                     var subTagged = rows.Where(r => !string.IsNullOrWhiteSpace(r.Tag)).Sum(r => r.NormalizedCost);
                     var subUntagged = rows.Where(r => string.IsNullOrWhiteSpace(r.Tag)).Sum(r => r.NormalizedCost);
                     var name = _subNames.TryGetValue(id, out var n) ? n : id;
-                    return new SubCoverage(id, name, subTotal, subTagged, subUntagged);
+                    return new SubCoverage(id, name, SubTenantName(id), subTotal, subTagged, subUntagged);
                 })
                 .OrderByDescending(s => s.TotalCost)
                 .ToList();

@@ -3,6 +3,8 @@
 @inject ICostManagementService CostService
 @inject CostManagementOptions Options
 @inject SubscriptionStoreService SubStore
+@inject CustomerStore Customers
+@inject TenantNameService TenantNames
 
 <PageTitle>Optimization – CSP Dashboard</PageTitle>
 
@@ -73,6 +75,12 @@
                 <TemplateColumn Title="Subscription">
                     <CellTemplate>@SubName(context.Item.SubscriptionId)</CellTemplate>
                 </TemplateColumn>
+                @if (ShowTenant)
+                {
+                    <TemplateColumn Title="Tenant">
+                        <CellTemplate>@SubTenant(context.Item.SubscriptionId)</CellTemplate>
+                    </TemplateColumn>
+                }
             </Columns>
         </MudDataGrid>
     }
@@ -83,19 +91,26 @@
 {
     <MudPaper Class="pa-4 mb-4" Elevation="2">
         <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Untagged Resources by Type</MudText>
-        <ApexChart TItem="TypeCount" Options="_barOpts">
-            <ApexPointSeries TItem="TypeCount"
-                             Items="_untaggedByType"
-                             Name="Untagged"
-                             XValue="@(e => e.Type)"
-                             YValue="@(e => (decimal?)e.Count)"
-                             SeriesType="SeriesType.Bar" />
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-2">
+            Stacked by subscription so you can see which subscription@(ShowTenant ? " and tenant" : "") each gap belongs to.
+        </MudText>
+        <ApexChart TItem="TypeSubCount" Options="_barOpts">
+            @foreach (var subId in _untaggedSubIds)
+            {
+                var capturedSubId = subId;
+                <ApexPointSeries TItem="TypeSubCount"
+                                 Items="_untaggedByType.Where(t => t.SubscriptionId.Equals(capturedSubId, StringComparison.OrdinalIgnoreCase)).ToList()"
+                                 Name="@SubLabel(capturedSubId)"
+                                 XValue="@(e => e.Type)"
+                                 YValue="@(e => (decimal?)e.Count)"
+                                 SeriesType="SeriesType.Bar" />
+            }
         </ApexChart>
     </MudPaper>
 }
 
 @code {
-    private record TypeCount(string Type, int Count);
+    private record TypeSubCount(string Type, string SubscriptionId, int Count);
 
     private bool    _loading = true;
     private string? _error;
@@ -104,10 +119,20 @@
     private int _untaggedCount;
     private double _taggedPct;
     private List<OrphanedResource> _orphans = [];
-    private List<TypeCount>        _untaggedByType = [];
+    private List<TypeSubCount>     _untaggedByType = [];
+    private List<string>          _untaggedSubIds = [];
     private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _subTenant = new(StringComparer.OrdinalIgnoreCase);
 
-    private readonly ApexChartOptions<TypeCount> _barOpts = ApexChartPresets.HorizontalBar<TypeCount>();
+    private bool ShowTenant => Options.MultiTenancy.Enabled;
+
+    private readonly ApexChartOptions<TypeSubCount> _barOpts = new()
+    {
+        Chart = new Chart { Toolbar = new Toolbar { Show = false }, Stacked = true },
+        PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } },
+        DataLabels = new DataLabels { Enabled = false },
+        Legend = new Legend { Position = LegendPosition.Bottom }
+    };
 
     protected override async Task OnInitializedAsync()
     {
@@ -123,18 +148,35 @@
             var inventory = await inventoryTask;
             var coverage  = await coverageTask;
             _orphans      = await orphansTask;
-            _subNames     = await namesTask;
+            _subNames     = new Dictionary<string, string>(await namesTask, StringComparer.OrdinalIgnoreCase);
+
+            await BuildTenantMapAsync();
 
             _totalResources = coverage.TotalResources;
             _untaggedCount  = coverage.UntaggedResources;
             _taggedPct      = coverage.TaggedPercent;
 
-            _untaggedByType = inventory
+            // Keep the 15 highest-count resource types, then split each type's bar by
+            // subscription so a partner can see which subscription/tenant owns the gap.
+            var topTypes = inventory
                 .Where(r => r.IsUntagged)
                 .GroupBy(r => ShortType(r.Type))
-                .Select(g => new TypeCount(g.Key, g.Count()))
+                .Select(g => new { Type = g.Key, Count = g.Count() })
                 .OrderByDescending(t => t.Count)
                 .Take(15)
+                .Select(t => t.Type)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            _untaggedByType = inventory
+                .Where(r => r.IsUntagged && topTypes.Contains(ShortType(r.Type)))
+                .GroupBy(r => new { Type = ShortType(r.Type), r.SubscriptionId })
+                .Select(g => new TypeSubCount(g.Key.Type, g.Key.SubscriptionId, g.Count()))
+                .ToList();
+
+            _untaggedSubIds = _untaggedByType
+                .Select(t => t.SubscriptionId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(id => SubName(id), StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
         catch (Exception ex)
@@ -149,6 +191,41 @@
 
     private string SubName(string subscriptionId) =>
         _subNames.TryGetValue(subscriptionId, out var name) ? name : subscriptionId;
+
+    private string SubTenant(string subscriptionId) =>
+        _subTenant.TryGetValue(subscriptionId, out var tid) ? TenantNames.GetCachedOrId(tid) : string.Empty;
+
+    // Chart legend label: subscription name, plus its tenant when multi-tenancy is on and known.
+    private string SubLabel(string subscriptionId)
+    {
+        var name = SubName(subscriptionId);
+        if (!ShowTenant) return name;
+        var tenant = SubTenant(subscriptionId);
+        return string.IsNullOrWhiteSpace(tenant) || tenant.Equals(name, StringComparison.OrdinalIgnoreCase)
+            ? name
+            : $"{name} · {tenant}";
+    }
+
+    // Builds subId -> tenantId from the customer registry and merges any missing subscription
+    // names. Home subscriptions map to the home tenant; no-op when multi-tenancy is disabled.
+    private async Task BuildTenantMapAsync()
+    {
+        if (!Customers.IsEnabled) return;
+        var customers = await Customers.GetActiveCustomersAsync();
+        foreach (var c in customers)
+        {
+            if (!string.IsNullOrWhiteSpace(c.TenantId))
+                await TenantNames.GetDisplayNameAsync(c.TenantId);
+
+            foreach (var sub in await Customers.GetSubscriptionsAsync(c.Id))
+            {
+                if (!string.IsNullOrWhiteSpace(c.TenantId))
+                    _subTenant[sub.SubscriptionId] = c.TenantId;
+                if (!_subNames.ContainsKey(sub.SubscriptionId) && !string.IsNullOrWhiteSpace(sub.SubscriptionName))
+                    _subNames[sub.SubscriptionId] = sub.SubscriptionName;
+            }
+        }
+    }
 
     private static string ShortType(string type)
     {

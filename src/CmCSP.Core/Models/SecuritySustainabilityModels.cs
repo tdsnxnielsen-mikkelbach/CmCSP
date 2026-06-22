@@ -65,3 +65,14 @@ public sealed record CarbonEmissionByType(
     double LatestMonthEmissions,
     double PreviousMonthEmissions,
     double MonthOverMonthChangeRatio);
+
+/// <summary>
+/// Carbon emissions (kg CO₂e) attributed to one subscription for the latest month, so the UI can
+/// show which subscription (and tenant) drives the footprint. Sourced from the Carbon
+/// TopItemsSummaryReport with categoryType=SubscriptionId.
+/// </summary>
+public sealed record CarbonEmissionBySubscription(
+    string SubscriptionId,
+    double LatestMonthEmissions,
+    double PreviousMonthEmissions,
+    double MonthOverMonthChangeRatio);
