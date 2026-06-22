@@ -154,6 +154,14 @@ else
                                            OnClick="@(() => DiscoverSubsAsync(c.Id, c.TenantId))">
                                     Discover subscriptions
                                 </MudButton>
+                                <MudButton Size="Size.Small"
+                                           Variant="Variant.Outlined"
+                                           Color="Color.Success"
+                                           StartIcon="@Icons.Material.Filled.Key"
+                                           Disabled="@(_busy || !Gdap.CanAcquireCrossTenantTokens)"
+                                           OnClick="@(() => GrantReaderAsync(c.Id, c.TenantId))">
+                                    Grant Cost Reader
+                                </MudButton>
                                 @if (!string.IsNullOrWhiteSpace(c.GdapRelationshipId))
                                 {
                                     <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="Color.Default"
@@ -184,7 +192,9 @@ else
                                 subscription <b>manually</b> below by pasting its GUID. Note: mapping only links
                                 the subscription here &mdash; cost data still requires the app to have
                                 <b>Reader</b> (or <b>Cost Management Reader</b>) on that subscription so the
-                                collector can read its usage.
+                                collector can read its usage. For CSP / Azure&nbsp;Plan customers where you hold
+                                Owner via AOBO, <b>Grant Cost Reader</b> assigns that role to the app
+                                automatically on every mapped subscription.
                             </MudText>
                             @{
                                 var subs = _subsByCustomer.TryGetValue(c.Id, out var s) ? s : [];
@@ -418,6 +428,44 @@ else
             else
                 Snackbar.Add($"Discovered {result.Discovered} subscription(s); mapped {result.Added} new.", Severity.Success);
             await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task GrantReaderAsync(long customerId, string tenantId)
+    {
+        _busy = true;
+        try
+        {
+            var result = await Gdap.GrantCostReaderAsync(customerId, tenantId);
+            if (result.Total == 0)
+            {
+                Snackbar.Add(
+                    result.Messages.Count > 0 ? result.Messages[0] : "Nothing to grant.",
+                    Severity.Warning);
+            }
+            else if (result.Failed == 0)
+            {
+                Snackbar.Add(
+                    $"Cost Management Reader ensured on {result.Total} subscription(s) " +
+                    $"({result.Granted} newly granted, {result.AlreadyPresent} already in place).",
+                    Severity.Success);
+            }
+            else
+            {
+                var detail = result.Messages.Count > 0 ? " " + string.Join(" ", result.Messages) : string.Empty;
+                Snackbar.Add(
+                    $"Granted {result.Granted}, already {result.AlreadyPresent}, failed {result.Failed} " +
+                    $"of {result.Total}.{detail}",
+                    Severity.Warning);
+            }
         }
         catch (Exception ex)
         {

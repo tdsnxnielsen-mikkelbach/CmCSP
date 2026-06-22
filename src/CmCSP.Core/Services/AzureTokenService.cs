@@ -121,11 +121,21 @@ public sealed class AzureTokenService
     /// Used as the <c>principalId</c> when assigning roles to the SP — avoids a Microsoft
     /// Graph lookup, since the SP's token already contains its object id.
     /// </summary>
-    public async Task<string?> GetServicePrincipalObjectIdAsync(CancellationToken ct = default)
+    public Task<string?> GetServicePrincipalObjectIdAsync(CancellationToken ct = default) =>
+        GetServicePrincipalObjectIdAsync(null, ct);
+
+    /// <summary>
+    /// Returns the Entra App service principal's directory object id <b>in the given tenant</b>.
+    /// A multi-tenant app has a distinct SP object id in every tenant it is consented to, so a
+    /// cross-tenant role assignment must use the customer tenant's SP id — which is the <c>oid</c>
+    /// claim of an access token acquired against that tenant (no Microsoft Graph call needed).
+    /// Returns <c>null</c> when not running in service-principal mode.
+    /// </summary>
+    public async Task<string?> GetServicePrincipalObjectIdAsync(string? customerTenantId, CancellationToken ct = default)
     {
         if (_app is null) return null;
 
-        var token = await GetAccessTokenAsync(ct);
+        var token = await GetAccessTokenAsync(customerTenantId, ct);
         var parts = token.Split('.');
         if (parts.Length < 2) return null;
 

@@ -29,6 +29,11 @@ public sealed class GdapOnboardingService
 {
     private const string SubscriptionsApiVersion = "2022-12-01";
 
+    // Built-in "Cost Management Reader" role definition id (tenant-agnostic GUID) and the
+    // role-assignment API version used to grant it to the app SP on a customer subscription.
+    private const string CostManagementReaderRoleId = "72fafb9e-0641-4937-9268-a91bfd8191a3";
+    private const string RoleAssignmentApiVersion   = "2022-04-01";
+
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     private readonly IHttpClientFactory     _httpFactory;
@@ -188,6 +193,123 @@ public sealed class GdapOnboardingService
 
         return new SubscriptionSyncResult(discovered.Count, added, discovered);
     }
+
+    /// <summary>
+    /// Assigns this app's service principal the <b>Cost Management Reader</b> role on every Azure
+    /// subscription currently mapped to the customer, using a per-tenant (GDAP) token. This makes
+    /// CSP-provisioned customers one-click: where the partner already holds Owner / User Access
+    /// Administrator in the customer tenant (e.g. AOBO on CSP / Azure Plan subscriptions), the app
+    /// can grant itself the read access its collector needs without the customer touching IAM.
+    /// </summary>
+    /// <remarks>
+    /// Requires service-principal mode (a client secret) AND that the app's SP holds
+    /// <c>Microsoft.Authorization/roleAssignments/write</c> (Owner or User Access Administrator) in
+    /// the customer tenant — otherwise ARM returns 403 and the grant is reported as failed. The role
+    /// assignment is idempotent: an existing assignment (HTTP 409 <c>RoleAssignmentExists</c>) is
+    /// counted as already-present, not an error.
+    /// </remarks>
+    public async Task<RbacGrantResult> GrantCostReaderAsync(
+        long customerId, string customerTenantId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(customerTenantId) || !Guid.TryParse(customerTenantId.Trim(), out _))
+            throw new ArgumentException("A valid customer tenant GUID is required.", nameof(customerTenantId));
+
+        if (!CanAcquireCrossTenantTokens)
+        {
+            return new RbacGrantResult(0, 0, 0, 0,
+                ["The app is running on a managed identity, which cannot grant roles across tenants. " +
+                 "Configure the Entra app client secret, or assign Cost Management Reader manually."]);
+        }
+
+        var tenant = customerTenantId.Trim();
+        var subscriptionIds = await _customers.GetSubscriptionIdsAsync(customerId, ct);
+        if (subscriptionIds.Count == 0)
+        {
+            return new RbacGrantResult(0, 0, 0, 0,
+                ["No subscriptions are mapped to this customer yet. Discover or map subscriptions first."]);
+        }
+
+        // The customer-tenant SP object id (distinct from the home-tenant SP) is the role
+        // assignment principal — read it from the oid of a token issued for the customer tenant.
+        var principalId = await _tokenService.GetServicePrincipalObjectIdAsync(tenant, ct);
+        if (string.IsNullOrWhiteSpace(principalId))
+        {
+            return new RbacGrantResult(subscriptionIds.Count, 0, 0, subscriptionIds.Count,
+                ["Could not resolve the app's service principal in the customer tenant. " +
+                 "Ensure the customer has completed admin consent so the app exists in their directory."]);
+        }
+
+        var token  = await _tokenService.GetAccessTokenAsync(tenant, ct);
+        var client = _httpFactory.CreateClient("AzureMgmt");
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var granted = 0;
+        var already = 0;
+        var failed  = 0;
+        var messages = new List<string>();
+
+        foreach (var subId in subscriptionIds)
+        {
+            // Deterministic, idempotent assignment GUID: same (principal, role, sub) → same name,
+            // so re-running converges on a single assignment instead of piling up duplicates.
+            var assignmentName = DeterministicGuid($"{principalId}|{CostManagementReaderRoleId}|{subId}");
+            var url = $"https://management.azure.com/subscriptions/{subId}/providers/" +
+                      $"Microsoft.Authorization/roleAssignments/{assignmentName}?api-version={RoleAssignmentApiVersion}";
+
+            var body = new
+            {
+                properties = new
+                {
+                    roleDefinitionId = $"/subscriptions/{subId}/providers/Microsoft.Authorization/" +
+                                       $"roleDefinitions/{CostManagementReaderRoleId}",
+                    principalId,
+                    principalType = "ServicePrincipal"
+                }
+            };
+
+            using var content = new StringContent(
+                JsonSerializer.Serialize(body, JsonOpts), System.Text.Encoding.UTF8, "application/json");
+            using var response = await client.PutAsync(url, content, ct);
+
+            if (response.IsSuccessStatusCode)
+            {
+                granted++;
+                continue;
+            }
+
+            var payload = await response.Content.ReadAsStringAsync(ct);
+            if ((int)response.StatusCode == 409 &&
+                payload.Contains("RoleAssignmentExists", StringComparison.OrdinalIgnoreCase))
+            {
+                already++;
+                continue;
+            }
+
+            failed++;
+            var hint = (int)response.StatusCode == 403
+                ? " (the app's service principal lacks Owner / User Access Administrator in this tenant)"
+                : string.Empty;
+            messages.Add($"Subscription {subId}: {(int)response.StatusCode}{hint}.");
+            _logger.LogWarning(
+                "Cost Management Reader grant for customer #{Id} sub {Sub} failed: {Status} {Body}",
+                customerId, subId, (int)response.StatusCode, payload);
+        }
+
+        _logger.LogInformation(
+            "Cost Management Reader grant for customer #{Id}: {Granted} granted, {Already} already, {Failed} failed.",
+            customerId, granted, already, failed);
+
+        return new RbacGrantResult(subscriptionIds.Count, granted, already, failed, messages);
+    }
+
+    // Derives a stable GUID from a string so role-assignment names are deterministic
+    // (RFC-4122-ish: hash the key with SHA-256 and shape the first 16 bytes into a GUID).
+    private static string DeterministicGuid(string key)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key));
+        var bytes = hash.AsSpan(0, 16).ToArray();
+        return new Guid(bytes).ToString();
+    }
 }
 
 /// <summary>A subscription found in a customer tenant during GDAP discovery.</summary>
@@ -196,3 +318,7 @@ public sealed record DiscoveredSubscription(string SubscriptionId, string Displa
 /// <summary>Outcome of <see cref="GdapOnboardingService.SyncSubscriptionsAsync"/>.</summary>
 public sealed record SubscriptionSyncResult(
     int Discovered, int Added, IReadOnlyList<DiscoveredSubscription> Subscriptions);
+
+/// <summary>Outcome of <see cref="GdapOnboardingService.GrantCostReaderAsync"/>.</summary>
+public sealed record RbacGrantResult(
+    int Total, int Granted, int AlreadyPresent, int Failed, IReadOnlyList<string> Messages);
