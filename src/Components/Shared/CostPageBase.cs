@@ -22,10 +22,19 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     [Inject] protected SubscriptionStoreService SubStore  { get; set; } = default!;
     [Inject] protected ITenantScopeProvider   ScopeProvider { get; set; } = default!;
     [Inject] protected TenantScopeAccessor    ScopeAccessor { get; set; } = default!;
+    [Inject] protected CustomerStore          Customers     { get; set; } = default!;
 
     protected bool    _loading = true;
     protected string? _error;
     protected int     _withDataSubCount;
+
+    /// <summary>
+    /// The number of subscriptions in the current tenant scope, shown as "selected" on the
+    /// <c>SubscriptionScopeBadge</c>. In the single-tenant path this is the home subscription
+    /// registry; under multi-tenancy it also includes the mapped subscriptions of every customer
+    /// in scope (which live in a separate table from the home registry).
+    /// </summary>
+    protected int     _selectedSubCount;
     protected Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -65,12 +74,46 @@ public abstract class CostPageBase : ComponentBase, IDisposable
 
         if (scope.IsDenied)
         {
+            _selectedSubCount = 0;
             _loading = false;
             _error = "Your account's tenant is not authorized to view this dashboard.";
             return;
         }
 
+        await ComputeSelectedSubCountAsync(scope);
         await LoadAsync();
+    }
+
+    /// <summary>
+    /// Computes <see cref="_selectedSubCount"/> — the subscriptions in the current scope. In the
+    /// single-tenant (unscoped) path this is just the home registry (<see cref="SubStore"/>),
+    /// identical to before. Under multi-tenancy it unions the home registry (only when the home
+    /// customer is in scope — so a customer never sees the partner's own subscription count) with
+    /// every in-scope customer's mapped subscriptions from the <c>CustomerSubscription</c> table.
+    /// </summary>
+    private async Task ComputeSelectedSubCountAsync(TenantScope scope)
+    {
+        if (scope.IsUnscoped)
+        {
+            _selectedSubCount = SubStore.AllIds.Count;
+            return;
+        }
+
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // The home/partner's own subscriptions live in the SubStore registry rather than the
+        // CustomerSubscription table, so only fold them in when the home customer is in scope
+        // (partner aggregate, or a partner drill-in to the home customer itself).
+        var home = await Customers.GetHomeCustomerAsync();
+        if (home is not null && scope.CustomerIds.Contains(home.Id))
+            foreach (var id in SubStore.AllIds)
+                ids.Add(id);
+
+        foreach (var customerId in scope.CustomerIds)
+            foreach (var id in await Customers.GetSubscriptionIdsAsync(customerId))
+                ids.Add(id);
+
+        _selectedSubCount = ids.Count;
     }
 
     // ── Template method ───────────────────────────────────────────────────────

@@ -6,7 +6,7 @@
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Resource Group Breakdown</MudText>
-<SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
+<SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 <MudGrid Spacing="3" Class="mb-4">
     <KpiCard Label="Total Cost" Value="@Fmt(_totalCost)" Sm="4" Md="4" />

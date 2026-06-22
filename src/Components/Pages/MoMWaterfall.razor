@@ -6,7 +6,7 @@
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Month-over-Month Waterfall</MudText>
-<SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
+<SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @* ── Global date-range slicer ─────────────────────────────────────────────── *@
 <MudPaper Class="pa-4 mb-4" Elevation="2">

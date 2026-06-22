@@ -7,7 +7,7 @@
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <MudText Typo="Typo.h5" Class="mb-4 fw-bold">Subscription Breakdown</MudText>
-<SubscriptionScopeBadge SelectedCount="SubStore.AllIds.Count" WithDataCount="_withDataSubCount" />
+<SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @* ── Summary card *@
 <MudGrid Spacing="3" Class="mb-4">

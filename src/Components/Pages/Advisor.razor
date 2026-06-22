@@ -241,7 +241,6 @@ else if (_summaryRecCount > 0)
 
     private List<SubPoint>  _bySub  = [];
     private List<TypePoint> _byType = [];
-    private int _selectedSubCount;
     private int _scoredSubCount;
     private int _scopedScoredSubCount;
     private int _summaryRecCount;
@@ -285,8 +284,6 @@ else if (_summaryRecCount > 0)
         _advisorScopeLabel = _selectedAdvisorSubId == AllSubsToken
             ? "All selected subscriptions"
             : GetSubName(_selectedAdvisorSubId);
-
-        _selectedSubCount = allSelectedIds.Count;
 
         var summaryScores = _scores
             .Where(s => allSelectedIds.Contains(s.SubscriptionId, StringComparer.OrdinalIgnoreCase))
