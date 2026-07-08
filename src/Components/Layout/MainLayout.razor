@@ -17,7 +17,8 @@
 
 <MudLayout>
     <MudAppBar Elevation="1" Color="Color.Primary">
-        <MudIconButton Icon="@Icons.Material.Filled.Menu"
+        <MudIconButton id="tour-menu-button"
+                       Icon="@Icons.Material.Filled.Menu"
                        Color="Color.Inherit"
                        Edge="Edge.Start"
                        OnClick="ToggleDrawer" />
@@ -36,7 +37,15 @@
                 </MudTooltip>
             </Authorized>
         </AuthorizeView>
-        <MudIconButton Icon="@(_isDark ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
+        <MudTooltip Text="Take a tour">
+            <MudIconButton id="tour-take-tour"
+                           Icon="@Icons.Material.Filled.HelpOutline"
+                           Color="Color.Inherit"
+                           OnClick="StartTourAsync"
+                           aria-label="Take a product tour" />
+        </MudTooltip>
+        <MudIconButton id="tour-theme"
+                       Icon="@(_isDark ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
                        Color="Color.Inherit"
                        OnClick="ToggleTheme"
                        aria-label="Toggle dark / light mode" />
@@ -46,7 +55,9 @@
         <MudDrawerHeader>
             <MudText Typo="Typo.subtitle1" Class="mt-2 fw-bold">Navigation</MudText>
         </MudDrawerHeader>
-        <NavMenu />
+        <div id="tour-nav">
+            <NavMenu />
+        </div>
     </MudDrawer>
 
     <MudMainContent>
@@ -55,7 +66,7 @@
             @* ── Tenant → subscription picker (view filter, scope-safe) ───── *@
             @if (_showPicker)
             {
-                <MudPaper Class="pa-3 mb-4" Elevation="1">
+                <MudPaper id="tour-sub-picker" Class="pa-3 mb-4" Elevation="1">
                     <div class="d-flex align-center flex-wrap gap-2 mb-1">
                         <MudIcon Icon="@Icons.Material.Outlined.AccountTree" Color="Color.Primary" Class="flex-none" />
                         <MudText Typo="Typo.subtitle2" Class="flex-none">Subscriptions</MudText>
@@ -111,7 +122,7 @@
             }
 
             @* ── Global date-range filter ─────────────────────────────────── *@
-            <MudPaper Class="pa-3 mb-4 d-flex align-center flex-wrap gap-3" Elevation="1">
+            <MudPaper id="tour-date-range" Class="pa-3 mb-4 d-flex align-center flex-wrap gap-3" Elevation="1">
                 <MudIcon Icon="@Icons.Material.Outlined.DateRange" Color="Color.Primary" Class="flex-none" />
                 <MudText Typo="Typo.subtitle2" Class="flex-none">Date Range</MudText>
                 <MudDateRangePicker DateRange="_dateRange"
@@ -335,6 +346,7 @@
             await ApplyThemeToChartsAsync(_isDark);
             await PersistThemeAsync(_isDark);
             await FitToDataRange();
+            await MaybeAutoStartTourAsync();
 
             if (storedTheme.HasValue)
             {
@@ -396,6 +408,30 @@
         {
             // Theme updates should never break data loading or page rendering.
             Logger.LogDebug(ex, "Unable to apply ApexCharts theme update.");
+        }
+    }
+
+    private async Task StartTourAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("cmcspTour.start");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Unable to start the product tour.");
+        }
+    }
+
+    private async Task MaybeAutoStartTourAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("cmcspTour.maybeAutoStart");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Unable to evaluate first-visit product tour.");
         }
     }
 

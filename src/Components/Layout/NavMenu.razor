@@ -82,7 +82,8 @@
 
     <MudDivider Class="my-2" />
 
-    <MudNavLink Icon="@(_refreshing ? Icons.Material.Filled.HourglassEmpty : Icons.Material.Filled.Refresh)"
+    <MudNavLink id="tour-refresh"
+                Icon="@(_refreshing ? Icons.Material.Filled.HourglassEmpty : Icons.Material.Filled.Refresh)"
                 Disabled="_refreshing"
                 @onclick="RefreshAsync">
         @(_refreshing ? "Refreshing…" : "Refresh Data")

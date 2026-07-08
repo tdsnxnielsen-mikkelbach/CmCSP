@@ -50,6 +50,7 @@ detail page (goal + sub-task breakdown) under [`docs/phases/`](phases/).
 
 | Item | Phase | Priority | Status | Owner | Notes |
 |---|---|---|---|---|---|
+| Interactive product tour (driver.js onboarding) | UX | P2 | ✅ Shipped | — | Guided "next → next → got it" walkthrough of the dashboard via [driver.js](https://driverjs.com); "Take a tour" (?) button in the app bar + auto-start on first visit (localStorage `cmcsp-tour-seen`). `wwwroot/lib/driverjs/` vendored, `wwwroot/js/tour.js` filters steps to on-page targets. Sub-tasks below. |
 | Data model: customer → tenant → subscriptions | Phase 9 | P1 | ✅ Shipped | — | `CustomerEntity`/`CustomerSubscriptionEntity` + `CostFact` tenant columns + index; `schema.sql` idempotent + bootstrap home customer; gated by `MultiTenancy` flag |
 | Multi-tenant sign-in + tenant-scope resolver | Phase 9 | P1 | ✅ Shipped | — | `CustomerStore` registry + issuer-validated multi-tenant OIDC (gated); `ITenantScopeProvider` resolves `tid`→customer scope |
 | Tenant-isolated cache + SQL reads (P0 boundary) | Phase 9 | P0 | ✅ Shipped | — | `TenantScope.CacheKeyPrefix` + `TenantScopeAccessor` (ambient); `BlobCostManagementService` scopes SQL reads (`WHERE CustomerId IN`), prefixes cache keys, stamps writes; `CostPageBase` publishes scope; API-mode `CostManagementService` keys prefixed via `Scoped()`; `CacheWarmupService` warms per-customer partitions |
@@ -58,6 +59,19 @@ detail page (goal + sub-task breakdown) under [`docs/phases/`](phases/).
 | Scale-out collection (large estates) | Phase 9 | P2 | ✅ Shipped | — | `JobControlService.StartScaledAsync` POSTs N `jobs/start` executions with per-partition `COLLECT_PARTITION_*` overrides (no native task index); count from `CollectorJob:PartitionCount`, wired via `collectorPartitionCount` in bicep |
 | Customer picker + onboarding UI | Phase 9 | P1 | ✅ Shipped | — | Partner-only `/customers` admin page (onboard/suspend/map subs) via `CustomerStore` write methods; gated partner picker in `MainLayout` + nav link drive `SelectedCustomerId`; `CostPageBase` narrows partner scope to one customer |
 | GDAP delegated-access onboarding | Phase 9 | P1 | ✅ Shipped | — | `GdapOnboardingService`: per-customer admin-consent link + ARM subscription auto-discovery (per-tenant GDAP token) auto-maps subscriptions, replacing manual GUID entry; GDAP relationship id stored on the customer. Partner Center API stays out of scope (relationship created in the portal) |
+
+---
+
+### Product tour (driver.js) — sub-task breakdown
+
+| # | Sub-task | Status |
+|---|---|---|
+| 1 | Vendor `driver.js` (IIFE bundle + CSS) into `wwwroot/lib/driverjs/` | ✅ Shipped |
+| 2 | Author `wwwroot/js/tour.js` — tour steps + `window.cmcspTour.start()` / first-visit auto-start | ✅ Shipped |
+| 3 | Tag tour targets with stable `id`s (app bar, nav, date range, picker, KPI cards, charts) | ✅ Shipped |
+| 4 | Add a "Take a tour" button in `MainLayout` app bar + JS interop call | ✅ Shipped |
+| 5 | Reference `driver.css` + tour scripts from `App.razor` | ✅ Shipped |
+| 6 | Build + verify (0 errors); move roadmap item to ✅ Shipped | ✅ Shipped |
 
 ---
 

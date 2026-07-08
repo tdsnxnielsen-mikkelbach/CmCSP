@@ -12,7 +12,7 @@
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @* ── Summary cards ────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4">
+<MudGrid id="tour-kpis" Spacing="3" Class="mb-4">
     <KpiCard Label="Total Cost (selected range)" Value="@Fmt(_totalCost)" Sm="6" Md="3" />
     <KpiCard Label="Cost Month-to-Date" Value="@Fmt(_costMtd)" Sm="6" Md="3" />
     <KpiCard Label="Cost Year-to-Date" Value="@Fmt(_costYtd)" Sm="6" Md="3" />
@@ -20,7 +20,7 @@
 </MudGrid>
 
 @* ── Charts ───────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3">
+<MudGrid id="tour-charts" Spacing="3">
     @* Cost vs Prior Month *@
     <MudItem xs="12" md="6">
         <MudPaper Class="pa-4" Elevation="2">

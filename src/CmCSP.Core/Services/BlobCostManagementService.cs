@@ -360,6 +360,44 @@ public sealed class BlobCostManagementService : ICostManagementService
     }
 
     /// <summary>
+    /// Refreshes the three aggregated datasets via the live Cost Management Query API instead of
+    /// export blobs, then persists them to <c>CostFact</c> and warms the cache. Used for customer /
+    /// partner-tenant subscriptions: their Cost Management exports land in storage inside the
+    /// customer's own subscription, which we cannot read, so cost is pulled live with the
+    /// per-tenant GDAP token instead. The ambient <see cref="TenantScope"/> supplies that token
+    /// (service-principal mode only) and the CustomerId/TenantId stamped on each persisted row.
+    /// </summary>
+    /// <remarks>
+    /// Tag chargeback is unavailable here — the Query API rejects the <c>TagKey</c> dimension for
+    /// CSP / indirect subscriptions, so <see cref="GetTagCostDataAsync"/> returns an empty set.
+    /// Only the home tenant (whose exports we own) gets tag data.
+    /// </remarks>
+    public async Task<CostCollectionResult> RefreshFromApiAsync(CancellationToken ct = default)
+    {
+        if (_apiService is null)
+        {
+            _logger.LogWarning(
+                "RefreshFromApiAsync called but no Query API service is configured — skipping.");
+            return new CostCollectionResult(0, 0, 0);
+        }
+
+        _loadingState.Update(KeyMain, LoadPhase.Loading);
+        _loadingState.Update(KeyRg,   LoadPhase.Loading);
+        _loadingState.Update(KeyTag,  LoadPhase.Loading);
+
+        // Run sequentially to respect the per-subscription Query API rate limit (5 req/min).
+        var mainList = await _apiService.GetMainCostDataAsync(ct);
+        var rgList   = await _apiService.GetRgCostDataAsync(ct);
+        var tagList  = await _apiService.GetTagCostDataAsync(ct); // empty for CSP/indirect subs
+
+        if (_dbFactory is not null)
+            await UpsertFactsAsync(mainList, rgList, tagList, ct);
+
+        SetCaches(mainList, rgList, tagList, anyError: false);
+        return new CostCollectionResult(mainList.Count, rgList.Count, tagList.Count);
+    }
+
+    /// <summary>
     /// Lists and parses every relevant export blob into the three aggregated datasets.
     /// Falls back to the Query API when no export blobs exist yet.
     /// </summary>

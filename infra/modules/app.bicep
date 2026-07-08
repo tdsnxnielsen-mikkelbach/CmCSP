@@ -391,7 +391,10 @@ resource collectJob 'Microsoft.App/jobs@2024-03-01' = {
       replicaTimeout: 1800     // 30 min – cost collection across many subscriptions can be slow
       replicaRetryLimit: 1
       scheduleTriggerConfig: {
-        cronExpression: '0 2 * * *'  // nightly at 02:00 UTC
+        // 08:00 UTC – run AFTER the daily Cost Management export has landed (observed ~06:30 UTC).
+        // Running earlier (the old 02:00) made the collector re-parse the PREVIOUS day's export,
+        // leaving the dashboard ~1 day staler than necessary.
+        cronExpression: '0 8 * * *'  // nightly at 08:00 UTC
         // Default parallelism: 1 — one replica collects every subscription. Per-subscription
         // partitioning is now data-safe (CostFact's natural key includes SubscriptionId, so
         // disjoint partitions never conflict). To fan out, set COLLECT_PARTITION_COUNT > 1 and

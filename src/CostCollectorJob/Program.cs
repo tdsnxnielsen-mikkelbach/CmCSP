@@ -141,6 +141,17 @@ try
         var allCustomers = (await customerStore.GetActiveCustomersAsync())
             .OrderBy(c => c.Id)
             .ToList();
+
+        // The bootstrap "home" customer (lowest Id) owns the original single-tenant deployment.
+        // Its subscriptions live in the registry (SubscriptionStoreService / costOptions), NOT the
+        // CustomerSubscription table, and their cost arrives via the export blobs we own — so the
+        // home tenant is collected from exports, every other customer is pulled live (below).
+        var homeCustomer   = await customerStore.GetHomeCustomerAsync();
+        var homeCustomerId = homeCustomer?.Id ?? 0;
+        var homeSubs       = costOptions.SubscriptionIds
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         var customers = partitionCount > 1
             ? allCustomers.Where((_, i) => i % partitionCount == partitionIndex).ToList()
             : allCustomers;
@@ -149,8 +160,46 @@ try
             "CostCollector[{CorrelationId}]: multi-tenant fan-out — partition {Index}/{Count} handling {Subset} of {Total} customer(s).",
             correlationId, partitionIndex, partitionCount, customers.Count, allCustomers.Count);
 
+        // ── Home tenant: export-based collection (partition 0 only) ──────────────────
+        // We own the home export storage, so the home tenant is collected from the export CSVs
+        // exactly as in single-tenant mode. Only partition 0 runs it to avoid redundant parsing
+        // (CostFact upserts are idempotent, but re-parsing every blob on each replica is wasteful).
+        if (partitionIndex == 0 && homeCustomer is not null && homeSubs.Count > 0)
+        {
+            scopeAccessor.Current = new TenantScope
+            {
+                IsUnscoped  = false,
+                IsPartner   = false,
+                CustomerIds = [homeCustomer.Id],
+                TenantId    = homeCustomer.TenantId
+            };
+
+            costOptions.SubscriptionIds.Clear();
+            costOptions.SubscriptionIds.AddRange(homeSubs);
+            if (costService is BlobCostManagementService blobHome)
+                blobHome.SubscriptionFilter = new HashSet<string>(homeSubs, StringComparer.OrdinalIgnoreCase);
+
+            subscriptionCount += homeSubs.Count;
+
+            logger.LogInformation(
+                "CostCollector[{CorrelationId}]: collecting home tenant ({Subs} subscription(s)) from export blobs.",
+                correlationId, homeSubs.Count);
+
+            var homeResult = await costService.RefreshAsync();
+            var homeAmort  = await costService.GetAmortizedMainCostDataAsync();
+            mainRows += homeResult.Main; rgRows += homeResult.Rg; tagRows += homeResult.Tag; amortRows += homeAmort.Count;
+        }
+
+        // ── Customer tenants: live Cost Management Query API ─────────────────────────
+        // A customer's exports land in storage inside THEIR subscription, which we cannot read, so
+        // their cost is pulled live via the Query API using a per-tenant GDAP token. This requires
+        // service-principal mode (managed identity cannot cross tenants) and the app SP to hold
+        // Cost Management Reader on each mapped customer subscription. Tag chargeback is unavailable
+        // (the Query API rejects TagKey for CSP/indirect subs) — main + resource-group cost only.
         foreach (var customer in customers)
         {
+            if (customer.Id == homeCustomerId) continue; // home is export-based, handled above
+
             var subs = (await customerStore.GetSubscriptionIdsAsync(customer.Id)).ToList();
             if (subs.Count == 0)
             {
@@ -170,7 +219,7 @@ try
                 TenantId    = customer.TenantId
             };
 
-            // Restrict export parsing/persistence + API queries to this customer's subscriptions.
+            // Restrict API queries to this customer's subscriptions.
             costOptions.SubscriptionIds.Clear();
             costOptions.SubscriptionIds.AddRange(subs);
             if (costService is BlobCostManagementService blobMt)
@@ -179,10 +228,14 @@ try
             subscriptionCount += subs.Count;
 
             logger.LogInformation(
-                "CostCollector[{CorrelationId}]: collecting customer {Customer} ({Subs} subscription(s)).",
+                "CostCollector[{CorrelationId}]: collecting customer {Customer} ({Subs} subscription(s)) via live Query API.",
                 correlationId, customer.DisplayName, subs.Count);
 
-            var result = await costService.RefreshAsync();
+            // Live pull — exports for this customer live in their own subscription (unreadable),
+            // so bypass blob parsing and query the Cost Management API with the per-tenant token.
+            var result = costService is BlobCostManagementService blobApi
+                ? await blobApi.RefreshFromApiAsync()
+                : await costService.RefreshAsync();
             var amort  = await costService.GetAmortizedMainCostDataAsync();
             mainRows += result.Main; rgRows += result.Rg; tagRows += result.Tag; amortRows += amort.Count;
         }
