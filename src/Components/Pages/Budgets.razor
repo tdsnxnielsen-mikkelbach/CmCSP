@@ -3,9 +3,14 @@
 
 <PageTitle>Budgets – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Budgets</MudText>
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
+         data-tour="10"
+         data-tour-title="Budgets"
+         data-tour-desc="Track Azure Cost Management budgets &mdash; spend vs limit, variance, and burn-down per subscription.">Budgets</MudText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @if (!_loading && _budgets.Count == 0)

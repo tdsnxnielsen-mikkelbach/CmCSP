@@ -4,9 +4,14 @@
 
 <PageTitle>Tag Chargeback – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Tag Chargeback</MudText>
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
+         data-tour="10"
+         data-tour-title="Tag Chargeback"
+         data-tour-desc="Cost allocated by resource tags for chargeback / showback, plus live tag-coverage gaps.">Tag Chargeback</MudText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @if (!_loading && !Options.ExportBlob.Enabled)
@@ -20,7 +25,10 @@
     </MudAlert>
 }
 
-<MudGrid Spacing="3" Class="mb-4">
+<MudGrid Spacing="3" Class="mb-4"
+         data-tour="12"
+         data-tour-title="Tag coverage"
+         data-tour-desc="Tagged vs untagged cost and the number of distinct tag keys in use.">
     <KpiCard Label="Total Tagged Cost" Value="@Fmt(_taggedCost)" Md="4" />
     <KpiCard Label="Untagged Cost" Value="@Fmt(_untaggedCost)" ValueColor="Color.Warning" Md="4" />
     <KpiCard Label="Distinct Tag Keys" Value="@_tagData.Count.ToString()" Md="4" />

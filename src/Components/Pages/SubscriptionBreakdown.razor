@@ -4,13 +4,21 @@
 
 <PageTitle>Subscription Breakdown – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Subscription Breakdown</MudText>
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
+         data-tour="10"
+         data-tour-title="Subscription Breakdown"
+         data-tour-desc="Cost by subscription &mdash; totals, share of spend, and a per-subscription detail table.">Subscription Breakdown</MudText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @* ── Summary card *@
-<MudGrid Spacing="3" Class="mb-4">
+<MudGrid Spacing="3" Class="mb-4"
+         data-tour="12"
+         data-tour-title="Totals"
+         data-tour-desc="Totals, subscription count, and the largest subscription's share of spend.">
     <KpiCard Label="Total Cost" Value="@Fmt(_totalCost)" Sm="4" Md="4" />
     <KpiCard Label="Subscriptions" Value="@_rows.Count.ToString()" Sm="4" Md="4" />
     <KpiCard Label="Largest Subscription Share" Value="@($"{_topShare:F1}%")" Sm="4" Md="4" />

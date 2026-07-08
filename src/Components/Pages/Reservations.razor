@@ -10,6 +10,8 @@
 
 <PageTitle>Reservations – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 @if (_loading)
 {
     <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
@@ -19,7 +21,10 @@
     <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
 }
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Reservations</MudText>
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
+         data-tour="10"
+         data-tour-title="Reservations"
+         data-tour-desc="Reservation and savings-plan utilisation, purchase recommendations, and upcoming expiries.">Reservations</MudText>
 
 @* ── Scope info banner ──────────────────────────────────────────────────────── *@
 @if (CostDetails.HasBillingAccountAccess)

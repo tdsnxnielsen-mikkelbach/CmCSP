@@ -7,6 +7,8 @@
 
 <PageTitle>Security Posture – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 @if (_loading)
 {
     <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
@@ -16,7 +18,10 @@
     <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
 }
 
-<MudText Typo="Typo.h5" Class="mb-1 fw-bold">Security Posture</MudText>
+<MudText Typo="Typo.h5" Class="mb-1 fw-bold"
+         data-tour="10"
+         data-tour-title="Security Posture"
+         data-tour-desc="Microsoft Defender for Cloud secure score per subscription and the top control gaps to fix.">Security Posture</MudText>
 <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
     Microsoft Defender for Cloud secure score per subscription and the top control gaps to fix.
     Azure security posture only — not Microsoft 365 Secure Score.
@@ -32,7 +37,10 @@
 }
 
 @* ── KPI summary ────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4">
+<MudGrid Spacing="3" Class="mb-4"
+         data-tour="12"
+         data-tour-title="Security summary"
+         data-tour-desc="Security summary &mdash; average secure score, subscriptions scored, and findings to address.">
     <KpiCard Label="Average Secure Score" Value="@($"{_avgPercent:F0}%")"
              ValueColor="@ScoreColor(_avgPercent)" Md="3" />
     <KpiCard Label="Subscriptions Scored" Value="@_scores.Count.ToString("N0")" Md="3" />

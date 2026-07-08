@@ -3,9 +3,14 @@
 
 <PageTitle>MoM Waterfall – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Month-over-Month Waterfall</MudText>
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
+         data-tour="10"
+         data-tour-title="Month-over-Month Waterfall"
+         data-tour-desc="Month-over-month and year-over-year cost changes, visualised as a waterfall so you can spot what moved.">Month-over-Month Waterfall</MudText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @* ── Global date-range slicer ─────────────────────────────────────────────── *@
@@ -17,7 +22,10 @@
 </MudPaper>
 
 @* ── KPI cards ─────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4">
+<MudGrid Spacing="3" Class="mb-4"
+         data-tour="12"
+         data-tour-title="Movement metrics"
+         data-tour-desc="Key movement metrics &mdash; MoM change and %, YoY %, and current-month spend.">
     <KpiCard Label="MoM Change" Value="@Fmt(_momChange)" ValueColor="@(_momChange > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />
     <KpiCard Label="MoM Change %" Value="@($"{_momPct:F1}%")" ValueColor="@(_momPct > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />
     <KpiCard Label="YoY Change %" Value="@($"{_yoyPct:F1}%")" ValueColor="@(_yoyPct > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />

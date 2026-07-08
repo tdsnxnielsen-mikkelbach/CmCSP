@@ -7,6 +7,8 @@
 
 <PageTitle>Sustainability – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 @if (_loading)
 {
     <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
@@ -16,7 +18,10 @@
     <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
 }
 
-<MudText Typo="Typo.h5" Class="mb-1 fw-bold">Sustainability</MudText>
+<MudText Typo="Typo.h5" Class="mb-1 fw-bold"
+         data-tour="10"
+         data-tour-title="Sustainability"
+         data-tour-desc="Estimated Azure carbon emissions (kg CO₂e) from the Carbon Optimization API, with month-over-month trend.">Sustainability</MudText>
 <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
     Estimated Azure carbon emissions (kg CO₂e, scopes 1–3) from the Carbon Optimization API.
     Data covers a rolling ~12-month window with roughly a one-month lag.
@@ -32,7 +37,10 @@
 }
 
 @* ── KPI summary ────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4">
+<MudGrid Spacing="3" Class="mb-4"
+         data-tour="12"
+         data-tour-title="Emissions summary"
+         data-tour-desc="Emissions summary &mdash; latest month, previous month, and the month-over-month change.">
     <KpiCard Label="@($"Latest Month ({_latestLabel})")"
              Value="@($"{_latest:N2} kg")" Md="4" />
     <KpiCard Label="Previous Month" Value="@($"{_previous:N2} kg")" Md="4" />

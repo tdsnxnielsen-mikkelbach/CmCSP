@@ -7,12 +7,17 @@
 
 <PageTitle>Cost Overview – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @* ── Summary cards ────────────────────────────────────────────────────────── *@
-<MudGrid id="tour-kpis" Spacing="3" Class="mb-4">
+<MudGrid data-tour="10"
+         data-tour-title="Headline numbers"
+         data-tour-desc="At-a-glance totals for the selected range, month-to-date, year-to-date and average daily cost."
+         Spacing="3" Class="mb-4">
     <KpiCard Label="Total Cost (selected range)" Value="@Fmt(_totalCost)" Sm="6" Md="3" />
     <KpiCard Label="Cost Month-to-Date" Value="@Fmt(_costMtd)" Sm="6" Md="3" />
     <KpiCard Label="Cost Year-to-Date" Value="@Fmt(_costYtd)" Sm="6" Md="3" />
@@ -20,7 +25,10 @@
 </MudGrid>
 
 @* ── Charts ───────────────────────────────────────────────────────────────── *@
-<MudGrid id="tour-charts" Spacing="3">
+<MudGrid data-tour="12"
+         data-tour-title="Cost charts"
+         data-tour-desc="Interactive trends and breakdowns. Charts update automatically as you change the filters above."
+         Spacing="3">
     @* Cost vs Prior Month *@
     <MudItem xs="12" md="6">
         <MudPaper Class="pa-4" Elevation="2">

@@ -3,13 +3,21 @@
 
 <PageTitle>Trend &amp; Forecast – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Trend &amp; Forecast</MudText>
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
+         data-tour="10"
+         data-tour-title="Trend &amp; Forecast"
+         data-tour-desc="Daily and monthly cost trends with a native Azure forecast; switch between actual and amortized cost.">Trend &amp; Forecast</MudText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @* ── Cost metric toggle ──────────────────────────────────────────────────────────── *@
-<MudPaper Class="pa-3 mb-4" Elevation="2">
+<MudPaper Class="pa-3 mb-4" Elevation="2"
+          data-tour="12"
+          data-tour-title="Cost metric"
+          data-tour-desc="Switch between actual and amortized cost &mdash; amortized spreads reservation purchases evenly over the term.">
     <MudStack Row AlignItems="AlignItems.Center" Spacing="2">
         <MudText Typo="Typo.body2">Cost metric:</MudText>
         <MudChipSet T="string" @bind-SelectedValue="_metric" SelectionMode="SelectionMode.SingleSelection"

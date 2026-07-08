@@ -3,9 +3,14 @@
 
 <PageTitle>Azure Marketplace – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-1 fw-bold">Azure Marketplace</MudText>
+<MudText Typo="Typo.h5" Class="mb-1 fw-bold"
+         data-tour="10"
+         data-tour-title="Azure Marketplace"
+         data-tour-desc="Month-to-date Azure spend split into Microsoft first-party services and third-party Marketplace (ISV / SaaS) charges.">Azure Marketplace</MudText>
 <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
     Month-to-date Azure spend split into Microsoft first-party services and third-party
     Azure Marketplace (ISV / SaaS-on-Azure) charges. Azure spend only.
@@ -20,7 +25,10 @@
 }
 
 @* ── KPI cards ──────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4">
+<MudGrid Spacing="3" Class="mb-4"
+         data-tour="12"
+         data-tour-title="Spend split"
+         data-tour-desc="Headline spend split &mdash; total, first-party Azure, third-party Marketplace, and the Marketplace share.">
     <KpiCard Label="Total Spend (MTD)" Value="@Fmt(_total)" Sm="6" Md="3" />
     <KpiCard Label="Azure (first-party)" Value="@Fmt(_azure)" Sm="6" Md="3" />
     <KpiCard Label="Marketplace (third-party)" Value="@Fmt(_marketplace)" Sm="6" Md="3" />

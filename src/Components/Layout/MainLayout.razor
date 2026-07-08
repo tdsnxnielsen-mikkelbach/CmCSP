@@ -17,7 +17,9 @@
 
 <MudLayout>
     <MudAppBar Elevation="1" Color="Color.Primary">
-        <MudIconButton id="tour-menu-button"
+        <MudIconButton data-tour="4"
+                       data-tour-title="Navigation drawer"
+                       data-tour-desc="Toggle the side navigation to move between the dashboard pages."
                        Icon="@Icons.Material.Filled.Menu"
                        Color="Color.Inherit"
                        Edge="Edge.Start"
@@ -37,14 +39,18 @@
                 </MudTooltip>
             </Authorized>
         </AuthorizeView>
-        <MudTooltip Text="Take a tour">
-            <MudIconButton id="tour-take-tour"
+        <MudTooltip Text="Take a tour of this page">
+            <MudIconButton data-tour="99"
+                           data-tour-title="You're all set"
+                           data-tour-desc="Replay this page's tour any time from here. Enjoy exploring your Azure spend!"
                            Icon="@Icons.Material.Filled.HelpOutline"
                            Color="Color.Inherit"
                            OnClick="StartTourAsync"
                            aria-label="Take a product tour" />
         </MudTooltip>
-        <MudIconButton id="tour-theme"
+        <MudIconButton data-tour="91"
+                       data-tour-title="Light / dark mode"
+                       data-tour-desc="Switch between light and dark themes to suit your preference."
                        Icon="@(_isDark ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
                        Color="Color.Inherit"
                        OnClick="ToggleTheme"
@@ -55,7 +61,11 @@
         <MudDrawerHeader>
             <MudText Typo="Typo.subtitle1" Class="mt-2 fw-bold">Navigation</MudText>
         </MudDrawerHeader>
-        <div id="tour-nav">
+        <div data-tour="5"
+             data-tour-title="Dashboard pages"
+             data-tour-desc="Jump to cost overviews, budgets, breakdowns by subscription or resource group, tag chargeback, trends, optimization, security and more."
+             data-tour-side="right"
+             data-tour-align="start">
             <NavMenu />
         </div>
     </MudDrawer>
@@ -66,7 +76,10 @@
             @* ── Tenant → subscription picker (view filter, scope-safe) ───── *@
             @if (_showPicker)
             {
-                <MudPaper id="tour-sub-picker" Class="pa-3 mb-4" Elevation="1">
+                <MudPaper data-tour="7"
+                          data-tour-title="Subscription filter"
+                          data-tour-desc="Narrow every page to specific tenants and subscriptions. This is a view filter &mdash; it never widens what you're allowed to see."
+                          Class="pa-3 mb-4" Elevation="1">
                     <div class="d-flex align-center flex-wrap gap-2 mb-1">
                         <MudIcon Icon="@Icons.Material.Outlined.AccountTree" Color="Color.Primary" Class="flex-none" />
                         <MudText Typo="Typo.subtitle2" Class="flex-none">Subscriptions</MudText>
@@ -122,7 +135,10 @@
             }
 
             @* ── Global date-range filter ─────────────────────────────────── *@
-            <MudPaper id="tour-date-range" Class="pa-3 mb-4 d-flex align-center flex-wrap gap-3" Elevation="1">
+            <MudPaper data-tour="6"
+                      data-tour-title="Date range"
+                      data-tour-desc="Set the reporting window for all charts and totals. Use the fit-to-data button to snap to the available range."
+                      Class="pa-3 mb-4 d-flex align-center flex-wrap gap-3" Elevation="1">
                 <MudIcon Icon="@Icons.Material.Outlined.DateRange" Color="Color.Primary" Class="flex-none" />
                 <MudText Typo="Typo.subtitle2" Class="flex-none">Date Range</MudText>
                 <MudDateRangePicker DateRange="_dateRange"

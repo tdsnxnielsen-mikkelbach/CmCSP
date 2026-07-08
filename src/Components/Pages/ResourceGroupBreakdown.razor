@@ -3,12 +3,20 @@
 
 <PageTitle>Resource Group Breakdown – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Resource Group Breakdown</MudText>
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
+         data-tour="10"
+         data-tour-title="Resource Group Breakdown"
+         data-tour-desc="Cost broken down by resource group &mdash; the top spenders and a searchable detail table.">Resource Group Breakdown</MudText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
-<MudGrid Spacing="3" Class="mb-4">
+<MudGrid Spacing="3" Class="mb-4"
+         data-tour="12"
+         data-tour-title="Totals"
+         data-tour-desc="Totals across your resource groups and the average monthly cost of the top spenders.">
     <KpiCard Label="Total Cost" Value="@Fmt(_totalCost)" Sm="4" Md="4" />
     <KpiCard Label="Resource Groups (top 15 shown)" Value="@_totalRgCount.ToString()" Sm="4" Md="4" />
     <KpiCard Label="Avg Monthly Cost (top 15)" Value="@Fmt(_avgMonthly)" Sm="4" Md="4" />

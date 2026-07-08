@@ -50,7 +50,7 @@ detail page (goal + sub-task breakdown) under [`docs/phases/`](phases/).
 
 | Item | Phase | Priority | Status | Owner | Notes |
 |---|---|---|---|---|---|
-| Interactive product tour (driver.js onboarding) | UX | P2 | ✅ Shipped | — | Guided "next → next → got it" walkthrough of the dashboard via [driver.js](https://driverjs.com); "Take a tour" (?) button in the app bar + auto-start on first visit (localStorage `cmcsp-tour-seen`). `wwwroot/lib/driverjs/` vendored, `wwwroot/js/tour.js` filters steps to on-page targets. Sub-tasks below. |
+| Interactive product tour (driver.js onboarding) | UX | P2 | ✅ Shipped | — | Per-page guided "next → next → got it" walkthrough via [driver.js](https://driverjs.com). Data-attribute-driven: each page declares its own steps inline with `data-tour` / `data-tour-title` / `data-tour-desc`; shared chrome (nav, filters, theme, refresh) framed by the layout. Reusable `<PageTour />` button restarts the current page's tour; app-bar "Take a tour of this page" button + first-visit auto-start (localStorage `cmcsp-tour-seen`). `wwwroot/lib/driverjs/` vendored, `wwwroot/js/tour.js` builds steps from visible `[data-tour]` elements. Sub-tasks below. |
 | Data model: customer → tenant → subscriptions | Phase 9 | P1 | ✅ Shipped | — | `CustomerEntity`/`CustomerSubscriptionEntity` + `CostFact` tenant columns + index; `schema.sql` idempotent + bootstrap home customer; gated by `MultiTenancy` flag |
 | Multi-tenant sign-in + tenant-scope resolver | Phase 9 | P1 | ✅ Shipped | — | `CustomerStore` registry + issuer-validated multi-tenant OIDC (gated); `ITenantScopeProvider` resolves `tid`→customer scope |
 | Tenant-isolated cache + SQL reads (P0 boundary) | Phase 9 | P0 | ✅ Shipped | — | `TenantScope.CacheKeyPrefix` + `TenantScopeAccessor` (ambient); `BlobCostManagementService` scopes SQL reads (`WHERE CustomerId IN`), prefixes cache keys, stamps writes; `CostPageBase` publishes scope; API-mode `CostManagementService` keys prefixed via `Scoped()`; `CacheWarmupService` warms per-customer partitions |
@@ -72,6 +72,9 @@ detail page (goal + sub-task breakdown) under [`docs/phases/`](phases/).
 | 4 | Add a "Take a tour" button in `MainLayout` app bar + JS interop call | ✅ Shipped |
 | 5 | Reference `driver.css` + tour scripts from `App.razor` | ✅ Shipped |
 | 6 | Build + verify (0 errors); move roadmap item to ✅ Shipped | ✅ Shipped |
+| 7 | Make tour data-driven (`[data-tour]` attrs) so `tour.js` builds steps per page | ✅ Shipped |
+| 8 | Add per-page tour steps to every dashboard page (title + key content) | ✅ Shipped |
+| 9 | Reusable `<PageTour />` restart button on every page + page-aware app-bar button | ✅ Shipped |
 
 ---
 

@@ -1,0 +1,30 @@
+@inject IJSRuntime JS
+
+@* Per-page "Take a tour" button. Restarts the guided walkthrough for whatever
+   page it is placed on (the tour is built from the current page's [data-tour]
+   elements). Renders right-aligned so it sits neatly above the page content. *@
+<div class="d-flex justify-end mb-2">
+    <MudButton Variant="Variant.Text"
+               Size="Size.Small"
+               Color="Color.Primary"
+               StartIcon="@Icons.Material.Filled.HelpOutline"
+               OnClick="StartTourAsync">
+        @Text
+    </MudButton>
+</div>
+
+@code {
+    [Parameter] public string Text { get; set; } = "Take a tour";
+
+    private async Task StartTourAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("cmcspTour.start");
+        }
+        catch
+        {
+            // A tour failure must never disrupt the page.
+        }
+    }
+}

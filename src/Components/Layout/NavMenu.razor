@@ -82,7 +82,11 @@
 
     <MudDivider Class="my-2" />
 
-    <MudNavLink id="tour-refresh"
+    <MudNavLink data-tour="90"
+                data-tour-title="Refresh data"
+                data-tour-desc="Re-fetch the latest collected cost data on demand."
+                data-tour-side="right"
+                data-tour-align="start"
                 Icon="@(_refreshing ? Icons.Material.Filled.HourglassEmpty : Icons.Material.Filled.Refresh)"
                 Disabled="_refreshing"
                 @onclick="RefreshAsync">

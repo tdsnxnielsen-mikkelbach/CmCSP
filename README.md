@@ -109,11 +109,11 @@ CmCSP/
 │   │   ├── SubscriptionStoreService.cs       ← persists user-added subscription IDs to Key Vault + disk
 │   │   └── DashboardStateService.cs          ← shared date-range slicer (Scoped)
 │   ├── Components/
-│   │   ├── App.razor                         ← HTML shell (MudBlazor + ApexCharts JS)
+│   │   ├── App.razor                         ← HTML shell (MudBlazor + ApexCharts + driver.js tour JS/CSS)
 │   │   ├── _Imports.razor                    ← global Razor usings + type aliases
 │   │   ├── Routes.razor
 │   │   ├── Layout/
-│   │   │   ├── MainLayout.razor              ← MudLayout, AppBar, Drawer, dark mode, global date-range picker, subscription chip
+│   │   │   ├── MainLayout.razor              ← MudLayout, AppBar, Drawer, dark mode, global date-range picker, subscription chip, product-tour button
 │   │   │   ├── NavMenu.razor                 ← 9 MudNavLinks + Refresh Data button
 │   │   │   └── ReconnectModal.razor
 │   │   ├── Pages/
@@ -132,10 +132,13 @@ CmCSP/
 │   │   └── Shared/
 │   │       ├── LoadingStatus.razor           ← data-load progress banner
 │   │       ├── SubscriptionScopeBadge.razor  ← selected vs with-data subscription scope indicator
-│   │       └── RedirectToLogin.razor         ← forces unauthenticated users to /login outside SignalR
+│   │       ├── PageTour.razor                 ← per-page "Take a tour" button (restarts the driver.js walkthrough)
+│   │       └── RedirectToLogin.razor          ← forces unauthenticated users to /login outside SignalR
 │   ├── wwwroot/
 │   │   ├── app.css
-│   │   └── apexcharts-theme.js               ← propagates MudBlazor dark/light toggle to ApexCharts
+│   │   ├── apexcharts-theme.js               ← propagates MudBlazor dark/light toggle to ApexCharts
+│   │   ├── js/tour.js                         ← data-driven guided tour ([data-tour] steps) built on driver.js
+│   │   └── lib/driverjs/                      ← vendored driver.js bundle + CSS (product tour)
 ├── infra/                                    ← azd entry-point template, modules & hooks
 │   ├── main.bicep                            ← subscription-scope composition of infra/modules
 │   ├── main.parameters.json

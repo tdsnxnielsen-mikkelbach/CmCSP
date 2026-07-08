@@ -8,6 +8,8 @@
 
 <PageTitle>Optimization – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 @if (_loading)
 {
     <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
@@ -17,7 +19,10 @@
     <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
 }
 
-<MudText Typo="Typo.h5" Class="mb-1 fw-bold">Optimization</MudText>
+<MudText Typo="Typo.h5" Class="mb-1 fw-bold"
+         data-tour="10"
+         data-tour-title="Optimization"
+         data-tour-desc="Live Azure inventory joined to cost &mdash; orphaned resources to remove and tag-governance gaps to close.">Optimization</MudText>
 <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
     Live Azure inventory joined to cost data — orphaned resources to remove and tag-governance gaps.
 </MudText>
@@ -32,7 +37,10 @@
 }
 
 @* ── KPI summary ────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4">
+<MudGrid Spacing="3" Class="mb-4"
+         data-tour="12"
+         data-tour-title="Inventory summary"
+         data-tour-desc="Inventory summary &mdash; total, orphaned and untagged resources at a glance.">
     <KpiCard Label="Total Resources" Value="@_totalResources.ToString("N0")" Md="3" />
     <KpiCard Label="Orphaned Resources" Value="@_orphans.Count.ToString("N0")"
              ValueColor="@(_orphans.Count > 0 ? Color.Error : Color.Success)" Md="3" />

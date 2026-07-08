@@ -3,12 +3,20 @@
 
 <PageTitle>Advisor Overview – CSP Dashboard</PageTitle>
 
+<PageTour />
+
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold">Advisor Overview</MudText>
+<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
+         data-tour="10"
+         data-tour-title="Advisor Overview"
+         data-tour-desc="Azure Advisor cost recommendations, category health scores, and estimated savings across your subscriptions.">Advisor Overview</MudText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_scoredSubCount" />
 
-<MudPaper Class="pa-4 mb-4" Elevation="2">
+<MudPaper Class="pa-4 mb-4" Elevation="2"
+          data-tour="12"
+          data-tour-title="Advisor scope"
+          data-tour-desc="Focus the recommendations on one subscription or all selected subscriptions.">
     <MudText Typo="Typo.subtitle2" Class="mb-2">Advisor Scope</MudText>
     <MudSelect T="string"
                Value="_selectedAdvisorSubId"
