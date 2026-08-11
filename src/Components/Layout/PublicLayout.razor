@@ -1,0 +1,33 @@
+@inherits LayoutComponentBase
+
+@* Minimal, auth-free layout for the public API landing page. Unlike MainLayout it
+   injects no cost/tenant services and renders no dashboard chrome, so anonymous
+   external visitors can read it without an Entra sign-in. *@
+
+<MudThemeProvider @bind-IsDarkMode="_isDark" />
+<MudPopoverProvider />
+
+<MudLayout>
+    <MudAppBar Elevation="1" Color="Color.Primary">
+        <MudIcon Icon="@Icons.Material.Filled.Api" Class="mr-2" />
+        <MudText Typo="Typo.h6" Class="fw-bold">CSP Cost Dashboard — Public API</MudText>
+        <MudSpacer />
+        <MudButton Href="/"
+                   Color="Color.Inherit"
+                   StartIcon="@Icons.Material.Filled.Dashboard">
+            Dashboard
+        </MudButton>
+        <MudIconButton Icon="@(_isDark ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
+                       Color="Color.Inherit"
+                       OnClick="@(() => _isDark = !_isDark)"
+                       aria-label="Toggle dark / light mode" />
+    </MudAppBar>
+
+    <MudMainContent>
+        @Body
+    </MudMainContent>
+</MudLayout>
+
+@code {
+    private bool _isDark;
+}

@@ -367,14 +367,16 @@ app.MapRazorComponents<App>()
 
 // ── Public REST API surface ──────────────────────────────────────────────────
 // OpenAPI document at /openapi/v1.json, Scalar interactive reference at /api-docs,
-// and the API-key-protected data endpoints under /api/v1.
-app.MapOpenApi();
+// and the API-key-protected data endpoints under /api/v1. All are explicitly anonymous
+// (no Entra sign-in) so external clients can read the docs and call the endpoints; the
+// data endpoints are instead gated by the shared API key inside MapPublicApi.
+app.MapOpenApi().AllowAnonymous();
 app.MapScalarApiReference("/api-docs", options =>
 {
     options.WithTitle("CmCSP Cost Management API")
            .WithOpenApiRoutePattern("/openapi/v1.json")
            .AddPreferredSecuritySchemes("ApiKey");
-});
+}).AllowAnonymous();
 app.MapPublicApi();
 
 app.Run();
