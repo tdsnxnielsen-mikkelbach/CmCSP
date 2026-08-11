@@ -1,5 +1,6 @@
 using Azure.Identity;
 using Azure.Extensions.AspNetCore.Configuration.Secrets;
+using CmCSP.Api;
 using CmCSP.Components;
 using CmCSP.Data;
 using CmCSP.Models;
@@ -12,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
 using MudBlazor.Services;
+using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -240,6 +242,32 @@ builder.Services.AddScoped<ITenantScopeProvider, TenantScopeProvider>();
 // can inject ICostDetailsService and check HasBillingAccountAccess at runtime.
 builder.Services.AddSingleton<ICostDetailsService, CostDetailsService>();
 
+// ── Public REST API (OpenAPI + Scalar) ───────────────────────────────────────
+// Exposes the same datasets the dashboard consumes as a read-only JSON API for external
+// clients. Access is gated by a shared API key (PublicApi section) enforced by an endpoint
+// filter; the key is surfaced in the OpenAPI document so the Scalar UI can send it.
+var publicApiOptions = builder.Configuration
+    .GetSection(PublicApiOptions.SectionName)
+    .Get<PublicApiOptions>() ?? new PublicApiOptions();
+builder.Services.AddSingleton(publicApiOptions);
+builder.Services.AddSingleton<ApiKeyEndpointFilter>();
+builder.Services.AddOpenApi("v1", options =>
+{
+    options.AddDocumentTransformer<ApiKeySecuritySchemeTransformer>();
+    options.AddDocumentTransformer((document, _, _) =>
+    {
+        document.Info = new()
+        {
+            Title = "CmCSP Cost Management API",
+            Version = "v1",
+            Description = "Public read-only REST API exposing the Azure cost, optimization, security, " +
+                "sustainability, reservation, and collection datasets that power the CmCSP dashboard. " +
+                "Every request must include a valid API key in the configured header.",
+        };
+        return Task.CompletedTask;
+    });
+});
+
 // ── HTTPS / HSTS ─────────────────────────────────────────────────────────────
 builder.Services.AddHsts(opts =>
 {
@@ -336,5 +364,17 @@ app.MapGet("/gdap/consent-callback", (HttpContext ctx) =>
 app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
+
+// ── Public REST API surface ──────────────────────────────────────────────────
+// OpenAPI document at /openapi/v1.json, Scalar interactive reference at /api-docs,
+// and the API-key-protected data endpoints under /api/v1.
+app.MapOpenApi();
+app.MapScalarApiReference("/api-docs", options =>
+{
+    options.WithTitle("CmCSP Cost Management API")
+           .WithOpenApiRoutePattern("/openapi/v1.json")
+           .AddPreferredSecuritySchemes("ApiKey");
+});
+app.MapPublicApi();
 
 app.Run();

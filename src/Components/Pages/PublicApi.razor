@@ -1,0 +1,177 @@
+@page "/public-api"
+@layout MainLayout
+@attribute [AllowAnonymous]
+@using CmCSP.Api
+@inject PublicApiOptions ApiOptions
+@inject NavigationManager Nav
+
+<PageTitle>Public API – CSP Dashboard</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Large" Class="my-6">
+
+    <MudText Typo="Typo.h3" GutterBottom="true">Cost Management Public API</MudText>
+    <MudText Typo="Typo.body1" Class="mb-6" Style="max-width:60rem;">
+        Every dataset that powers this dashboard is also available as a read-only REST API for
+        external clients. Responses are JSON and mirror the cost, optimization, security,
+        sustainability, reservation, and collection views. Requests are authenticated with a
+        single shared API key.
+    </MudText>
+
+    <MudGrid Spacing="3" Class="mb-6">
+        <MudItem xs="12" md="6">
+            <MudCard Elevation="2" Class="pa-2" Style="height:100%;">
+                <MudCardContent>
+                    <MudText Typo="Typo.h6" GutterBottom="true">
+                        <MudIcon Icon="@Icons.Material.Filled.MenuBook" Class="mr-2" />
+                        Interactive reference
+                    </MudText>
+                    <MudText Typo="Typo.body2" Class="mb-4">
+                        Browse every endpoint, read the per-method descriptions, and try live
+                        requests from the Scalar UI.
+                    </MudText>
+                    <MudButton Href="/api-docs"
+                               Target="_blank"
+                               Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               EndIcon="@Icons.Material.Filled.OpenInNew">
+                        Open API reference
+                    </MudButton>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" md="6">
+            <MudCard Elevation="2" Class="pa-2" Style="height:100%;">
+                <MudCardContent>
+                    <MudText Typo="Typo.h6" GutterBottom="true">
+                        <MudIcon Icon="@Icons.Material.Filled.DataObject" Class="mr-2" />
+                        OpenAPI document
+                    </MudText>
+                    <MudText Typo="Typo.body2" Class="mb-4">
+                        Generate a client in your language of choice from the machine-readable
+                        OpenAPI 3 specification.
+                    </MudText>
+                    <MudButton Href="/openapi/v1.json"
+                               Target="_blank"
+                               Variant="Variant.Outlined"
+                               Color="Color.Primary"
+                               EndIcon="@Icons.Material.Filled.Download">
+                        Download openapi.json
+                    </MudButton>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    <MudPaper Elevation="2" Class="pa-4 mb-6">
+        <MudText Typo="Typo.h6" GutterBottom="true">Authentication</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Send your API key in the <MudChip T="string" Size="Size.Small" Color="Color.Primary">@ApiOptions.HeaderName</MudChip>
+            header on every request. Requests without a valid key receive <b>401 Unauthorized</b>.
+        </MudText>
+        <MudTextField T="string"
+                      Label="@($"{ApiOptions.HeaderName} value")"
+                      Value="@ApiOptions.ApiKey"
+                      ReadOnly="true"
+                      Variant="Variant.Outlined"
+                      Adornment="Adornment.Start"
+                      AdornmentIcon="@Icons.Material.Filled.Key" />
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+            This is the default demo key. Override it per deployment via the
+            <code>PublicApi:ApiKey</code> configuration setting and rotate it regularly.
+        </MudAlert>
+    </MudPaper>
+
+    <MudPaper Elevation="2" Class="pa-4 mb-6">
+        <MudText Typo="Typo.h6" GutterBottom="true">Example request</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">Base URL: <code>@BaseUrl</code></MudText>
+        <pre style="background:#1e1e1e;color:#d4d4d4;padding:1rem;border-radius:6px;overflow:auto;">
+<code>curl "@BaseUrl/api/v1/cost/main" \
+  -H "@ApiOptions.HeaderName: @ApiOptions.ApiKey"</code></pre>
+    </MudPaper>
+
+    <MudText Typo="Typo.h5" GutterBottom="true">Endpoints</MudText>
+    <MudSimpleTable Elevation="2" Dense="true" Hover="true" Class="mb-6">
+        <thead>
+            <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var group in Endpoints)
+            {
+                <tr>
+                    <td colspan="3" style="background:var(--mud-palette-background-grey);font-weight:600;">
+                        @group.Key
+                    </td>
+                </tr>
+                @foreach (var e in group.Value)
+                {
+                    <tr>
+                        <td><MudChip T="string" Size="Size.Small" Color="Color.Success">GET</MudChip></td>
+                        <td><code>@e.Path</code></td>
+                        <td>@e.Description</td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </MudSimpleTable>
+
+</MudContainer>
+
+@code {
+    private string BaseUrl => Nav.BaseUri.TrimEnd('/');
+
+    private record Endpoint(string Path, string Description);
+
+    private static readonly Dictionary<string, Endpoint[]> Endpoints = new()
+    {
+        ["Cost"] =
+        [
+            new("/api/v1/cost/main", "Daily cost aggregated by subscription and Azure service."),
+            new("/api/v1/cost/resource-groups", "Daily cost aggregated by subscription and resource group."),
+            new("/api/v1/cost/tags", "Daily cost aggregated by subscription and tag key."),
+            new("/api/v1/cost/amortized", "Daily amortized cost (reservations spread over their term)."),
+            new("/api/v1/cost/forecast?metric=", "Month-to-date actuals plus native cost forecast."),
+            new("/api/v1/cost/publisher-breakdown", "Month-to-date spend by publisher type (first-party vs marketplace)."),
+            new("/api/v1/cost/budgets", "Subscription budgets with current spend."),
+            new("/api/v1/cost/subscriptions", "Subscription id to display-name map."),
+        ],
+        ["Advisor"] =
+        [
+            new("/api/v1/advisor/recommendations", "Azure Advisor cost recommendations with annual savings."),
+            new("/api/v1/advisor/scores", "Azure Advisor scores across all five categories."),
+        ],
+        ["Reservations"] =
+        [
+            new("/api/v1/reservations/subscriptions?from=&to=", "Reservation usage across all subscriptions."),
+            new("/api/v1/reservations/customers?from=&to=", "Reservation usage at billing-account/customer scope."),
+        ],
+        ["Optimization"] =
+        [
+            new("/api/v1/optimization/inventory", "Live Azure resource inventory."),
+            new("/api/v1/optimization/tag-coverage", "Governance tag-coverage summary."),
+            new("/api/v1/optimization/orphaned", "Unused resources that are deletion candidates."),
+            new("/api/v1/optimization/reservation-recommendations", "Reservation purchase recommendations by net savings."),
+            new("/api/v1/optimization/reservation-orders", "Existing reservation orders with expiry dates."),
+        ],
+        ["Security"] =
+        [
+            new("/api/v1/security/secure-scores", "Defender for Cloud secure score per subscription."),
+            new("/api/v1/security/findings", "Top security control findings per subscription."),
+        ],
+        ["Sustainability"] =
+        [
+            new("/api/v1/sustainability/summary", "Carbon emissions summary with month-over-month change."),
+            new("/api/v1/sustainability/monthly", "Monthly carbon-emissions trend."),
+            new("/api/v1/sustainability/by-type", "Carbon emissions by resource type."),
+            new("/api/v1/sustainability/by-subscription", "Carbon emissions by subscription."),
+        ],
+        ["Collection"] =
+        [
+            new("/api/v1/collection/audit?max=", "Recent cost-collection job runs."),
+            new("/api/v1/collection/audit/latest", "Most recent collection run (freshness check)."),
+        ],
+    };
+}
