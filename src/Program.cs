@@ -242,6 +242,11 @@ builder.Services.AddScoped<ITenantScopeProvider, TenantScopeProvider>();
 // can inject ICostDetailsService and check HasBillingAccountAccess at runtime.
 builder.Services.AddSingleton<ICostDetailsService, CostDetailsService>();
 
+// CockpitQueryService: composes the cost/reservation services and the customer registry into
+// the pre-aggregated, identity-joinable views consumed by the external Cockpit app. Stateless
+// (relies on the underlying services' caches), so registered as a Singleton.
+builder.Services.AddSingleton<CockpitQueryService>();
+
 // ── Public REST API (OpenAPI + Scalar) ───────────────────────────────────────
 // Exposes the same datasets the dashboard consumes as a read-only JSON API for external
 // clients. Access is gated by a shared API key (PublicApi section) enforced by an endpoint

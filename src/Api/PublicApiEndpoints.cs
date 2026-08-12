@@ -17,6 +17,7 @@ public static class PublicApiEndpoints
             .WithGroupName("v1")
             .AllowAnonymous(); // Cookie/OIDC auth is bypassed; access is gated by the API key filter.
 
+        MapSubscriptions(api);
         MapCost(api);
         MapAdvisor(api);
         MapReservations(api);
@@ -26,6 +27,21 @@ public static class PublicApiEndpoints
         MapCollection(api);
 
         return app;
+    }
+
+    // ── Subscription directory ─────────────────────────────────────────────────
+    private static void MapSubscriptions(RouteGroupBuilder api)
+    {
+        api.MapGet("/subscriptions", (CockpitQueryService svc, CancellationToken ct) =>
+                svc.GetSubscriptionDirectoryAsync(ct))
+            .WithTags("Subscriptions")
+            .WithSummary("Subscription directory")
+            .WithDescription("Returns one entry per configured subscription with its display name and the " +
+                "customer / Entra tenant that owns it, so Azure spend can be attributed to a customer. Each " +
+                "entry always carries a non-empty tenantId (the CSP's own home tenant in single-tenant " +
+                "deployments); customerId is the owning customer's id, or 0 when no customer registry is " +
+                "provisioned. Use tenantId as the canonical join key.")
+            .Produces<List<SubscriptionDirectoryEntry>>();
     }
 
     // ── Cost ──────────────────────────────────────────────────────────────────
@@ -87,6 +103,18 @@ public static class PublicApiEndpoints
             .WithDescription("Returns a dictionary mapping each configured subscription id to its display name. " +
                 "Falls back to the raw id when the subscription's name cannot be resolved.")
             .Produces<Dictionary<string, string>>();
+
+        g.MapGet("/monthly", (string? from, string? to, string? subscriptionId, string? currency,
+                    CockpitQueryService svc, CancellationToken ct) =>
+                svc.GetMonthlyCostAsync(from, to, subscriptionId, currency, ct))
+            .WithSummary("Monthly cost by subscription and service")
+            .WithDescription("Returns per-subscription, per-month, per-service pre-aggregated cost so callers " +
+                "avoid pulling daily rows and aggregating client-side. The 'from' and 'to' query parameters are " +
+                "months (yyyy-MM); when omitted they default to the last 12 months through the current month. " +
+                "'subscriptionId' optionally filters to a single subscription. 'currency' (ISO 4217, e.g. EUR) " +
+                "selects the currency for normalizedCost/normalizedCurrency and defaults to the configured " +
+                "target currency. cost/currency stay in the original billing currency.")
+            .Produces<List<MonthlyCostRow>>();
     }
 
     // ── Advisor ───────────────────────────────────────────────────────────────
@@ -130,6 +158,16 @@ public static class PublicApiEndpoints
                 "'from' and 'to' query parameters are ISO dates (yyyy-MM-dd); when omitted they default to the " +
                 "current month to date.")
             .Produces<List<ReservationRow>>();
+
+        g.MapGet("/monthly", (string? from, string? to, string? subscriptionId,
+                    CockpitQueryService svc, CancellationToken ct) =>
+                svc.GetMonthlyReservationsAsync(from, to, subscriptionId, ct))
+            .WithSummary("Monthly RI/SP coverage rollup by subscription")
+            .WithDescription("Returns a per-subscription, per-month rollup of reservation (RI/SP) usage — used, " +
+                "unused and total cost plus utilisation percentage — that drives the 'covered' signal. The " +
+                "'from' and 'to' query parameters are months (yyyy-MM); when omitted they default to the current " +
+                "month. 'subscriptionId' optionally filters to a single subscription.")
+            .Produces<List<MonthlyReservationRow>>();
     }
 
     // ── Optimization / Inventory ───────────────────────────────────────────────

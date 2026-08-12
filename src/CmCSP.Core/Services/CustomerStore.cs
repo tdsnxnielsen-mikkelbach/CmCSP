@@ -128,6 +128,31 @@ public sealed class CustomerStore
         return map is null ? null : await db.Customers.FindAsync([map.CustomerId], ct);
     }
 
+    /// <summary>
+    /// Bulk reverse lookup: every mapped subscription id → its owning customer (id + tenant GUID),
+    /// in a single query. Empty when the SQL data platform is not configured. Used to build the
+    /// subscription directory without a per-subscription round-trip.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, (long CustomerId, string TenantId)>> GetSubscriptionOwnersAsync(
+        CancellationToken ct = default)
+    {
+        if (_dbFactory is null)
+            return new Dictionary<string, (long, string)>(StringComparer.OrdinalIgnoreCase);
+
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var rows = await db.CustomerSubscriptions
+            .Join(db.Customers,
+                s => s.CustomerId,
+                c => c.Id,
+                (s, c) => new { s.SubscriptionId, c.Id, c.TenantId })
+            .ToListAsync(ct);
+
+        var result = new Dictionary<string, (long, string)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in rows)
+            result[r.SubscriptionId] = (r.Id, r.TenantId);
+        return result;
+    }
+
     /// <summary>The subscription IDs mapped to a customer.</summary>
     public async Task<IReadOnlyList<string>> GetSubscriptionIdsAsync(long customerId, CancellationToken ct = default)
     {
