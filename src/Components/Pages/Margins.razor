@@ -45,7 +45,8 @@ else
         <KpiCard Label="Total Ion margin" Value="@Total(_summaries.Sum(s => s.TotalIonMargin))" Sm="6" Md="3" />
     </MudGrid>
 
-    <div class="d-flex justify-end mb-2">
+    <div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-2">
+        <MudSwitch T="bool" @bind-Value="_groupByReseller" Color="Color.Primary" Label="Group by reseller" />
         <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
                    StartIcon="@Icons.Material.Filled.Refresh" Disabled="_busy" OnClick="LoadAsync">
             Refresh
@@ -64,83 +65,47 @@ else
                 matched to Ion accounts.
             </MudText>
         }
+        else if (_groupByReseller)
+        {
+            <MudExpansionPanels MultiExpansion="true" Elevation="0">
+                @foreach (var g in BuildGroups())
+                {
+                    <MudExpansionPanel @key="g.Reseller" Expanded="true">
+                        <TitleContent>
+                            <div class="d-flex align-center gap-2 flex-wrap">
+                                <MudIcon Icon="@Icons.Material.Filled.Handshake" Size="Size.Small" Color="Color.Secondary" />
+                                <MudText Typo="Typo.body1" Class="fw-bold">@g.Reseller</MudText>
+                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Text">@g.Customers.Count customers</MudChip>
+                                @if (g.BlendedPct is not null)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">@g.BlendedPct.Value.ToString("N1")% margin</MudChip>
+                                }
+                                <MudSpacer />
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    List <b>@g.TotalList.ToString("N0")</b> ·
+                                    Cost <b>@g.TotalCost.ToString("N0")</b> ·
+                                    Margin <b>@g.TotalMargin.ToString("N0")</b> @g.Currency
+                                </MudText>
+                            </div>
+                        </TitleContent>
+                        <ChildContent>
+                            <MudExpansionPanels MultiExpansion="true" Elevation="0">
+                                @foreach (var s in g.Customers)
+                                {
+                                    <CustomerMarginPanel Summary="s" @key="@(s.TenantId ?? s.Domain)" />
+                                }
+                            </MudExpansionPanels>
+                        </ChildContent>
+                    </MudExpansionPanel>
+                }
+            </MudExpansionPanels>
+        }
         else
         {
             <MudExpansionPanels MultiExpansion="true" Elevation="0">
                 @foreach (var s in _summaries)
                 {
-                    <MudExpansionPanel @key="@(s.TenantId ?? s.Domain)">
-                        <TitleContent>
-                            <div class="d-flex align-center gap-2 flex-wrap">
-                                <MudText Typo="Typo.body1" Class="fw-bold">@(s.DisplayName ?? s.Domain ?? s.TenantId)</MudText>
-                                @if (!s.ResellerMatched)
-                                {
-                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text">No Ion match</MudChip>
-                                }
-                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Text">
-                                    @s.MatchedCount/@s.SubscriptionCount matched
-                                </MudChip>
-                                @if (s.BlendedMarginPct is not null)
-                                {
-                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">
-                                        @s.BlendedMarginPct.Value.ToString("N1")% margin
-                                    </MudChip>
-                                }
-                            </div>
-                        </TitleContent>
-                        <ChildContent>
-                            <div class="d-flex flex-wrap gap-4 mb-3">
-                                <MudText Typo="Typo.caption" Color="Color.Secondary">Reseller: <b>@(s.ResellerName ?? "—")</b></MudText>
-                                <MudText Typo="Typo.caption" Color="Color.Secondary">Domain: <b>@(s.Domain ?? "—")</b></MudText>
-                                <MudText Typo="Typo.caption" Color="Color.Secondary">
-                                    List <b>@s.TotalListPrice.ToString("N2")</b> ·
-                                    Cost <b>@s.TotalIonCost.ToString("N2")</b> ·
-                                    Margin <b>@s.TotalIonMargin.ToString("N2")</b> @s.Currency
-                                </MudText>
-                            </div>
-
-                            <MudSimpleTable Dense="true" Hover="true" Elevation="0" Style="overflow-x:auto">
-                                <thead>
-                                    <tr>
-                                        <th>Offer / SKU</th>
-                                        <th style="text-align:right">Qty</th>
-                                        <th style="text-align:right" title="Microsoft list price (native)">List (native)</th>
-                                        <th style="text-align:right" title="Ion transacted cost per unit">Ion cost</th>
-                                        <th style="text-align:right" title="Ion unit margin">Ion margin</th>
-                                        <th style="text-align:right" title="Ion gross margin on sell price">Ion %</th>
-                                        <th>Source</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    @foreach (var l in s.Lines)
-                                    {
-                                        <tr @key="@($"{l.SubscriptionId}-{l.SkuPartNumber}")">
-                                            <td>
-                                                <MudText Typo="Typo.body2">@(l.OfferName ?? l.SkuTitle ?? "—")</MudText>
-                                                <MudText Typo="Typo.caption" Color="Color.Secondary"><code>@(l.SkuPartNumber ?? "—")</code></MudText>
-                                            </td>
-                                            <td style="text-align:right">@(l.Quantity?.ToString() ?? "—")</td>
-                                            <td style="text-align:right">@Money(l.UnitListPrice)</td>
-                                            <td style="text-align:right">@Money(l.IonCost)</td>
-                                            <td style="text-align:right">@Money(l.IonUnitMargin)</td>
-                                            <td style="text-align:right">@(l.IonMarginPct?.ToString("N1") ?? "—")</td>
-                                            <td>
-                                                @if (l.PricingSource == "ion-reseller-sku")
-                                                {
-                                                    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text"
-                                                             title="@($"Matched on {l.MatchedOn}")">Ion @l.MatchedOn</MudChip>
-                                                }
-                                                else
-                                                {
-                                                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Text">List only</MudChip>
-                                                }
-                                            </td>
-                                        </tr>
-                                    }
-                                </tbody>
-                            </MudSimpleTable>
-                        </ChildContent>
-                    </MudExpansionPanel>
+                    <CustomerMarginPanel Summary="s" @key="@(s.TenantId ?? s.Domain)" />
                 }
             </MudExpansionPanels>
         }
@@ -150,7 +115,37 @@ else
 @code {
     private bool _ready;
     private bool _busy;
+    private bool _groupByReseller = true;
     private List<CustomerMarginSummary> _summaries = [];
+
+    private record ResellerGroup(
+        string Reseller,
+        List<CustomerMarginSummary> Customers,
+        decimal TotalList,
+        decimal TotalCost,
+        decimal TotalMargin,
+        decimal? BlendedPct,
+        string Currency);
+
+    private IReadOnlyList<ResellerGroup> BuildGroups() =>
+        _summaries
+            .GroupBy(s => string.IsNullOrWhiteSpace(s.ResellerName) ? "(unmatched)" : s.ResellerName!)
+            .Select(g =>
+            {
+                var cost = g.Sum(s => s.TotalIonCost);
+                var margin = g.Sum(s => s.TotalIonMargin);
+                var sell = cost + margin;
+                return new ResellerGroup(
+                    Reseller: g.Key,
+                    Customers: g.OrderByDescending(s => s.TotalIonMargin).ToList(),
+                    TotalList: g.Sum(s => s.TotalListPrice),
+                    TotalCost: cost,
+                    TotalMargin: margin,
+                    BlendedPct: sell > 0 ? Math.Round(margin / sell * 100m, 1) : null,
+                    Currency: g.Select(s => s.Currency).FirstOrDefault(c => !string.IsNullOrWhiteSpace(c)) ?? string.Empty);
+            })
+            .OrderByDescending(x => x.TotalMargin)
+            .ToList();
 
     protected override async Task OnInitializedAsync()
     {
@@ -182,6 +177,5 @@ else
         }
     }
 
-    private static string Money(decimal? v) => v?.ToString("N2") ?? "—";
     private static string Total(decimal v) => v.ToString("N0");
 }

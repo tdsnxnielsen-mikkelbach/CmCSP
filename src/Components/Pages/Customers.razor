@@ -3,6 +3,7 @@
 @inject CustomerStore Store
 @inject GdapOnboardingService Gdap
 @inject IonEnrichmentService Ion
+@inject TenantNameService TenantName
 @inject CostManagementOptions Options
 @inject ITenantScopeProvider ScopeProvider
 @inject NavigationManager Nav
@@ -109,7 +110,7 @@ else
                            OnClick="ImportFromIonAsync">
                     @(_busy ? "Importing…" : "Import from Ion")
                 </MudButton>
-                @if (_importResult is not null)
+                @if (_importResult is not null && !_busy)
                 {
                     <MudText Typo="Typo.body2" Color="Color.Secondary">
                         Seen <b>@_importResult.Total</b> · imported <b>@_importResult.Imported</b> ·
@@ -121,6 +122,28 @@ else
                     </MudText>
                 }
             </div>
+
+            @if (_busy && (_importProgress is not null || _finalizing))
+            {
+                <div class="mt-3" style="max-width:520px">
+                    @if (_finalizing)
+                    {
+                        <MudProgressLinear Indeterminate="true" Color="Color.Info" Rounded="true" Class="my-1" />
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Resolving tenant names…</MudText>
+                    }
+                    else if (_importProgress is not null)
+                    {
+                        var pct = _importProgress.Total > 0
+                            ? (double)_importProgress.Processed / _importProgress.Total * 100d
+                            : 0d;
+                        <MudProgressLinear Value="@pct" Color="Color.Info" Rounded="true" Class="my-1" />
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            Processing @_importProgress.Processed of @_importProgress.Total —
+                            imported <b>@_importProgress.Imported</b>, skipped <b>@_importProgress.Skipped</b>
+                        </MudText>
+                    }
+                </div>
+            }
         </MudPaper>
     }
 
@@ -319,6 +342,8 @@ else
     private string _newGdapId = string.Empty;
 
     private IonImportResult? _importResult;
+    private CustomerImportProgress? _importProgress;
+    private bool _finalizing;
 
     private readonly Dictionary<long, string> _newSubId = new();
     private readonly Dictionary<long, string> _newSubName = new();
@@ -377,10 +402,12 @@ else
             if (string.IsNullOrWhiteSpace(c.TenantId) || _tenantNames.ContainsKey(c.TenantId))
                 continue;
 
-            var name = await Gdap.ResolveTenantDisplayNameAsync(c.TenantId);
+            // Go through the process-wide cache so names resolved once (this circuit or another)
+            // are reused instead of re-issuing a Graph call on every import / reload.
+            var name = await TenantName.GetDisplayNameAsync(c.TenantId);
             if (!string.IsNullOrWhiteSpace(name))
             {
-                _tenantNames[c.TenantId] = name!;
+                _tenantNames[c.TenantId] = name;
                 StateHasChanged();
             }
         }
@@ -414,13 +441,29 @@ else
     private async Task ImportFromIonAsync()
     {
         _busy = true;
+        _importResult = null;
+        _importProgress = null;
+        _finalizing = false;
         try
         {
-            _importResult = await Ion.ImportDirectoryAsync();
+            // Progress<T> marshals each report onto the circuit's context so StateHasChanged renders
+            // the load bar between the import's batched DB saves.
+            var progress = new Progress<CustomerImportProgress>(p =>
+            {
+                _importProgress = p;
+                _ = InvokeAsync(StateHasChanged);
+            });
+
+            _importResult = await Ion.ImportDirectoryAsync(progress: progress);
             if (_importResult.Error is null)
-                Snackbar.Add($"Imported {_importResult.Imported} customer(s) from Ion.", Severity.Success);
+                Snackbar.Add($"Imported {_importResult.Imported} customer(s) from Ion — skipped {_importResult.Skipped} already present.", Severity.Success);
             else
                 Snackbar.Add(_importResult.Error, Severity.Warning);
+
+            // The reload re-resolves tenant display names via Graph, which can take a moment for a
+            // large portfolio — show an indeterminate "finalizing" bar rather than a frozen page.
+            _finalizing = true;
+            StateHasChanged();
             await ReloadAsync();
         }
         catch (Exception ex)
@@ -430,6 +473,8 @@ else
         finally
         {
             _busy = false;
+            _finalizing = false;
+            _importProgress = null;
         }
     }
 

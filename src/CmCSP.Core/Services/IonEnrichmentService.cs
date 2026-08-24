@@ -183,11 +183,15 @@ public sealed class IonEnrichmentService(
 
     /// <summary>
     /// Bootstraps CmCSP's customer registry from the Ion Gateway directory: pages every addressable
-    /// customer and imports the ones carrying an Entra tenant GUID into the <see cref="CustomerStore"/>
-    /// (as <c>Source=ion</c>). Existing customers are left intact (only a missing domain is backfilled).
-    /// Returns the counts for the UI. Requires the SQL customer registry.
+    /// customer and bulk-imports the ones carrying an Entra tenant GUID into the
+    /// <see cref="CustomerStore"/> (as <c>Source=ion</c>). Existing customers (native or already
+    /// imported) are skipped without re-inserting, so re-running is cheap and idempotent.
+    /// <paramref name="progress"/> reports per-batch so the UI can show a load bar. Requires SQL.
     /// </summary>
-    public async Task<IonImportResult> ImportDirectoryAsync(string? source = null, CancellationToken ct = default)
+    public async Task<IonImportResult> ImportDirectoryAsync(
+        string? source = null,
+        IProgress<CustomerImportProgress>? progress = null,
+        CancellationToken ct = default)
     {
         if (!customers.IsEnabled)
             return new IonImportResult(0, 0, 0, "The SQL customer registry is not provisioned.");
@@ -195,28 +199,14 @@ public sealed class IonEnrichmentService(
             return new IonImportResult(0, 0, 0, "The Ion Gateway is not configured.");
 
         var directory = await ion.GetCustomerDirectoryAsync(source, ct);
-        int imported = 0, skipped = 0;
-        foreach (var item in directory)
-        {
-            if (ct.IsCancellationRequested) break;
-            if (string.IsNullOrWhiteSpace(item.TenantId) || !Guid.TryParse(item.TenantId, out _))
-            {
-                skipped++;
-                continue;
-            }
-            try
-            {
-                var created = await customers.ImportIonCustomerAsync(
-                    item.TenantId!, item.Name ?? item.Domain ?? item.TenantId!, item.Domain, ct);
-                if (created is not null) imported++; else skipped++;
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Failed to import Ion customer {Tenant}.", item.TenantId);
-                skipped++;
-            }
-        }
+        var items = directory
+            .Select(d => (
+                TenantId: d.TenantId ?? string.Empty,
+                DisplayName: d.Name ?? d.Domain ?? d.TenantId ?? string.Empty,
+                Domain: d.Domain))
+            .ToList();
 
+        var (imported, skipped) = await customers.ImportIonCustomersBulkAsync(items, progress, ct);
         return new IonImportResult(directory.Count, imported, skipped, null);
     }
 

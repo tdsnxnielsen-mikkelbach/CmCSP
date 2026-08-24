@@ -272,6 +272,79 @@ public sealed class CustomerStore
     }
 
     /// <summary>
+    /// Bulk-imports customers discovered in the Ion Gateway directory in one pass. Loads every
+    /// existing tenant id once so already-present customers (native or previously imported) are
+    /// skipped without a per-row query, inserts new ones in batches, and rebuilds the
+    /// issuer-validation cache a single time at the end. Reports progress via
+    /// <paramref name="progress"/> so a long import can drive a load bar. Returns the imported and
+    /// skipped counts. Idempotent: re-running skips everything already present.
+    /// </summary>
+    public async Task<(int Imported, int Skipped)> ImportIonCustomersBulkAsync(
+        IReadOnlyList<(string TenantId, string DisplayName, string? Domain)> items,
+        IProgress<CustomerImportProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        if (_dbFactory is null)
+            throw new InvalidOperationException("Customer import requires the SQL data platform.");
+
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+
+        // Snapshot every known tenant id up front; HashSet.Add doubles as the "already present"
+        // test and de-dupes repeated tenants within the same directory page.
+        var seen = new HashSet<string>(
+            await db.Customers.Select(c => c.TenantId).ToListAsync(ct),
+            StringComparer.OrdinalIgnoreCase);
+
+        int imported = 0, skipped = 0, processed = 0, pendingSaves = 0;
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var item in items)
+        {
+            ct.ThrowIfCancellationRequested();
+            processed++;
+
+            var tid = item.TenantId?.Trim();
+            if (string.IsNullOrWhiteSpace(tid) || !Guid.TryParse(tid, out _) || !seen.Add(tid))
+            {
+                skipped++;
+            }
+            else
+            {
+                db.Customers.Add(new CustomerEntity
+                {
+                    TenantId    = tid,
+                    DisplayName = string.IsNullOrWhiteSpace(item.DisplayName) ? tid : item.DisplayName.Trim(),
+                    Status      = "active",
+                    Source      = "ion",
+                    Domain      = string.IsNullOrWhiteSpace(item.Domain) ? null : item.Domain.Trim(),
+                    CreatedUtc  = now
+                });
+                imported++;
+                pendingSaves++;
+            }
+
+            if (pendingSaves >= 100)
+            {
+                await db.SaveChangesAsync(ct);
+                pendingSaves = 0;
+            }
+            if (processed % 10 == 0 || processed == items.Count)
+                progress?.Report(new CustomerImportProgress(processed, items.Count, imported, skipped));
+        }
+
+        if (pendingSaves > 0)
+            await db.SaveChangesAsync(ct);
+
+        if (imported > 0)
+        {
+            RefreshValidTenants();
+            _logger.LogInformation("Bulk-imported {Imported} Ion customer(s); skipped {Skipped} already-present.", imported, skipped);
+        }
+
+        return (imported, skipped);
+    }
+
+    /// <summary>
     /// Sets a customer's status (<c>active</c> / <c>suspended</c>). A suspended customer can no
     /// longer sign in or be collected. Refreshes the issuer-validation cache.
     /// </summary>
@@ -372,3 +445,6 @@ public sealed class CustomerStore
         _logger.LogInformation("Refreshed valid issuer tenants: {Count} active (incl. home).", set.Count);
     }
 }
+
+/// <summary>Progress snapshot for a bulk customer import, for driving a UI load bar.</summary>
+public sealed record CustomerImportProgress(int Processed, int Total, int Imported, int Skipped);
