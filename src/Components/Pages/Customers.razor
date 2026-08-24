@@ -2,6 +2,7 @@
 @using CmCSP.Data
 @inject CustomerStore Store
 @inject GdapOnboardingService Gdap
+@inject IonEnrichmentService Ion
 @inject CostManagementOptions Options
 @inject ITenantScopeProvider ScopeProvider
 @inject NavigationManager Nav
@@ -89,6 +90,40 @@ else
         }
     </MudPaper>
 
+    @* ── Import customers from Ion ─────────────────────────────────────────── *@
+    @if (Ion.IsConfigured)
+    {
+        <MudPaper Class="pa-4 mb-4" Elevation="2">
+            <MudText Typo="Typo.subtitle1" Class="mb-2 fw-bold">Import customers from Ion</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-3">
+                Bootstrap the registry from the TD SYNNEX StreamOne (Ion) &amp; Partner Center directory.
+                Every addressable customer with an Entra tenant GUID is added as an
+                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text">ion</MudChip>
+                customer for pricing / margin enrichment. Existing customers are left untouched.
+            </MudText>
+            <div class="d-flex flex-wrap gap-3 align-center">
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Info"
+                           StartIcon="@Icons.Material.Filled.CloudDownload"
+                           Disabled="_busy"
+                           OnClick="ImportFromIonAsync">
+                    @(_busy ? "Importing…" : "Import from Ion")
+                </MudButton>
+                @if (_importResult is not null)
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Seen <b>@_importResult.Total</b> · imported <b>@_importResult.Imported</b> ·
+                        skipped <b>@_importResult.Skipped</b>
+                        @if (!string.IsNullOrEmpty(_importResult.Error))
+                        {
+                            <span> — @_importResult.Error</span>
+                        }
+                    </MudText>
+                }
+            </div>
+        </MudPaper>
+    }
+
     @* ── Customer list ──────────────────────────────────────────────────────── *@
     <MudPaper Class="pa-4" Elevation="2">
         <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Registered customers (@_customers.Count)</MudText>
@@ -114,6 +149,10 @@ else
                                 <MudText Typo="Typo.caption" Color="Color.Secondary" title="@c.TenantId">
                                     @(_tenantNames.GetValueOrDefault(c.TenantId) ?? c.TenantId)
                                 </MudText>
+                                @if (c.Source == "ion")
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text">ion</MudChip>
+                                }
                             </div>
                         </TitleContent>
                         <ChildContent>
@@ -279,6 +318,8 @@ else
     private string _newDisplayName = string.Empty;
     private string _newGdapId = string.Empty;
 
+    private IonImportResult? _importResult;
+
     private readonly Dictionary<long, string> _newSubId = new();
     private readonly Dictionary<long, string> _newSubName = new();
     private readonly Dictionary<long, string> _gdapId = new();
@@ -312,8 +353,7 @@ else
 
     private async Task ReloadAsync()
     {
-        _customers = (await Store.GetAllCustomersAsync()).ToList();
-        _subsByCustomer.Clear();
+        _customers = (await Store.GetAllCustomersAsync()).ToList();        _subsByCustomer.Clear();
         foreach (var c in _customers)
         {
             _subsByCustomer[c.Id] = (await Store.GetSubscriptionsAsync(c.Id)).ToList();
@@ -359,6 +399,28 @@ else
             _newTenantId = string.Empty;
             _newDisplayName = string.Empty;
             _newGdapId = string.Empty;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ImportFromIonAsync()
+    {
+        _busy = true;
+        try
+        {
+            _importResult = await Ion.ImportDirectoryAsync();
+            if (_importResult.Error is null)
+                Snackbar.Add($"Imported {_importResult.Imported} customer(s) from Ion.", Severity.Success);
+            else
+                Snackbar.Add(_importResult.Error, Severity.Warning);
             await ReloadAsync();
         }
         catch (Exception ex)

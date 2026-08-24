@@ -218,6 +218,13 @@ $secrets = [ordered]@{
 if ($enableCostDetails)   { $secrets['CmCSP--CostDetails--Enabled'] = 'true' }
 if ($billingAccountId)    { $secrets['CmCSP--BillingAccount--BillingAccountId'] = $billingAccountId }
 
+# Ion Gateway + Partner Center (margin enrichment) API keys — only seeded when supplied via azd.
+# Store as user-secrets locally / Key Vault in Azure; never commit. Empty ⇒ integration disabled.
+$ionGatewayApiKey    = Get-Env 'ION_GATEWAY_API_KEY' ''
+$partnerCenterApiKey = Get-Env 'PARTNER_CENTER_API_KEY' ''
+if ($ionGatewayApiKey)    { $secrets['IonGateway--ApiKey'] = $ionGatewayApiKey }
+if ($partnerCenterApiKey) { $secrets['PartnerCenter--ApiKey'] = $partnerCenterApiKey }
+
 foreach ($name in $secrets.Keys) {
     Write-Host "  Setting secret: $name"
     az keyvault secret set --vault-name $keyVaultName --name $name --value $secrets[$name] --only-show-errors | Out-Null
@@ -279,6 +286,28 @@ else {
 
 Write-Host "  Updating Container App with $($envPairs.Count) environment variables..."
 az containerapp update --name $containerAppName --resource-group $appRg --set-env-vars @envPairs --only-show-errors | Out-Null
+
+# Ion Gateway + Partner Center API keys → Container App secrets + secretRef env (web app only;
+# the collector job does not perform margin enrichment). Only wired when the key was supplied.
+$ionEnv = @()
+if ($ionGatewayApiKey) {
+    Write-Host "  Wiring Ion Gateway API key (secret ref)..."
+    az containerapp secret set --name $containerAppName --resource-group $appRg `
+        --secrets "ion-api-key=keyvaultref:${keyVaultUri}secrets/IonGateway--ApiKey,identityref:system" `
+        --only-show-errors | Out-Null
+    $ionEnv += 'IonGateway__ApiKey=secretref:ion-api-key'
+}
+if ($partnerCenterApiKey) {
+    Write-Host "  Wiring Partner Center API key (secret ref)..."
+    az containerapp secret set --name $containerAppName --resource-group $appRg `
+        --secrets "pct-api-key=keyvaultref:${keyVaultUri}secrets/PartnerCenter--ApiKey,identityref:system" `
+        --only-show-errors | Out-Null
+    $ionEnv += 'PartnerCenter__ApiKey=secretref:pct-api-key'
+}
+if ($ionEnv.Count -gt 0) {
+    az containerapp update --name $containerAppName --resource-group $appRg `
+        --set-env-vars @ionEnv --only-show-errors | Out-Null
+}
 
 # Collect job runs the same data pipeline as the web app, so it takes the same
 # cost + cache env vars (its 'client-secret' secret is defined in infra/modules/app.bicep).

@@ -304,6 +304,22 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'AzureCostManagement__MultiTenancy__HomeTenantId'
               value: homeTenantId
             }
+            // ── Ion Gateway + Partner Center (margin enrichment) ────────────
+            // Base URLs + auth mode are non-secret and set here. The API keys are wired by the
+            // postprovision hook (Key Vault secret → Container App secret → secretRef env) only
+            // when supplied, so an unconfigured deployment simply runs with native cost only.
+            {
+              name: 'IonGateway__BaseUrl'
+              value: 'https://gateway.greentree-40a949e3.swedencentral.azurecontainerapps.io'
+            }
+            {
+              name: 'PartnerCenter__BaseUrl'
+              value: 'https://ca-pct.yellowplant-f470b585.swedencentral.azurecontainerapps.io'
+            }
+            {
+              name: 'PartnerCenter__AuthMode'
+              value: 'secureapp'
+            }
           ]
         }
       ]

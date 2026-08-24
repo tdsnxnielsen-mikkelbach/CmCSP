@@ -88,6 +88,8 @@ public sealed class CmcspDbContext(DbContextOptions<CmcspDbContext> options) : D
             e.Property(x => x.DisplayName).HasMaxLength(256).IsRequired();
             e.Property(x => x.Status).HasMaxLength(16).HasDefaultValue("active");
             e.Property(x => x.GdapRelationshipId).HasMaxLength(128);
+            e.Property(x => x.Source).HasMaxLength(16).HasDefaultValue("native");
+            e.Property(x => x.Domain).HasMaxLength(256);
             e.HasIndex(x => x.TenantId).IsUnique().HasDatabaseName("UX_Customer_TenantId");
         });
 

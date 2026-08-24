@@ -224,6 +224,54 @@ public sealed class CustomerStore
     }
 
     /// <summary>
+    /// Imports (or updates) a customer discovered in the Ion Gateway directory. Records
+    /// <see cref="CustomerEntity.Source"/> = <c>ion</c> and the primary domain so the UI can tell an
+    /// Ion pricing-only customer from a natively onboarded (GDAP) one. Idempotent on <c>TenantId</c>:
+    /// an existing customer keeps its native <c>Source</c>/status and GDAP link (it is only enriched
+    /// with a domain if one was missing), while a new one is created as an active Ion customer.
+    /// </summary>
+    public async Task<CustomerEntity?> ImportIonCustomerAsync(
+        string tenantId, string displayName, string? domain = null, CancellationToken ct = default)
+    {
+        if (_dbFactory is null)
+            throw new InvalidOperationException("Customer import requires the SQL data platform.");
+        if (string.IsNullOrWhiteSpace(tenantId) || !Guid.TryParse(tenantId.Trim(), out _))
+            return null; // PCT directory rows can lack a tenant GUID — skip, cannot key a customer.
+
+        tenantId = tenantId.Trim();
+        displayName = string.IsNullOrWhiteSpace(displayName) ? tenantId : displayName.Trim();
+        domain = string.IsNullOrWhiteSpace(domain) ? null : domain.Trim();
+
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var existing = await db.Customers.FirstOrDefaultAsync(c => c.TenantId == tenantId, ct);
+        if (existing is not null)
+        {
+            // Never downgrade a native/GDAP customer to Ion; just backfill the domain if missing.
+            if (string.IsNullOrWhiteSpace(existing.Domain) && domain is not null)
+            {
+                existing.Domain = domain;
+                await db.SaveChangesAsync(ct);
+            }
+            return existing;
+        }
+
+        var customer = new CustomerEntity
+        {
+            TenantId    = tenantId,
+            DisplayName = displayName,
+            Status      = "active",
+            Source      = "ion",
+            Domain      = domain,
+            CreatedUtc  = DateTimeOffset.UtcNow
+        };
+        db.Customers.Add(customer);
+        await db.SaveChangesAsync(ct);
+        RefreshValidTenants();
+        _logger.LogInformation("Imported Ion customer {Tenant} ({Name}) as #{Id}.", tenantId, displayName, customer.Id);
+        return customer;
+    }
+
+    /// <summary>
     /// Sets a customer's status (<c>active</c> / <c>suspended</c>). A suspended customer can no
     /// longer sign in or be collected. Refreshes the issuer-validation cache.
     /// </summary>

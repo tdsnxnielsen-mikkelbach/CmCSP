@@ -247,6 +247,49 @@ builder.Services.AddSingleton<ICostDetailsService, CostDetailsService>();
 // (relies on the underlying services' caches), so registered as a Singleton.
 builder.Services.AddSingleton<CockpitQueryService>();
 
+// ── Ion Gateway + Partner Center (margin enrichment) ─────────────────────────
+// Two outbound integrations that decorate CmCSP's native Azure cost with the buy price / margin
+// it does not hold: the TD SYNNEX Ion Gateway (cost/margin, reseller orders, customer directory)
+// and the standalone Partner Center (PCT) API (indirect-reseller customers + list price). Both use
+// the named-HttpClient + options-from-config pattern; API keys come from user-secrets locally and
+// Key Vault (IonGateway--ApiKey / PartnerCenter--ApiKey) in Azure. Empty key ⇒ integration disabled
+// and the dashboard degrades to native cost only.
+var ionOptions = builder.Configuration
+    .GetSection(IonGatewayOptions.SectionName)
+    .Get<IonGatewayOptions>() ?? new IonGatewayOptions();
+builder.Services.AddSingleton(ionOptions);
+
+var pctOptions = builder.Configuration
+    .GetSection(PartnerCenterOptions.SectionName)
+    .Get<PartnerCenterOptions>() ?? new PartnerCenterOptions();
+builder.Services.AddSingleton(pctOptions);
+
+builder.Services.AddHttpClient(IonGatewayService.HttpClientName, client =>
+{
+    if (!string.IsNullOrWhiteSpace(ionOptions.BaseUrl))
+        client.BaseAddress = new Uri(ionOptions.BaseUrl);
+    if (!string.IsNullOrWhiteSpace(ionOptions.ApiKey))
+        client.DefaultRequestHeaders.Add("X-Api-Key", ionOptions.ApiKey);
+    client.Timeout = TimeSpan.FromSeconds(60);
+});
+
+builder.Services.AddHttpClient(PartnerCenterService.HttpClientName, client =>
+{
+    if (!string.IsNullOrWhiteSpace(pctOptions.BaseUrl))
+        client.BaseAddress = new Uri(pctOptions.BaseUrl);
+    if (!string.IsNullOrWhiteSpace(pctOptions.ApiKey))
+        client.DefaultRequestHeaders.Add("X-Api-Key", pctOptions.ApiKey);
+    if (!string.IsNullOrWhiteSpace(pctOptions.AuthMode))
+        client.DefaultRequestHeaders.Add("X-Auth-Mode", pctOptions.AuthMode);
+    client.Timeout = TimeSpan.FromSeconds(60);
+});
+
+// Singletons — IHttpClientFactory / ICacheService / CustomerStore are all Singleton-safe. The
+// enrichment service composes the two clients with the customer registry.
+builder.Services.AddSingleton<IonGatewayService>();
+builder.Services.AddSingleton<PartnerCenterService>();
+builder.Services.AddSingleton<IonEnrichmentService>();
+
 // ── Public REST API (OpenAPI + Scalar) ───────────────────────────────────────
 // Exposes the same datasets the dashboard consumes as a read-only JSON API for external
 // clients. Access is gated by a shared API key (PublicApi section) enforced by an endpoint

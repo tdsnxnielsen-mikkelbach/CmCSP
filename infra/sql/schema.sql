@@ -123,6 +123,20 @@ BEGIN
 END;
 GO
 
+-- Ion integration: record where a customer originated (native GDAP vs imported from Ion)
+-- and its primary domain (for Ion/PCT joins that key on domain). Idempotent add.
+IF COL_LENGTH(N'dbo.Customer', N'Source') IS NULL
+BEGIN
+    ALTER TABLE dbo.Customer
+        ADD Source NVARCHAR(16) NOT NULL CONSTRAINT DF_Customer_Source DEFAULT(N'native');
+END;
+GO
+IF COL_LENGTH(N'dbo.Customer', N'Domain') IS NULL
+BEGIN
+    ALTER TABLE dbo.Customer ADD Domain NVARCHAR(256) NULL;
+END;
+GO
+
 -- ── CustomerSubscription: which subscriptions belong to a customer ───────────
 IF OBJECT_ID(N'dbo.CustomerSubscription', N'U') IS NULL
 BEGIN

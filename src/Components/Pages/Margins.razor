@@ -1,0 +1,187 @@
+@page "/margins"
+@using CmCSP.Models
+@inject IonEnrichmentService Ion
+@inject CostManagementOptions Options
+@inject CustomerStore Store
+@inject ITenantScopeProvider ScopeProvider
+@inject NavigationManager Nav
+
+<PageTitle>Margins – CSP Dashboard</PageTitle>
+
+<MudText Typo="Typo.h5" Class="mb-1 fw-bold">Customer margins</MudText>
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+    Per-customer commercial view fusing the
+    <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Text">native</MudChip>
+    Microsoft list price (Partner Center) with
+    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text">Ion</MudChip>
+    transacted cost and margin (TD SYNNEX StreamOne). Ion pricing is reseller-level and
+    SKU-approximate — each line shows how it was matched.
+</MudText>
+
+@if (!_ready)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-4" />
+}
+else if (!Ion.IsConfigured)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4" Icon="@Icons.Material.Outlined.Info">
+        The Ion Gateway integration is not configured. Set <code>IonGateway:ApiKey</code> via
+        user-secrets or Key Vault to enable margin data.
+    </MudAlert>
+}
+else if (!Store.IsEnabled)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4" Icon="@Icons.Material.Outlined.Storage">
+        The SQL customer registry is required to resolve the customer portfolio but is not configured.
+    </MudAlert>
+}
+else
+{
+    @* ── Portfolio KPIs ─────────────────────────────────────────────────────── *@
+    <MudGrid Spacing="3" Class="mb-4">
+        <KpiCard Label="Customers priced" Value="@_summaries.Count.ToString()" Sm="6" Md="3" />
+        <KpiCard Label="Total list price (native)" Value="@Total(_summaries.Sum(s => s.TotalListPrice))" Sm="6" Md="3" />
+        <KpiCard Label="Total Ion cost" Value="@Total(_summaries.Sum(s => s.TotalIonCost))" Sm="6" Md="3" />
+        <KpiCard Label="Total Ion margin" Value="@Total(_summaries.Sum(s => s.TotalIonMargin))" Sm="6" Md="3" />
+    </MudGrid>
+
+    <div class="d-flex justify-end mb-2">
+        <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                   StartIcon="@Icons.Material.Filled.Refresh" Disabled="_busy" OnClick="LoadAsync">
+            Refresh
+        </MudButton>
+    </div>
+
+    <MudPaper Class="pa-4" Elevation="2">
+        @if (_busy)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-2" />
+        }
+        else if (_summaries.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                No priced customers. Import customers from Ion (Customers page) or check that resellers are
+                matched to Ion accounts.
+            </MudText>
+        }
+        else
+        {
+            <MudExpansionPanels MultiExpansion="true" Elevation="0">
+                @foreach (var s in _summaries)
+                {
+                    <MudExpansionPanel @key="@(s.TenantId ?? s.Domain)">
+                        <TitleContent>
+                            <div class="d-flex align-center gap-2 flex-wrap">
+                                <MudText Typo="Typo.body1" Class="fw-bold">@(s.DisplayName ?? s.Domain ?? s.TenantId)</MudText>
+                                @if (!s.ResellerMatched)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text">No Ion match</MudChip>
+                                }
+                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Text">
+                                    @s.MatchedCount/@s.SubscriptionCount matched
+                                </MudChip>
+                                @if (s.BlendedMarginPct is not null)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">
+                                        @s.BlendedMarginPct.Value.ToString("N1")% margin
+                                    </MudChip>
+                                }
+                            </div>
+                        </TitleContent>
+                        <ChildContent>
+                            <div class="d-flex flex-wrap gap-4 mb-3">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Reseller: <b>@(s.ResellerName ?? "—")</b></MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Domain: <b>@(s.Domain ?? "—")</b></MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    List <b>@s.TotalListPrice.ToString("N2")</b> ·
+                                    Cost <b>@s.TotalIonCost.ToString("N2")</b> ·
+                                    Margin <b>@s.TotalIonMargin.ToString("N2")</b> @s.Currency
+                                </MudText>
+                            </div>
+
+                            <MudSimpleTable Dense="true" Hover="true" Elevation="0" Style="overflow-x:auto">
+                                <thead>
+                                    <tr>
+                                        <th>Offer / SKU</th>
+                                        <th style="text-align:right">Qty</th>
+                                        <th style="text-align:right" title="Microsoft list price (native)">List (native)</th>
+                                        <th style="text-align:right" title="Ion transacted cost per unit">Ion cost</th>
+                                        <th style="text-align:right" title="Ion unit margin">Ion margin</th>
+                                        <th style="text-align:right" title="Ion gross margin on sell price">Ion %</th>
+                                        <th>Source</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var l in s.Lines)
+                                    {
+                                        <tr @key="@($"{l.SubscriptionId}-{l.SkuPartNumber}")">
+                                            <td>
+                                                <MudText Typo="Typo.body2">@(l.OfferName ?? l.SkuTitle ?? "—")</MudText>
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary"><code>@(l.SkuPartNumber ?? "—")</code></MudText>
+                                            </td>
+                                            <td style="text-align:right">@(l.Quantity?.ToString() ?? "—")</td>
+                                            <td style="text-align:right">@Money(l.UnitListPrice)</td>
+                                            <td style="text-align:right">@Money(l.IonCost)</td>
+                                            <td style="text-align:right">@Money(l.IonUnitMargin)</td>
+                                            <td style="text-align:right">@(l.IonMarginPct?.ToString("N1") ?? "—")</td>
+                                            <td>
+                                                @if (l.PricingSource == "ion-reseller-sku")
+                                                {
+                                                    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text"
+                                                             title="@($"Matched on {l.MatchedOn}")">Ion @l.MatchedOn</MudChip>
+                                                }
+                                                else
+                                                {
+                                                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Text">List only</MudChip>
+                                                }
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        </ChildContent>
+                    </MudExpansionPanel>
+                }
+            </MudExpansionPanels>
+        }
+    </MudPaper>
+}
+
+@code {
+    private bool _ready;
+    private bool _busy;
+    private List<CustomerMarginSummary> _summaries = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Options.MultiTenancy.Enabled)
+        {
+            var scope = await ScopeProvider.GetScopeAsync();
+            if (!scope.IsPartner)
+            {
+                Nav.NavigateTo("/", forceLoad: false, replace: true);
+                return;
+            }
+        }
+
+        if (Ion.IsConfigured && Store.IsEnabled)
+            await LoadAsync();
+        _ready = true;
+    }
+
+    private async Task LoadAsync()
+    {
+        _busy = true;
+        try
+        {
+            _summaries = await Ion.GetPortfolioMarginsAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string Money(decimal? v) => v?.ToString("N2") ?? "—";
+    private static string Total(decimal v) => v.ToString("N0");
+}

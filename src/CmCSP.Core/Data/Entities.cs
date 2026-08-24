@@ -118,6 +118,16 @@ public sealed class CustomerEntity
     /// <summary>The GDAP relationship granting delegated access (nullable until established).</summary>
     public string? GdapRelationshipId { get; set; }
 
+    /// <summary>
+    /// Where this customer record originated: <c>native</c> (onboarded in-app via GDAP for Azure cost
+    /// collection) or <c>ion</c> (imported from the Ion Gateway directory for pricing/margin
+    /// enrichment). Lets the UI distinguish a delegated-access customer from a pricing-only one.
+    /// </summary>
+    public string Source { get; set; } = "native";
+
+    /// <summary>Primary domain, when known — carried for Ion/PCT joins that key on domain.</summary>
+    public string? Domain { get; set; }
+
     public DateTimeOffset CreatedUtc { get; set; }
 }
 
