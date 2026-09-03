@@ -25,7 +25,6 @@ public static class PublicApiEndpoints
         MapSecurity(api);
         MapSustainability(api);
         MapCollection(api);
-        MapIon(api);
 
         return app;
     }
@@ -275,86 +274,6 @@ public static class PublicApiEndpoints
             .WithDescription("Returns the single most recent cost-collection job run, or null when no run has " +
                 "been recorded yet. Use this for a lightweight freshness/health check of the data pipeline.")
             .Produces<CollectionAuditRecord>();
-    }
-
-    // ── Ion Gateway / Partner Center (margin enrichment) ───────────────────────
-    private static void MapIon(RouteGroupBuilder api)
-    {
-        var g = api.MapGroup("/ion").WithTags("Ion & Margin");
-
-        g.MapGet("/resellers", (string? search, IonEnrichmentService svc, CancellationToken ct) =>
-                svc.GetResellerDirectoryAsync(search, ct))
-            .WithSummary("Reseller directory (Ion + Partner Center)")
-            .WithDescription("Returns the merged indirect-reseller directory: TD SYNNEX Ion master-data " +
-                "accounts name-matched with Microsoft Partner Center indirect resellers. Each row carries " +
-                "whichever ids are known (ionAccountId and/or partnerCenterId + mpnId) and a 'source' of " +
-                "'ion', 'pct', or 'ion+pct'. Use ionAccountId to read a reseller's crawled orders. The " +
-                "optional 'search' query parameter filters by reseller name.")
-            .Produces<List<IonResellerSummary>>();
-
-        g.MapGet("/resellers/{accountId:long}/orders", (long accountId, IonGatewayService svc, CancellationToken ct) =>
-                svc.GetResellerOrdersAsync(accountId, ct))
-            .WithSummary("Reseller orders with line-level pricing (Ion)")
-            .WithDescription("Returns every customer's crawled orders under an Ion reseller account id, with " +
-                "line-level transacted pricing (productId, skuId, mfgPartNumber, quantity, and per-unit " +
-                "price/cost/msrp plus the line's total margin). All figures are Ion-sourced (TD SYNNEX " +
-                "StreamOne), not native Azure cost. Empty until the nightly Ion crawl has run for the account.")
-            .Produces<List<IonOrder>>();
-
-        g.MapGet("/customers/directory", (string? source, IonGatewayService svc, CancellationToken ct) =>
-                svc.GetCustomerDirectoryAsync(source, ct))
-            .WithSummary("Customer bootstrap directory (Ion + PCT)")
-            .WithDescription("Returns every addressable customer across both upstreams — one row per customer " +
-                "with its Entra tenant GUID, domain, name, source ('ion' or 'pct'), Ion account id, and " +
-                "reseller name. This is the bootstrap feed used to learn and onboard customers CmCSP does not " +
-                "hold natively. The optional 'source' query parameter ('ion' | 'pct') scopes to one upstream. " +
-                "Paging is handled server-side; the full set is returned.")
-            .Produces<List<IonDirectoryCustomer>>();
-
-        g.MapGet("/margins", (IonEnrichmentService svc, CancellationToken ct) =>
-                svc.GetPortfolioMarginsAsync(ct))
-            .WithSummary("Portfolio margin summary (list price + Ion cost/margin)")
-            .WithDescription("Returns one fused margin summary per active registered customer: the native " +
-                "Microsoft list price (from Partner Center) alongside the Ion transacted cost and margin, with " +
-                "rolled-up totals and a blended margin percentage. 'resellerMatched' = false means no Ion " +
-                "account resolved for the customer's reseller, so only list price is present. Ion pricing is " +
-                "reseller-level and SKU-approximate — check each line's pricingSource/matchedOn. Empty when the " +
-                "customer registry is not provisioned.")
-            .Produces<List<CustomerMarginSummary>>();
-
-        g.MapGet("/margins/{key}", async (string key, IonEnrichmentService svc, CancellationToken ct) =>
-            {
-                var summary = await svc.GetCustomerMarginAsync(key, ct: ct);
-                return summary is null ? Results.NotFound() : Results.Ok(summary);
-            })
-            .WithSummary("Customer margin detail (list price + Ion cost/margin)")
-            .WithDescription("Returns the fused per-subscription margin detail for one customer, keyed by Entra " +
-                "tenant GUID or primary domain. Each line pairs the native Microsoft unitListPrice with the Ion " +
-                "cost, unit margin, margin percentage and matched order-line margin, plus the match provenance " +
-                "(pricingSource, matchedOn). Returns 404 when the customer is not known to the gateway.")
-            .Produces<CustomerMarginSummary>()
-            .Produces(StatusCodes.Status404NotFound);
-
-        g.MapGet("/cost-margin", async (string? tenantIds, string? vendor,
-                    IonEnrichmentService svc, CustomerStore customers, CancellationToken ct) =>
-            {
-                var keys = string.IsNullOrWhiteSpace(tenantIds)
-                    ? (await customers.GetActiveCustomersAsync(ct))
-                        .Select(c => c.TenantId)
-                        .Where(t => !string.IsNullOrWhiteSpace(t))
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToList()
-                    : tenantIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
-                return await svc.GetTenantPlanMarginsAsync(keys, vendor ?? "azure", ct);
-            })
-            .WithSummary("Per-tenant plan cost/margin for Azure cost enrichment (Ion)")
-            .WithDescription("Returns the Ion buy price and margin per tenant/plan so Azure/CSP cost can be " +
-                "decorated with the reseller's transacted cost and margin. Join to native cost on tenant + plan " +
-                "(mfgPartNumber), not per Azure meter — Ion cost is at the subscription/plan level. The optional " +
-                "'tenantIds' query parameter is a comma-separated list of Entra tenant GUIDs (defaults to every " +
-                "active registered customer); 'vendor' selects the Ion vendor filter ('azure' default, or " +
-                "'microsoft').")
-            .Produces<List<TenantPlanMargin>>();
     }
 
     // Date-range defaults: current month to date when the caller omits from/to.

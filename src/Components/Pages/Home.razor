@@ -2,7 +2,6 @@
 @inject ExportProvisioningService ExportProvisioner
 @inject JobControlService JobControl
 @inject CollectionAuditService Audit
-@inject IonEnrichmentService Ion
 @inject ILogger<Home> Logger
 @inherits CostPageBase
 
@@ -26,25 +25,6 @@
 </MudGrid>
 
 @* ── Ion margin strip (portfolio buy price / margin) ───────────────────── *@
-@if (_ionReady && Ion.IsConfigured)
-{
-    <MudPaper Class="pa-3 mb-4" Elevation="1">
-        <div class="d-flex align-center gap-2 mb-2">
-            <MudIcon Icon="@Icons.Material.Filled.Paid" Color="Color.Info" Size="Size.Small" />
-            <MudText Typo="Typo.subtitle2" Class="fw-bold">Ion margin (portfolio)</MudText>
-            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text">Ion / Partner Center</MudChip>
-            <MudSpacer />
-            <MudButton Href="/margins" Variant="Variant.Text" Size="Size.Small"
-                       EndIcon="@Icons.Material.Filled.ArrowForward">Details</MudButton>
-        </div>
-        <MudGrid Spacing="3">
-            <KpiCard Label="Customers priced" Value="@_ionCustomerCount.ToString()" Sm="6" Md="3" />
-            <KpiCard Label="Total list price (native)" Value="@_ionListTotal.ToString("N0")" Sm="6" Md="3" />
-            <KpiCard Label="Total Ion cost" Value="@_ionCostTotal.ToString("N0")" Sm="6" Md="3" />
-            <KpiCard Label="Total Ion margin" Value="@_ionMarginTotal.ToString("N0")" Sm="6" Md="3" />
-        </MudGrid>
-    </MudPaper>
-}
 
 @* ── Charts ───────────────────────────────────────────────────────────────── *@
 <MudGrid data-tour="12"
@@ -393,35 +373,6 @@
         await RefreshSubNamesAsync();
         await DetectExportPathsAsync();
         await LoadLastRunAsync();
-        await LoadIonMarginAsync();
-    }
-
-    // ── Ion portfolio margin (best-effort overlay) ──────────────────────────
-    private bool _ionReady;
-    private int _ionCustomerCount;
-    private decimal _ionListTotal;
-    private decimal _ionCostTotal;
-    private decimal _ionMarginTotal;
-
-    private async Task LoadIonMarginAsync()
-    {
-        if (!Ion.IsConfigured) { _ionReady = true; return; }
-        try
-        {
-            var summaries = await Ion.GetPortfolioMarginsAsync();
-            _ionCustomerCount = summaries.Count;
-            _ionListTotal = summaries.Sum(s => s.TotalListPrice);
-            _ionCostTotal = summaries.Sum(s => s.TotalIonCost);
-            _ionMarginTotal = summaries.Sum(s => s.TotalIonMargin);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Failed to load Ion portfolio margin.");
-        }
-        finally
-        {
-            _ionReady = true;
-        }
     }
 
     // ── Data collection (CostCollectorJob) ──────────────────────────────────

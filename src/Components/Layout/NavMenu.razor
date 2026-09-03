@@ -2,7 +2,6 @@
 @inject DashboardStateService State
 @inject CostManagementOptions Options
 @inject CustomerStore Customers
-@inject IonEnrichmentService Ion
 @inject ITenantScopeProvider ScopeProvider
 
 <MudNavMenu>
@@ -72,19 +71,6 @@
         Sustainability
     </MudNavLink>
 
-    @if (_showIon)
-    {
-        <MudDivider Class="my-2" />
-        <MudNavLink Href="/resellers"
-                    Icon="@Icons.Material.Filled.Handshake">
-            Resellers
-        </MudNavLink>
-        <MudNavLink Href="/margins"
-                    Icon="@Icons.Material.Filled.Paid">
-            Margins
-        </MudNavLink>
-    }
-
     @if (_showCustomers)
     {
         <MudDivider Class="my-2" />
@@ -118,7 +104,6 @@
 @code {
     private bool _refreshing;
     private bool _showCustomers;
-    private bool _showIon;
 
     protected override async Task OnInitializedAsync()
     {
@@ -127,12 +112,6 @@
         {
             var scope = await ScopeProvider.GetScopeAsync();
             _showCustomers = scope.IsPartner;
-            _showIon = scope.IsPartner && Ion.IsConfigured;
-        }
-        else
-        {
-            // Single-tenant deployments still benefit from the reseller/margin views.
-            _showIon = Ion.IsConfigured;
         }
     }
 
