@@ -322,7 +322,7 @@
             Logger.LogInformation(
                 "MainLayout[{CorrelationId}]: subscriptions changed (active count {Count}). Invalidating cost cache and broadcasting state refresh.",
                 correlationId, SubStore.AllIds.Count);
-            CostService.InvalidateCache();
+            await CostService.InvalidateCacheAsync();
             await BuildGroupsAsync();
             State.SetDateRange(State.SelectedRange);
             StateHasChanged();

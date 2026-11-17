@@ -25,6 +25,7 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     [Inject] protected TenantScopeAccessor    ScopeAccessor { get; set; } = default!;
     [Inject] protected CustomerStore          Customers     { get; set; } = default!;
     [Inject] protected TenantNameService      TenantNames   { get; set; } = default!;
+    [Inject] protected ILogger<CostPageBase> RefreshLogger { get; set; } = default!;
 
     protected bool    _loading = true;
     protected string? _error;
@@ -54,6 +55,8 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// are never lost and never render as a bare GUID.
     /// </summary>
     protected readonly Dictionary<string, string> _customerSubNames = new(StringComparer.OrdinalIgnoreCase);
+    private CancellationTokenSource? _refreshCts;
+    private bool _disposed;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -61,12 +64,40 @@ public abstract class CostPageBase : ComponentBase, IDisposable
         State.OnStateChanged += RefreshData;
 
     protected override async Task OnInitializedAsync() =>
-        await LoadWithScopeAsync();
+        await LoadWithScopeAsync(CancellationToken.None);
 
-    private async void RefreshData()
+    private void RefreshData() => _ = InvokeAsync(RefreshDataAsync);
+
+    private async Task RefreshDataAsync()
     {
-        await LoadWithScopeAsync();
-        await InvokeAsync(StateHasChanged);
+        _refreshCts?.Cancel();
+        var refreshCts = _refreshCts = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(150), refreshCts.Token);
+            await LoadWithScopeAsync(refreshCts.Token);
+            if (!_disposed)
+                await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) when (refreshCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            RefreshLogger.LogError(ex, "Failed to refresh {PageType}.", GetType().Name);
+            if (!_disposed)
+            {
+                _error = ex.Message;
+                _loading = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_refreshCts, refreshCts))
+                _refreshCts = null;
+            refreshCts.Dispose();
+        }
     }
 
     /// <summary>
@@ -76,9 +107,9 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// A denied scope (unknown/suspended tenant) short-circuits with an access error and loads no
     /// data. In the single-tenant path the scope is <c>Unscoped</c> and this is a no-op pass-through.
     /// </summary>
-    private async Task LoadWithScopeAsync()
+    private async Task LoadWithScopeAsync(CancellationToken ct)
     {
-        var scope = await ScopeProvider.GetScopeAsync();
+        var scope = await ScopeProvider.GetScopeAsync(ct);
 
         // Partner drill-in: when a partner has selected a single customer in the picker, narrow
         // the resolved (all-customers) scope to just that customer so reads + cache key partition
@@ -98,8 +129,8 @@ public abstract class CostPageBase : ComponentBase, IDisposable
             return;
         }
 
-        await ComputeSelectedSubCountAsync(scope);
-        await LoadAsync();
+        await ComputeSelectedSubCountAsync(scope, ct);
+        await LoadAsync(ct);
     }
 
     /// <summary>
@@ -109,7 +140,7 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// customer is in scope — so a customer never sees the partner's own subscription count) with
     /// every in-scope customer's mapped subscriptions from the <c>CustomerSubscription</c> table.
     /// </summary>
-    private async Task ComputeSelectedSubCountAsync(TenantScope scope)
+    private async Task ComputeSelectedSubCountAsync(TenantScope scope, CancellationToken ct)
     {
         _scopeSubIds.Clear();
         _customerSubNames.Clear();
@@ -121,44 +152,40 @@ public abstract class CostPageBase : ComponentBase, IDisposable
             // Single-tenant: attribute the home subscriptions to the home tenant so any tenant
             // label (when multi-tenancy display is toggled) resolves to a name, not a GUID.
             if (Options.MultiTenancy.Enabled)
-                await IndexHomeTenantAsync();
+                await IndexHomeTenantAsync(ct: ct);
         }
         else
         {
             // The home/partner's own subscriptions live in the SubStore registry rather than the
             // CustomerSubscription table, so only fold them in when the home customer is in scope
             // (partner aggregate, or a partner drill-in to the home customer itself).
-            var home = await Customers.GetHomeCustomerAsync();
+            var homeTask = Customers.GetHomeCustomerAsync(ct);
+            var subscriptionsTask = Customers.GetScopeSubscriptionsAsync(scope.CustomerIds, ct);
+            await Task.WhenAll(homeTask, subscriptionsTask);
+            var home = await homeTask;
+            var subscriptions = await subscriptionsTask;
             if (home is not null && scope.CustomerIds.Contains(home.Id))
             {
                 foreach (var id in SubStore.AllIds)
                     _scopeSubIds.Add(id);
-                await IndexHomeTenantAsync(home);
+                await IndexHomeTenantAsync(home, ct);
             }
 
-            // For every in-scope customer pull the authoritative subscription names + tenant from
-            // the CustomerSubscription registry. This guarantees customer subscriptions render a
-            // friendly name (and tenant) in every visual even when the cost rows carry no name.
-            // Names go into _customerSubNames (a fallback that pages never overwrite) so a page
-            // reassigning _subNames from the home-only display-name API can't drop customer names.
-            foreach (var customerId in scope.CustomerIds)
+            // Pull all mapped subscriptions in one joined query; customer names remain a
+            // fallback when cost rows do not carry a display name.
+            foreach (var sub in subscriptions)
             {
-                var customer = home is not null && customerId == home.Id
-                    ? home
-                    : await Customers.GetByIdAsync(customerId);
-                var tenantId = customer?.TenantId;
-                if (!string.IsNullOrWhiteSpace(tenantId))
-                    await TenantNames.GetDisplayNameAsync(tenantId);
-
-                foreach (var sub in await Customers.GetSubscriptionsAsync(customerId))
-                {
-                    _scopeSubIds.Add(sub.SubscriptionId);
-                    if (!string.IsNullOrWhiteSpace(sub.SubscriptionName))
-                        _customerSubNames[sub.SubscriptionId] = sub.SubscriptionName;
-                    if (!string.IsNullOrWhiteSpace(tenantId))
-                        _subTenantMap[sub.SubscriptionId] = tenantId!;
-                }
+                _scopeSubIds.Add(sub.SubscriptionId);
+                if (!string.IsNullOrWhiteSpace(sub.SubscriptionName))
+                    _customerSubNames[sub.SubscriptionId] = sub.SubscriptionName;
+                if (!string.IsNullOrWhiteSpace(sub.TenantId))
+                    _subTenantMap[sub.SubscriptionId] = sub.TenantId;
             }
+
+            var tenantIds = subscriptions.Select(s => s.TenantId)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+            await Task.WhenAll(tenantIds.Select(id => TenantNames.GetDisplayNameAsync(id, ct)));
         }
 
         // The badge reflects what is actually in view: the scope narrowed by the picker's
@@ -175,9 +202,9 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// bare GUID) in multi-tenant visuals. The home tenant is the configured home tenant id (falling
     /// back to the deployment tenant id).
     /// </summary>
-    private async Task IndexHomeTenantAsync(CustomerEntity? home = null)
+    private async Task IndexHomeTenantAsync(CustomerEntity? home = null, CancellationToken ct = default)
     {
-        home ??= await Customers.GetHomeCustomerAsync();
+        home ??= await Customers.GetHomeCustomerAsync(ct);
         var homeTenant = !string.IsNullOrWhiteSpace(home?.TenantId)
             ? home!.TenantId
             : !string.IsNullOrWhiteSpace(Options.MultiTenancy.HomeTenantId)
@@ -185,7 +212,7 @@ public abstract class CostPageBase : ComponentBase, IDisposable
                 : Options.TenantId;
         if (string.IsNullOrWhiteSpace(homeTenant)) return;
 
-        await TenantNames.GetDisplayNameAsync(homeTenant);
+        await TenantNames.GetDisplayNameAsync(homeTenant, ct);
         foreach (var id in SubStore.AllIds)
             _subTenantMap[id] = homeTenant;
     }
@@ -198,19 +225,23 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// Implementations should set page-specific fields and call base helpers as needed.
     /// The _loading / _error lifecycle is managed by <see cref="RunLoadAsync"/>.
     /// </summary>
-    protected abstract Task LoadAsync();
+    protected abstract Task LoadAsync(CancellationToken ct);
 
     /// <summary>
     /// Wraps a load body in the standard _loading / _error lifecycle.
     /// Usage: override LoadAsync() and call await RunLoadAsync(async () => { ... your logic ... });
     /// </summary>
-    protected async Task RunLoadAsync(Func<Task> body)
+    protected async Task RunLoadAsync(Func<Task> body, CancellationToken ct)
     {
         _loading = true;
         _error   = null;
         try
         {
             await body();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -278,7 +309,7 @@ public abstract class CostPageBase : ComponentBase, IDisposable
     /// lookup — still show a friendly name in charts/tables, (2) builds <see cref="_subTenantMap"/>,
     /// and (3) warms the tenant-name cache. Call this right after fetching data in each page.
     /// </summary>
-    protected async Task IndexSubscriptionData(IEnumerable<CostRow> rows)
+    protected async Task IndexSubscriptionData(IEnumerable<CostRow> rows, CancellationToken ct = default)
     {
         var list = rows as ICollection<CostRow> ?? rows.ToList();
         foreach (var r in list)
@@ -294,22 +325,20 @@ public abstract class CostPageBase : ComponentBase, IDisposable
             if (!string.IsNullOrWhiteSpace(r.TenantId))
                 _subTenantMap[r.SubscriptionId] = r.TenantId;
         }
-        await WarmTenantNamesAsync(list);
+        await WarmTenantNamesAsync(list, ct);
     }
 
     /// <summary>
     /// Warms the tenant-id → display-name cache for every tenant appearing in <paramref name="rows"/>
     /// so subsequent synchronous <see cref="TenantLabel"/> calls render names rather than GUIDs.
     /// </summary>
-    protected async Task WarmTenantNamesAsync(IEnumerable<CostRow> rows)
+    protected async Task WarmTenantNamesAsync(IEnumerable<CostRow> rows, CancellationToken ct = default)
     {
         if (!Options.MultiTenancy.Enabled) return;
-        foreach (var tid in rows.Select(r => r.TenantId)
-                     .Where(t => !string.IsNullOrWhiteSpace(t))
-                     .Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            await TenantNames.GetDisplayNameAsync(tid);
-        }
+        var tenantIds = rows.Select(r => r.TenantId)
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        await Task.WhenAll(tenantIds.Select(tid => TenantNames.GetDisplayNameAsync(tid, ct)));
     }
 
     /// <summary>A friendly tenant label for a row (resolved name, else GUID, else empty).</summary>
@@ -369,5 +398,10 @@ public abstract class CostPageBase : ComponentBase, IDisposable
 
     // ── Dispose ───────────────────────────────────────────────────────────────
 
-    public void Dispose() => State.OnStateChanged -= RefreshData;
+    public void Dispose()
+    {
+        _disposed = true;
+        State.OnStateChanged -= RefreshData;
+        _refreshCts?.Cancel();
+    }
 }

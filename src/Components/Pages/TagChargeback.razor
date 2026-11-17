@@ -149,16 +149,16 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
 
     private readonly ApexChartOptions<TagSeriesPoint> _hbarOpts = ApexChartPresets.HorizontalBar<TagSeriesPoint>();
 
-    protected override async Task LoadAsync()
+    protected override async Task LoadAsync(CancellationToken ct)
     {
         await RunLoadAsync(async () =>
         {
-            var dataTask = CostService.GetTagCostDataAsync();
-            var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
-            var coverageTask = Optimization.GetTagCoverageAsync();
+            var dataTask = CostService.GetTagCostDataAsync(ct);
+            var nameTask = CostService.GetSubscriptionDisplayNamesAsync(ct);
+            var coverageTask = Optimization.GetTagCoverageAsync(ct);
             var data  = ApplySubFilter(await dataTask);
             _subNames = await nameTask;
-            await IndexSubscriptionData(data);
+            await IndexSubscriptionData(data, ct);
             _tagCoverage = await coverageTask;
             _tagKeyCounts = _tagCoverage.ResourcesPerTagKey
                 .OrderByDescending(kv => kv.Value)
@@ -221,7 +221,7 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
                 .ToList();
 
             _withDataSubCount = _subCoverage.Count(s => s.TotalCost > 0);
-        });
+        }, ct);
     }
 }
 

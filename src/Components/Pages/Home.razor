@@ -397,12 +397,12 @@
         }
     }
 
-    protected override async Task LoadAsync()
+    protected override async Task LoadAsync(CancellationToken ct)
     {
         await RunLoadAsync(async () =>
         {
-            _data = ApplySubFilter(await CostService.GetMainCostDataAsync()).ToList();
-            await IndexSubscriptionData(_data);
+            _data = ApplySubFilter(await CostService.GetMainCostDataAsync(ct)).ToList();
+            await IndexSubscriptionData(_data, ct);
             Compute();
 
             // The landing page is the natural place to warm every dataset so the loading
@@ -412,9 +412,9 @@
             // when something queries them — so touch them here. On a warm cache these are
             // instant hits; on a cold cache they share Main's single load.
             await Task.WhenAll(
-                CostService.GetRgCostDataAsync(),
-                CostService.GetTagCostDataAsync());
-        });
+                CostService.GetRgCostDataAsync(ct),
+                CostService.GetTagCostDataAsync(ct));
+        }, ct);
     }
 
     private void Compute()
@@ -733,14 +733,13 @@
         }
     }
 
-    private Task InvalidateAndRefreshAllAsync(string correlationId)
+    private async Task InvalidateAndRefreshAllAsync(string correlationId)
     {
         Logger.LogInformation(
             "Home[{CorrelationId}]: invalidating cost cache and broadcasting refresh after subscription change (active count {Count}).",
             correlationId, SubStore.AllIds.Count);
-        CostService.InvalidateCache();
+        await CostService.InvalidateCacheAsync();
         State.SetDateRange(State.SelectedRange);
-        return Task.CompletedTask;
     }
 
     /// <summary>Extracts all GUIDs found anywhere in <paramref name="text"/>.</summary>

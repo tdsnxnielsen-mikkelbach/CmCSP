@@ -104,11 +104,11 @@
     private readonly ApexChartOptions<SplitPoint>   _donutOpts = ApexChartPresets.Donut<SplitPoint>();
     private readonly ApexChartOptions<ServicePoint> _hbarOpts  = ApexChartPresets.HorizontalBar<ServicePoint>();
 
-    protected override async Task LoadAsync()
+    protected override async Task LoadAsync(CancellationToken ct)
     {
         await RunLoadAsync(async () =>
         {
-            var data = await CostService.GetPublisherBreakdownAsync();
+            var data = await CostService.GetPublisherBreakdownAsync(ct);
 
             // Anything that isn't Azure first-party counts as third-party Marketplace.
             // The Cost Management PublisherType dimension reports first-party spend as
@@ -143,6 +143,6 @@
                     r.NormalizedCost))
                 .OrderByDescending(r => r.Cost)
                 .ToList();
-        });
+        }, ct);
     }
 }

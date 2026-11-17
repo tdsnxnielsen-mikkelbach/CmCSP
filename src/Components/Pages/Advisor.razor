@@ -248,14 +248,14 @@ else if (_summaryRecCount > 0)
 
     private readonly ApexChartOptions<TypePoint> _hbarOpts2 = ApexChartPresets.HorizontalBar<TypePoint>().WithIntXAxis();
 
-    protected override async Task LoadAsync()
+    protected override async Task LoadAsync(CancellationToken ct)
     {
         await RunLoadAsync(async () =>
         {
             // Both calls are likely cache hits after the first load; run concurrently.
-            var scoresTask = CostService.GetAdvisorScoresAsync();
-            var recsTask   = CostService.GetAdvisorRecommendationsAsync();
-            var namesTask  = CostService.GetSubscriptionDisplayNamesAsync();
+            var scoresTask = CostService.GetAdvisorScoresAsync(ct);
+            var recsTask   = CostService.GetAdvisorRecommendationsAsync(ct);
+            var namesTask  = CostService.GetSubscriptionDisplayNamesAsync(ct);
             _scores = await scoresTask;
             _recs   = await recsTask;
             _subNames = await namesTask;
@@ -267,7 +267,7 @@ else if (_summaryRecCount > 0)
             }
 
             Compute();
-        });
+        }, ct);
     }
 
     private void Compute()

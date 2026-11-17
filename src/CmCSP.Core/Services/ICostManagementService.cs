@@ -24,7 +24,7 @@ public interface ICostManagementService
     Task<List<CostRow>> GetAmortizedMainCostDataAsync(CancellationToken ct = default);
 
     /// <summary>Removes all cached results so the next call re-fetches from the API.</summary>
-    void InvalidateCache();
+    Task InvalidateCacheAsync(CancellationToken ct = default);
 
     /// <summary>
     /// Ingests the latest cost data from the source feed into the durable store and warms the

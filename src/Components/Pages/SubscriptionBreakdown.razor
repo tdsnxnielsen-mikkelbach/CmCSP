@@ -109,21 +109,21 @@
 
     private readonly ApexChartOptions<SubPoint> _donutOpts = ApexChartPresets.Donut<SubPoint>();
 
-    protected override async Task LoadAsync()
+    protected override async Task LoadAsync(CancellationToken ct)
     {
         await RunLoadAsync(async () =>
         {
-            var dataTask  = CostService.GetMainCostDataAsync();
-            var nameTask  = CostService.GetSubscriptionDisplayNamesAsync();
+            var dataTask  = CostService.GetMainCostDataAsync(ct);
+            var nameTask  = CostService.GetSubscriptionDisplayNamesAsync(ct);
             var amortTask = Options.CostDetails.Enabled
-                ? CostService.GetAmortizedMainCostDataAsync()
+                ? CostService.GetAmortizedMainCostDataAsync(ct)
                 : Task.FromResult(new List<CostRow>());
             var rawData  = await dataTask;
             _subNames = await nameTask;
             // Apply the partner's subscription view-filter before any aggregation.
             var data      = ApplySubFilter(rawData);
             var amortData = ApplySubFilter(await amortTask);
-            await IndexSubscriptionData(data);
+            await IndexSubscriptionData(data, ct);
             var start = RangeStart;
             var end   = RangeEnd;
             // Anchor "today" to the most recent date present in the data rather than the wall
@@ -222,7 +222,7 @@
                 .Count();
 
             _topShare = _rows.Count > 0 ? _rows.Max(r => r.SharePct) : 0m;
-        });
+        }, ct);
     }
 }
 

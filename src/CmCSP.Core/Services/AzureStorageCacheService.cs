@@ -15,8 +15,8 @@ namespace CmCSP.Services;
 /// Azure Storage when <see cref="CostManagementOptions.AzureCacheOptions.Enabled"/> is true.
 ///
 /// Routing strategy:
-///   - Serialise the value to JSON.
-///   - If the payload is ≤ <see cref="TableSizeLimit"/> bytes → store in Azure Table Storage.
+///   - Serialise the value to JSON and gzip-compress it.
+///   - If the compressed payload is ≤ <see cref="TableSizeLimit"/> bytes → store in Azure Table Storage.
 ///     The table row holds the JSON inline (fast, no extra request to read).
 ///   - If the payload is  > <see cref="TableSizeLimit"/> bytes → store in Azure Blob Storage.
 ///     The table row holds only a pointer (blob name); the actual data is in the blob.
@@ -37,6 +37,8 @@ public sealed class AzureStorageCacheService : ICacheService
     private const string PartitionKey    = "cmcsp";
     private const string RowSuffix       = ""; // we use the cache key as RowKey directly
     private const string BlobPointerMark = "__blob:";
+    private const string CompressedMark = "__gzip:";
+    private const string CompressedBlobMark = "__blob-gzip:";
 
     private readonly IMemoryCache    _memory;
     private readonly TableClient?    _table;
@@ -96,22 +98,21 @@ public sealed class AzureStorageCacheService : ICacheService
     /// Try to get a value. Checks in-memory first, then Azure Storage.
     /// If found in Azure but not in memory, re-populates the in-memory entry.
     /// </summary>
-    public bool TryGetValue<T>(string key, TimeSpan memoryCacheTtl, out T? value)
+    public async ValueTask<(bool Found, T? Value)> TryGetValueAsync<T>(
+        string key, TimeSpan memoryCacheTtl, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (_memory.TryGetValue(key, out T? memVal))
-        {
-            value = memVal;
-            return true;
-        }
+            return (true, memVal);
 
-        if (_table is null) { value = default; return false; }
+        if (_table is null) return (false, default);
 
         try
         {
-            var response = _table.GetEntityIfExists<TableEntity>(PartitionKey, key);
-            if (!response.HasValue) { value = default; return false; }
-
-            var entity = response.Value!;
+            var response = await _table.GetEntityIfExistsAsync<TableEntity>(
+                PartitionKey, key, cancellationToken: ct);
+            var entity = response.Value;
+            if (entity is null) return (false, default);
 
             // ── Strict TTL enforcement ────────────────────────────────────────
             // Check expiry before touching the blob to avoid a wasted network
@@ -130,85 +131,90 @@ public sealed class AzureStorageCacheService : ICacheService
                     // Delete the pointed blob first, then the table row.
                     if (entity.TryGetValue("Payload", out var expPayloadObj)
                         && expPayloadObj is string expPayload
-                        && expPayload.StartsWith(BlobPointerMark, StringComparison.Ordinal))
+                        && (expPayload.StartsWith(BlobPointerMark, StringComparison.Ordinal)
+                            || expPayload.StartsWith(CompressedBlobMark, StringComparison.Ordinal)))
                     {
-                        var blobName = expPayload[BlobPointerMark.Length..];
-                        _blobs?.GetBlobClient(blobName).DeleteIfExists();
+                        var blobName = expPayload.StartsWith(CompressedBlobMark, StringComparison.Ordinal)
+                            ? expPayload[CompressedBlobMark.Length..]
+                            : expPayload[BlobPointerMark.Length..];
+                        if (_blobs is not null)
+                            await _blobs.GetBlobClient(blobName).DeleteIfExistsAsync(cancellationToken: ct);
                     }
-                    _table.DeleteEntity(PartitionKey, key);
+                    await _table.DeleteEntityAsync(PartitionKey, key, cancellationToken: ct);
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception delEx)
                 {
                     _logger.LogWarning(delEx,
                         "AzureStorageCacheService: failed to delete expired entry for key {Key}.", key);
                 }
-                value = default;
-                return false;
+                return (false, default);
             }
 
-            string? payload;
+            byte[]? payload;
 
             if (entity.TryGetValue("Payload", out var raw) && raw is string s)
             {
-                if (s.StartsWith(BlobPointerMark, StringComparison.Ordinal))
+                if (s.StartsWith(CompressedMark, StringComparison.Ordinal))
                 {
-                    // Large payload — read from blob
-                    var blobName = s[BlobPointerMark.Length..];
-                    payload = DownloadBlobAsString(blobName);
+                    payload = Convert.FromBase64String(s[CompressedMark.Length..]);
                 }
+                else if (s.StartsWith(CompressedBlobMark, StringComparison.Ordinal))
+                    payload = await DownloadBlobAsync(s[CompressedBlobMark.Length..], ct);
+                else if (s.StartsWith(BlobPointerMark, StringComparison.Ordinal))
+                    payload = await DownloadLegacyBlobAsync(s[BlobPointerMark.Length..], ct);
                 else
-                {
-                    payload = s;
-                }
+                    payload = Encoding.UTF8.GetBytes(s);
             }
-            else { value = default; return false; }
+            else return (false, default);
 
-            if (payload is null) { value = default; return false; }
+            if (payload is null) return (false, default);
 
-            value = JsonSerializer.Deserialize<T>(payload, JsonOpts);
+            var value = CachePayloadCodec.Deserialize<T>(payload, JsonOpts);
             if (value is not null)
                 _memory.Set(key, value, memoryCacheTtl);
 
-            return value is not null;
+            return (value is not null, value);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "AzureStorageCacheService: read failed for key {Key}.", key);
-            value = default;
-            return false;
+            return (false, default);
         }
     }
 
     /// <summary>
     /// Stores a value in both in-memory cache and Azure Storage.
     /// </summary>
-    public void Set<T>(string key, T value, TimeSpan ttl)
+    public async Task SetAsync<T>(string key, T value, TimeSpan ttl, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         _memory.Set(key, value, ttl);
 
         if (_table is null) return;
 
         try
         {
-            var json    = JsonSerializer.Serialize(value, JsonOpts);
-            var bytes   = Encoding.UTF8.GetByteCount(json);
+            var bytes = CachePayloadCodec.Serialize(value, JsonOpts);
+            var inlinePayload = $"{CompressedMark}{Convert.ToBase64String(bytes)}";
             string payload;
 
-            if (bytes > TableSizeLimit && _blobs is not null)
+            if (Encoding.UTF8.GetByteCount(inlinePayload) > TableSizeLimit && _blobs is not null)
             {
                 var blobName = $"{key}-{DateTime.UtcNow:yyyyMMddHHmmss}.json";
-                UploadBlobString(blobName, json);
-                payload = $"{BlobPointerMark}{blobName}";
+                await UploadBlobAsync(blobName, bytes, ct);
+                payload = $"{CompressedBlobMark}{blobName}";
                 _logger.LogDebug(
                     "Cache key {Key}: payload {Bytes} bytes → stored in blob {BlobName}.",
-                    key, bytes, blobName);
+                    key, bytes.Length, blobName);
             }
             else
             {
-                payload = json;
+                payload = inlinePayload;
                 _logger.LogDebug(
                     "Cache key {Key}: payload {Bytes} bytes → stored inline in table.",
-                    key, bytes);
+                    key, bytes.Length);
             }
 
             var entity = new TableEntity(PartitionKey, key)
@@ -216,7 +222,11 @@ public sealed class AzureStorageCacheService : ICacheService
                 ["Payload"]   = payload,
                 ["ExpiresAt"] = DateTimeOffset.UtcNow.Add(ttl).ToString("O")
             };
-            _table.UpsertEntity(entity, TableUpdateMode.Replace);
+            await _table.UpsertEntityAsync(entity, TableUpdateMode.Replace, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -227,26 +237,34 @@ public sealed class AzureStorageCacheService : ICacheService
     }
 
     /// <summary>Removes from both in-memory and Azure Storage.</summary>
-    public void Remove(string key)
+    public async Task RemoveAsync(string key, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         _memory.Remove(key);
 
         if (_table is null) return;
         try
         {
-            var response = _table.GetEntityIfExists<TableEntity>(PartitionKey, key);
-            if (response.HasValue)
+            var response = await _table.GetEntityIfExistsAsync<TableEntity>(
+                PartitionKey, key, cancellationToken: ct);
+            var entity = response.Value;
+            if (entity is not null)
             {
-                var entity = response.Value!;
                 if (entity.TryGetValue("Payload", out var raw) &&
-                    raw is string s && s.StartsWith(BlobPointerMark, StringComparison.Ordinal))
+                    raw is string s)
                 {
-                    var blobName = s[BlobPointerMark.Length..];
-                    _blobs?.GetBlobClient(blobName).DeleteIfExists();
+                    var blobName = s.StartsWith(CompressedBlobMark, StringComparison.Ordinal)
+                        ? s[CompressedBlobMark.Length..]
+                        : s.StartsWith(BlobPointerMark, StringComparison.Ordinal)
+                            ? s[BlobPointerMark.Length..]
+                            : null;
+                    if (blobName is not null && _blobs is not null)
+                        await _blobs.GetBlobClient(blobName).DeleteIfExistsAsync(cancellationToken: ct);
                 }
-                _table.DeleteEntity(PartitionKey, key);
+                await _table.DeleteEntityAsync(PartitionKey, key, cancellationToken: ct);
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "AzureStorageCacheService: delete failed for key {Key}.", key);
@@ -255,25 +273,29 @@ public sealed class AzureStorageCacheService : ICacheService
 
     // ── Blob helpers ────────────────────────────────────────────────────────
 
-    private void UploadBlobString(string blobName, string content)
+    private async Task UploadBlobAsync(string blobName, byte[] content, CancellationToken ct)
     {
         var blob = _blobs!.GetBlobClient(blobName);
-        using var ms = new MemoryStream(Encoding.UTF8.GetBytes(content));
-        blob.Upload(ms, overwrite: true);
+        await blob.UploadAsync(BinaryData.FromBytes(content), overwrite: true, cancellationToken: ct);
     }
 
-    private string? DownloadBlobAsString(string blobName)
+    private async Task<byte[]?> DownloadBlobAsync(string blobName, CancellationToken ct)
     {
         try
         {
-            var blob     = _blobs!.GetBlobClient(blobName);
-            var download = blob.DownloadContent();
-            return download.Value.Content.ToString();
+            var download = await _blobs!.GetBlobClient(blobName).DownloadContentAsync(ct);
+            return download.Value.Content.ToArray();
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (RequestFailedException ex) when (ex.Status == 404)
         {
             _logger.LogWarning("Cache blob {BlobName} not found.", blobName);
             return null;
         }
+    }
+
+    private async Task<byte[]?> DownloadLegacyBlobAsync(string blobName, CancellationToken ct)
+    {
+        return await DownloadBlobAsync(blobName, ct);
     }
 }

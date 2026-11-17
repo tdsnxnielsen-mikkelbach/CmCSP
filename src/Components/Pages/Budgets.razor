@@ -202,19 +202,19 @@ else if (_budgets.Count > 0)
 
     private readonly ApexChartOptions<MonthBudgetPoint> _groupedBarOpts = ApexChartPresets.StackedBar<MonthBudgetPoint>();
 
-    protected override async Task LoadAsync()
+    protected override async Task LoadAsync(CancellationToken ct)
     {
         await RunLoadAsync(async () =>
         {
             // Start both requests concurrently – both are likely cache hits after first load.
-            var costTask   = CostService.GetMainCostDataAsync();
-            var budgetTask = CostService.GetSubscriptionBudgetsAsync();
-            var subNameTask = CostService.GetSubscriptionDisplayNamesAsync();
+            var costTask   = CostService.GetMainCostDataAsync(ct);
+            var budgetTask = CostService.GetSubscriptionBudgetsAsync(ct);
+            var subNameTask = CostService.GetSubscriptionDisplayNamesAsync(ct);
             var costData   = ApplySubFilter(await costTask);
             var budgets    = await budgetTask;
             var apiSubNames = await subNameTask;
             _subNames = new Dictionary<string, string>(apiSubNames, StringComparer.OrdinalIgnoreCase);
-            await IndexSubscriptionData(costData);
+            await IndexSubscriptionData(costData, ct);
 
             // Compute month-to-date spend per subscription from cost data.
             // The Consumption Budgets API's currentSpend is unreliable for CSP
@@ -319,7 +319,7 @@ else if (_budgets.Count > 0)
             _monthlyBudgetLine = months
                 .Select(m => new MonthBudgetPoint(m.ToString("MMM yy"), string.Empty, 0m, _totalBudget))
                 .ToList();
-        });
+        }, ct);
     }
 }
 

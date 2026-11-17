@@ -185,27 +185,27 @@
         base.OnInitialized();
     }
 
-    private async Task OnDateRangeChanged(CmCSP.Models.DashboardDateRange range)
+    private Task OnDateRangeChanged(CmCSP.Models.DashboardDateRange range)
     {
         State.SetDateRange(range);   // broadcasts to all other pages
         _selectedRange = range;
-        await LoadAsync();
+        return Task.CompletedTask;
     }
 
     // TrendAndForecast overrides LoadAsync to also sync _selectedRange from State
     // when triggered by a global date-range broadcast.
-    protected override async Task LoadAsync()
+    protected override async Task LoadAsync(CancellationToken ct)
     {
         _selectedRange = State.SelectedRange;
         await RunLoadAsync(async () =>
         {
             var dataTask = _metric == "AmortizedCost"
-                ? CostService.GetAmortizedMainCostDataAsync()
-                : CostService.GetMainCostDataAsync();
-            var nameTask = CostService.GetSubscriptionDisplayNamesAsync();
+                ? CostService.GetAmortizedMainCostDataAsync(ct)
+                : CostService.GetMainCostDataAsync(ct);
+            var nameTask = CostService.GetSubscriptionDisplayNamesAsync(ct);
             var data  = ApplySubFilter(await dataTask);
             _subNames = await nameTask;
-            await IndexSubscriptionData(data);
+            await IndexSubscriptionData(data, ct);
             // Anchor the forecast month to the real current calendar month when it has data.
             // Azure cost data lags by 1-3 days and a brand-new calendar month often has no rows
             // yet; in that case fall back to the latest month present in the data so Cost MTD
@@ -262,7 +262,7 @@
             // supersedes the linear extrapolation for the KPI; the linear line stays as a
             // visual fallback/comparison. The service degrades to an empty list on error or
             // 204 No Content, so we silently keep the linear forecast in that case.
-            var msForecast    = await CostService.GetForecastAsync(_metric);
+            var msForecast    = await CostService.GetForecastAsync(_metric, ct);
             var msForecastSum = msForecast.Sum(p => p.Cost);
 
             // A month-end forecast can never be *less* than what's already been spent this
@@ -389,8 +389,8 @@
             var curTotal   = _currentYearMonthly.Sum(p => p.Cost);
             var priorTotal = _priorYearMonthly.Sum(p => p.Cost);
             _yoyPct = priorTotal > 0 ? (curTotal - priorTotal) / priorTotal * 100m : 0m;
-        });
+        }, ct);
     }
 
-    private async Task OnMetricChangedAsync() => await LoadAsync();
+    private async Task OnMetricChangedAsync() => await LoadAsync(CancellationToken.None);
 }

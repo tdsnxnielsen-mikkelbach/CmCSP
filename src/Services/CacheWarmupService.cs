@@ -4,7 +4,7 @@ using CmCSP.Models;
 
 /// <summary>
 /// Hosted service that rehydrates the per-replica in-memory cache from the shared
-/// persistent cache (Azure Table/Blob) immediately on startup, so the first page a
+/// distributed cache immediately on startup, so the first page a
 /// user visits after a container restart or scale-out doesn't pay the storage-read
 /// latency on the critical path.
 ///
@@ -47,14 +47,14 @@ public sealed class CacheWarmupService : BackgroundService
         if (!_cache.IsAzureEnabled)
         {
             _logger.LogInformation(
-                "CacheWarmupService: persistent cache disabled — nothing to rehydrate.");
+                "CacheWarmupService: distributed cache disabled — nothing to rehydrate.");
             return;
         }
 
-        _logger.LogInformation("CacheWarmupService: rehydrating in-memory cache from persistent storage.");
+        _logger.LogInformation("CacheWarmupService: rehydrating in-memory cache from the distributed cache.");
 
         // Single-tenant / unscoped aggregate (empty prefix) — always warmed.
-        var rehydrated = RehydratePartition(prefix: string.Empty, stoppingToken);
+        var rehydrated = await RehydratePartitionAsync(prefix: string.Empty, stoppingToken);
 
         // Phase 9: when multi-tenancy is on, also rehydrate each active customer's partition so a
         // partner drilling into a customer doesn't pay the storage-read latency on the first hit.
@@ -67,14 +67,18 @@ public sealed class CacheWarmupService : BackgroundService
                 {
                     if (stoppingToken.IsCancellationRequested) break;
                     var prefix = TenantScope.CustomerCacheKeyPrefix(customer.Id);
-                    rehydrated += RehydratePartition(prefix, stoppingToken);
+                    rehydrated += await RehydratePartitionAsync(prefix, stoppingToken);
                 }
 
                 // The partner-aggregate (all-customers) partition the collector rebuilds after each
                 // run — rehydrate it too so the partner's first view after a restart is served from
                 // the shared cache rather than paying the SQL read latency.
                 if (!stoppingToken.IsCancellationRequested)
-                    rehydrated += RehydratePartition(TenantScope.PartnerCacheKeyPrefix, stoppingToken);
+                    rehydrated += await RehydratePartitionAsync(TenantScope.PartnerCacheKeyPrefix, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -89,7 +93,7 @@ public sealed class CacheWarmupService : BackgroundService
 
     // Rehydrates the four shared datasets for one tenant partition (prefix). Returns the count
     // of datasets found in the persistent cache (a miss means the collector hasn't produced it).
-    private int RehydratePartition(string prefix, CancellationToken stoppingToken)
+    private async Task<int> RehydratePartitionAsync(string prefix, CancellationToken stoppingToken)
     {
         var rehydrated = 0;
         foreach (var baseKey in DatasetKeys)
@@ -99,10 +103,12 @@ public sealed class CacheWarmupService : BackgroundService
 
             try
             {
-                // TryGetValue re-populates the in-memory tier when the entry exists in
-                // Azure Storage. A miss means the collector hasn't produced it yet —
+                // TryGetValueAsync re-populates the in-memory tier when an entry exists in
+                // the shared cache. A miss means the collector hasn't produced it yet —
                 // skip rather than triggering a live API fetch.
-                if (_cache.TryGetValue<List<CostRow>>(key, _memoryTtl, out var rows) && rows is not null)
+                var (found, rows) = await _cache.TryGetValueAsync<List<CostRow>>(
+                    key, _memoryTtl, stoppingToken);
+                if (found && rows is not null)
                 {
                     rehydrated++;
                     _logger.LogInformation(
@@ -115,6 +121,10 @@ public sealed class CacheWarmupService : BackgroundService
                         "CacheWarmupService: {Key} not in persistent cache yet — skipping (collector will populate).",
                         key);
                 }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {

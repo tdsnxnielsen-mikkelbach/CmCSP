@@ -81,15 +81,15 @@
 
     private readonly ApexChartOptions<RgSeriesPoint> _hbarOpts = ApexChartPresets.HorizontalBar<RgSeriesPoint>(420);
 
-    protected override async Task LoadAsync()
+    protected override async Task LoadAsync(CancellationToken ct)
     {
         await RunLoadAsync(async () =>
         {
-            var dataTask = CostService.GetRgCostDataAsync();
-            var subNameTask = CostService.GetSubscriptionDisplayNamesAsync();
+            var dataTask = CostService.GetRgCostDataAsync(ct);
+            var subNameTask = CostService.GetSubscriptionDisplayNamesAsync(ct);
             var data  = ApplySubFilter(await dataTask);
             _subNames = await subNameTask;
-            await IndexSubscriptionData(data);
+            await IndexSubscriptionData(data, ct);
             var start = RangeStart;
             var end   = RangeEnd;
             // Anchor "today" to the most recent date present in the data rather than the wall
@@ -157,7 +157,7 @@
                         x.AvgMthly);
                 })
                 .ToList();
-        });
+        }, ct);
     }
 
     private string GetTopSubIdForRg(List<CostRow> filtered, string rgName)

@@ -80,7 +80,8 @@ public sealed class CostDetailsService : ICostDetailsService
         var cacheKey = BuildCacheKey(KeyPrefixCustomer, customerId, from, to);
         var ttl      = TimeSpan.FromHours(_options.CostDetails.CacheTtlHours);
 
-        if (_cache.TryGetValue<List<ReservationRow>>(cacheKey, ttl, out var cached) && cached is not null)
+        var (found, cached) = await _cache.TryGetValueAsync<List<ReservationRow>>(cacheKey, ttl, ct);
+        if (found && cached is not null)
         {
             _logger.LogDebug("Cache hit for Cost Details {Key}.", cacheKey);
             return cached;
@@ -96,7 +97,7 @@ public sealed class CostDetailsService : ICostDetailsService
             rows.AddRange(monthRows);
         }
 
-        _cache.Set(cacheKey, rows, ttl);
+        await _cache.SetAsync(cacheKey, rows, ttl, ct);
         return rows;
     }
 
@@ -106,7 +107,8 @@ public sealed class CostDetailsService : ICostDetailsService
         var cacheKey = BuildCacheKey(KeyPrefixSub, subscriptionId, from, to);
         var ttl      = TimeSpan.FromHours(_options.CostDetails.CacheTtlHours);
 
-        if (_cache.TryGetValue<List<ReservationRow>>(cacheKey, ttl, out var cached) && cached is not null)
+        var (found, cached) = await _cache.TryGetValueAsync<List<ReservationRow>>(cacheKey, ttl, ct);
+        if (found && cached is not null)
         {
             _logger.LogDebug("Cache hit for Cost Details {Key}.", cacheKey);
             return cached;
@@ -121,7 +123,7 @@ public sealed class CostDetailsService : ICostDetailsService
             rows.AddRange(monthRows);
         }
 
-        _cache.Set(cacheKey, rows, ttl);
+        await _cache.SetAsync(cacheKey, rows, ttl, ct);
         return rows;
     }
 
@@ -151,12 +153,11 @@ public sealed class CostDetailsService : ICostDetailsService
         return all;
     }
 
-    public void InvalidateCache()
+    public async Task InvalidateCacheAsync(CancellationToken ct = default)
     {
-        // Remove all Cost Details cache entries by tracking known prefixes.
-        // AzureStorageCacheService does not support prefix-scan, so we rebuild
-        // the same keys that would have been populated and remove each one.
+        // Remove all Cost Details cache entries by rebuilding the known cache keys.
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var keys = new List<string>();
         // Cover current + previous 13 months (API max history).
         for (var i = 0; i <= 13; i++)
         {
@@ -165,13 +166,14 @@ public sealed class CostDetailsService : ICostDetailsService
             var to    = from.AddMonths(1).AddDays(-1);
 
             foreach (var subId in _options.SubscriptionIds)
-                _cache.Remove(BuildCacheKey(KeyPrefixSub, subId, from, to));
+                keys.Add(BuildCacheKey(KeyPrefixSub, subId, from, to));
 
             if (HasBillingAccountAccess)
                 foreach (var c in _options.BillingAccount.Customers)
-                    _cache.Remove(BuildCacheKey(KeyPrefixCustomer, c.CustomerId, from, to));
+                    keys.Add(BuildCacheKey(KeyPrefixCustomer, c.CustomerId, from, to));
         }
 
+        await Task.WhenAll(keys.Select(key => _cache.RemoveAsync(key, ct)));
         _logger.LogInformation("Cost Details cache invalidated.");
     }
 

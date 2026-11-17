@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
@@ -68,7 +69,7 @@ public sealed class BlobCostManagementService : ICostManagementService
         DateTime.UtcNow.AddDays(-364).Date;
 
     // Prevent concurrent cold fetches from all three Get*Async callers.
-    private readonly SemaphoreSlim _fetchLock = new(1, 1);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _fetchLocks = new(StringComparer.Ordinal);
 
     // When set, only export rows whose SubscriptionId is in this set are parsed/persisted.
     private HashSet<string>? _subscriptionFilter;
@@ -173,21 +174,15 @@ public sealed class BlobCostManagementService : ICostManagementService
         }
     }
 
-    public void InvalidateCache()
+    public async Task InvalidateCacheAsync(CancellationToken ct = default)
     {
         // Remove the current scope's payloads (empty prefix in the single-tenant path).
-        _cache.Remove(Scoped(KeyMain));
-        _cache.Remove(Scoped(KeyRg));
-        _cache.Remove(Scoped(KeyTag));
-        _cache.Remove(Scoped("cm_main_amort"));
-        _cache.Remove(Scoped("cm_budgets"));
-        _cache.Remove(Scoped("cm_budgets_subs"));
-        _cache.Remove(Scoped("cm_advisor"));
-        _cache.Remove(Scoped("cm_advisor_scores"));
-        _cache.Remove(Scoped("cm_sub_names"));
-        _cache.Remove(Scoped("cm_forecast"));
-        _cache.Remove(Scoped("cm_forecast_amort"));
-        _cache.Remove(Scoped("cm_publisher"));
+        await Task.WhenAll(new[]
+        {
+            KeyMain, KeyRg, KeyTag, "cm_main_amort", "cm_budgets", "cm_budgets_subs",
+            "cm_advisor", "cm_advisor_scores", "cm_sub_names", "cm_forecast",
+            "cm_forecast_amort", "cm_publisher"
+        }.Select(key => _cache.RemoveAsync(Scoped(key), ct)));
         _loadingState.Update(KeyMain, LoadPhase.Idle);
         _loadingState.Update(KeyRg,   LoadPhase.Idle);
         _loadingState.Update(KeyTag,  LoadPhase.Idle);
@@ -282,7 +277,8 @@ public sealed class BlobCostManagementService : ICostManagementService
         // per-dataset UI banner works the same regardless of scope.
         var cacheKey = Scoped(key);
         var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-        if (_cache.TryGetValue<List<CostRow>>(cacheKey, ttl, out var hit) && hit is not null)
+        var (found, hit) = await _cache.TryGetValueAsync<List<CostRow>>(cacheKey, ttl, ct);
+        if (found && hit is not null)
         {
             _logger.LogDebug("Cache hit for {Key}.", cacheKey);
             if (_loadingState.For(key)?.Phase != LoadPhase.Ready)
@@ -291,22 +287,23 @@ public sealed class BlobCostManagementService : ICostManagementService
         }
 
         // One thread fetches; others wait and then get cache hits.
-        await _fetchLock.WaitAsync(ct);
+        var fetchLock = _fetchLocks.GetOrAdd(Scoped(string.Empty), static _ => new SemaphoreSlim(1, 1));
+        await fetchLock.WaitAsync(ct);
         try
         {
             // Re-check inside the lock — another thread may have just populated it.
-            if (_cache.TryGetValue<List<CostRow>>(cacheKey, ttl, out hit) && hit is not null)
+            (found, hit) = await _cache.TryGetValueAsync<List<CostRow>>(cacheKey, ttl, ct);
+            if (found && hit is not null)
                 return hit;
 
             await PopulateAllCachesAsync(ct);
 
-            return _cache.TryGetValue<List<CostRow>>(cacheKey, ttl, out List<CostRow>? result) && result is not null
-                ? result
-                : [];
+            var (populated, result) = await _cache.TryGetValueAsync<List<CostRow>>(cacheKey, ttl, ct);
+            return populated && result is not null ? result : [];
         }
         finally
         {
-            _fetchLock.Release();
+            fetchLock.Release();
         }
     }
 
@@ -327,7 +324,7 @@ public sealed class BlobCostManagementService : ICostManagementService
             var (sm, sr, stg) = await LoadFromSqlAsync(ct);
             if (sm.Count > 0 || sr.Count > 0 || stg.Count > 0)
             {
-                SetCaches(sm, sr, stg, anyError: false);
+                await SetCachesAsync(sm, sr, stg, anyError: false, ct);
                 return;
             }
             // SQL empty (no collection yet) – fall back to a one-off blob parse so the
@@ -336,7 +333,7 @@ public sealed class BlobCostManagementService : ICostManagementService
         }
 
         var (mainList, rgList, tagList, anyError) = await ParseExportsAsync(ct);
-        SetCaches(mainList, rgList, tagList, anyError);
+        await SetCachesAsync(mainList, rgList, tagList, anyError, ct);
     }
 
     /// <summary>
@@ -355,7 +352,7 @@ public sealed class BlobCostManagementService : ICostManagementService
         if (_dbFactory is not null)
             await UpsertFactsAsync(mainList, rgList, tagList, ct);
 
-        SetCaches(mainList, rgList, tagList, anyError);
+        await SetCachesAsync(mainList, rgList, tagList, anyError, ct);
         return new CostCollectionResult(mainList.Count, rgList.Count, tagList.Count);
     }
 
@@ -393,7 +390,7 @@ public sealed class BlobCostManagementService : ICostManagementService
         if (_dbFactory is not null)
             await UpsertFactsAsync(mainList, rgList, tagList, ct);
 
-        SetCaches(mainList, rgList, tagList, anyError: false);
+        await SetCachesAsync(mainList, rgList, tagList, anyError: false, ct);
         return new CostCollectionResult(mainList.Count, rgList.Count, tagList.Count);
     }
 
@@ -524,12 +521,14 @@ public sealed class BlobCostManagementService : ICostManagementService
 
     // ── Durable SQL store (parsed-row persistence) ────────────────────────────
 
-    private void SetCaches(List<CostRow> mainList, List<CostRow> rgList, List<CostRow> tagList, bool anyError)
+    private async Task SetCachesAsync(
+        List<CostRow> mainList, List<CostRow> rgList, List<CostRow> tagList, bool anyError, CancellationToken ct)
     {
         var expiry = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
-        _cache.Set(Scoped(KeyMain), mainList, expiry);
-        _cache.Set(Scoped(KeyRg),   rgList,   expiry);
-        _cache.Set(Scoped(KeyTag),  tagList,  expiry);
+        await Task.WhenAll(
+            _cache.SetAsync(Scoped(KeyMain), mainList, expiry, ct),
+            _cache.SetAsync(Scoped(KeyRg), rgList, expiry, ct),
+            _cache.SetAsync(Scoped(KeyTag), tagList, expiry, ct));
 
         var phase = anyError && mainList.Count == 0 ? LoadPhase.Failed : LoadPhase.Ready;
         _loadingState.Update(KeyMain, phase, anyError && mainList.Count == 0 ? "fetch failed" : $"{mainList.Count:N0} rows");

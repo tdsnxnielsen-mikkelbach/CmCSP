@@ -48,5 +48,5 @@ public interface ICostDetailsService
         DateOnly from, DateOnly to, CancellationToken ct = default);
 
     /// <summary>Removes all Cost Details cached results so the next call re-fetches.</summary>
-    void InvalidateCache();
+    Task InvalidateCacheAsync(CancellationToken ct = default);
 }

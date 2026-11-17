@@ -18,7 +18,10 @@ service file must preserve this contract:
    ready-to-serve dataset lists for fast page loads.
 
 ### Cache Tiers (`ICacheService`)
-Consumers depend on the `ICacheService` abstraction; the backing store is chosen by config/DI:
+Consumers depend on the `ICacheService` abstraction; the backing store is chosen by config/DI.
+Cache reads, writes and removals are asynchronous (`TryGetValueAsync`, `SetAsync`,
+`RemoveAsync`) so distributed-cache latency never blocks a request thread. Both implementations
+compress serialized L2 payloads with gzip while continuing to read legacy uncompressed entries:
 
 | Implementation | L1 | L2 | When |
 |----------------|----|----|------|
@@ -29,7 +32,7 @@ Consumers depend on the `ICacheService` abstraction; the backing store is chosen
   managed-identity only (`DefaultAzureCredential` → `ConfigureForAzureWithTokenCredentialAsync`);
   there are no connection-string/access-key secrets. It degrades to L1-only on connect failure.
 - Never call Redis, Table or Blob Storage directly from a service — always go through
-  `ICacheService` (`TryGetValue` / `Set` / `Remove`).
+  `ICacheService` (`TryGetValueAsync` / `SetAsync` / `RemoveAsync`).
 
 ### Cache Keys
 | Key | Dataset | Owner |
@@ -55,11 +58,11 @@ stamping on writes; view filters never widen the authorized tenant scope.
   never conflict — this is what makes the collector's `parallelism > 1` partitioning safe.
 
 ### Concurrency Rules
-- `BlobCostManagementService` uses a `SemaphoreSlim(1,1)` (`_fetchLock`) to prevent a
-  thundering herd on cold-start — do not remove or bypass it. When adding `await` inside the
+- `BlobCostManagementService` uses a scope-keyed `SemaphoreSlim` to prevent duplicate cold loads
+  for the same tenant without making unrelated tenants wait. When adding `await` inside the
   double-check pattern, re-check the cache after acquiring the lock.
 - `CacheWarmupService` is a **rehydrator only**: on startup it repopulates L1 from the shared
-  tier via `ICacheService.TryGetValue`; it never issues live API calls. A shared-tier miss is
+  tier via `ICacheService.TryGetValueAsync`; it never issues live API calls. A shared-tier miss is
   skipped, not fetched.
 - Fresh collection is owned by **`CostCollectorJob`** (nightly + on-demand), which calls
   `ICostManagementService.RefreshAsync()`. Any new cache key must also be produced there.

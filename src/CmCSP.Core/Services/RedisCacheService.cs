@@ -83,46 +83,48 @@ public sealed class RedisCacheService : ICacheService, IDisposable
 
     private string Qualify(string key) => $"{_keyPrefix}{key}";
 
-    public bool TryGetValue<T>(string key, TimeSpan memoryCacheTtl, out T? value)
+    public async ValueTask<(bool Found, T? Value)> TryGetValueAsync<T>(
+        string key, TimeSpan memoryCacheTtl, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (_memory.TryGetValue(key, out T? memVal))
-        {
-            value = memVal;
-            return true;
-        }
+            return (true, memVal);
 
-        if (_db is null) { value = default; return false; }
+        if (_db is null) return (false, default);
 
         try
         {
-            // Redis enforces TTL natively, so an expired key is simply absent.
-            RedisValue payload = _db.StringGet(Qualify(key));
-            if (payload.IsNullOrEmpty) { value = default; return false; }
+            var payload = await _db.StringGetAsync(Qualify(key)).WaitAsync(ct);
+            if (payload.IsNullOrEmpty) return (false, default);
 
-            value = JsonSerializer.Deserialize<T>(payload.ToString(), JsonOpts);
-            if (value is not null)
-                _memory.Set(key, value, memoryCacheTtl);
+            var value = CachePayloadCodec.Deserialize<T>((byte[])payload!, JsonOpts);
+            if (value is not null) _memory.Set(key, value, memoryCacheTtl);
 
-            return value is not null;
+            return (value is not null, value);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "RedisCacheService: read failed for key {Key}.", key);
-            value = default;
-            return false;
+            return (false, default);
         }
     }
 
-    public void Set<T>(string key, T value, TimeSpan ttl)
+    public async Task SetAsync<T>(string key, T value, TimeSpan ttl, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         _memory.Set(key, value, ttl);
 
         if (_db is null) return;
 
         try
         {
-            var json = JsonSerializer.Serialize(value, JsonOpts);
-            _db.StringSet(Qualify(key), json, ttl);
+            var payload = CachePayloadCodec.Serialize(value, JsonOpts);
+            await _db.StringSetAsync(Qualify(key), payload, ttl).WaitAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -131,14 +133,19 @@ public sealed class RedisCacheService : ICacheService, IDisposable
         }
     }
 
-    public void Remove(string key)
+    public async Task RemoveAsync(string key, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         _memory.Remove(key);
 
         if (_db is null) return;
         try
         {
-            _db.KeyDelete(Qualify(key));
+            await _db.KeyDeleteAsync(Qualify(key)).WaitAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {

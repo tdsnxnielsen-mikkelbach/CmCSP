@@ -47,6 +47,10 @@ public sealed class TenantNameService
         {
             resolved = await _gdap.ResolveTenantDisplayNameAsync(key, ct) ?? string.Empty;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "TenantNameService: Graph lookup for {Tenant} failed.", key);
@@ -60,6 +64,10 @@ public sealed class TenantNameService
                 var customer = await _customers.GetByTenantAsync(key, ct);
                 if (!string.IsNullOrWhiteSpace(customer?.DisplayName))
                     resolved = customer!.DisplayName;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {

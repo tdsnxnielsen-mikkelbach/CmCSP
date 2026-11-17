@@ -8,8 +8,7 @@ namespace CmCSP.Services;
 ///   • <see cref="RedisCacheService"/> — IMemoryCache + Azure Managed Redis (Phase 4).
 ///
 /// Consumers depend on this interface so the backing store can be swapped via DI/config
-/// without code changes. The method surface mirrors the original concrete service so the
-/// migration is behaviour-preserving.
+/// without code changes.
 /// </summary>
 public interface ICacheService
 {
@@ -21,14 +20,15 @@ public interface ICacheService
     bool IsAzureEnabled { get; }
 
     /// <summary>
-    /// Try to get a value. Checks in-memory first, then the shared tier. On a shared-tier hit
-    /// the in-memory entry is re-populated with <paramref name="memoryCacheTtl"/>.
+    /// Tries to get a value. Checks in-memory first, then asynchronously reads the shared tier.
+    /// On a shared-tier hit the in-memory entry is re-populated with <paramref name="memoryCacheTtl"/>.
     /// </summary>
-    bool TryGetValue<T>(string key, TimeSpan memoryCacheTtl, out T? value);
+    ValueTask<(bool Found, T? Value)> TryGetValueAsync<T>(
+        string key, TimeSpan memoryCacheTtl, CancellationToken ct = default);
 
-    /// <summary>Stores a value in both the in-memory and shared tiers with the given TTL.</summary>
-    void Set<T>(string key, T value, TimeSpan ttl);
+    /// <summary>Stores a value in both the in-memory and shared tiers asynchronously.</summary>
+    Task SetAsync<T>(string key, T value, TimeSpan ttl, CancellationToken ct = default);
 
-    /// <summary>Removes the key from both the in-memory and shared tiers.</summary>
-    void Remove(string key);
+    /// <summary>Removes the key from both the in-memory and shared tiers asynchronously.</summary>
+    Task RemoveAsync(string key, CancellationToken ct = default);
 }

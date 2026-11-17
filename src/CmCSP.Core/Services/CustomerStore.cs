@@ -175,6 +175,34 @@ public sealed class CustomerStore
             .ToListAsync(ct);
     }
 
+    /// <summary>
+    /// Loads all subscription mappings for a customer scope with one joined query rather than
+    /// issuing separate customer and subscription queries for each customer.
+    /// </summary>
+    public async Task<IReadOnlyList<(long CustomerId, string TenantId, string SubscriptionId, string SubscriptionName)>>
+        GetScopeSubscriptionsAsync(IReadOnlyCollection<long> customerIds, CancellationToken ct = default)
+    {
+        if (_dbFactory is null || customerIds.Count == 0) return [];
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var rows = await db.CustomerSubscriptions
+            .Where(s => customerIds.Contains(s.CustomerId))
+            .Join(db.Customers,
+                s => s.CustomerId,
+                c => c.Id,
+                (s, c) => new
+                {
+                    CustomerId = c.Id,
+                    c.TenantId,
+                    s.SubscriptionId,
+                    s.SubscriptionName
+                })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => (r.CustomerId, r.TenantId, r.SubscriptionId, r.SubscriptionName))
+            .ToList();
+    }
+
     // ── Onboarding / mutations (partner only) ─────────────────────────────────
 
     /// <summary>

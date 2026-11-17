@@ -47,9 +47,14 @@
     private async Task RefreshAsync()
     {
         _refreshing = true;
-        CostService.InvalidateCache();
-        State.SetDateRange(State.SelectedRange);
-        await Task.Yield();
-        _refreshing = false;
+        try
+        {
+            await CostService.InvalidateCacheAsync();
+            State.SetDateRange(State.SelectedRange);
+        }
+        finally
+        {
+            _refreshing = false;
+        }
     }
 }
