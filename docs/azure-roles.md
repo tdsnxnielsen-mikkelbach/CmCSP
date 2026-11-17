@@ -1,519 +1,76 @@
-﻿# Azure Role Assignments for CmCSP
+# Azure permissions
 
-This document describes every Azure RBAC role required to run CmCSP, covering all three
-functional areas: **Query API access**, **Cost Export setup**, and **Application infrastructure**.
+The Blazor/Radzen/ApexCharts UI does not change Azure authorization requirements.
+Grant permissions to the identity used for each operation, not indiscriminately to
+every principal. Infrastructure definitions live in [infra](../infra).
 
-See [docs/csp-deployment-guide.md](csp-deployment-guide.md) for the step-by-step deployment
-walkthrough that shows exactly when and how to assign each role.
+## Identities and permissions
 
----
-
-## Overview
-
-CmCSP uses three separate Azure identities, each with the minimum permissions needed:
-
-| Identity | Type | Purpose |
+| Principal | Access | Scope / implementation |
 |---|---|---|
-| **Entra App SP** | Service Principal (app registration) | Call the Cost Management Query API and Azure Advisor API |
-| **Export MI** | SystemAssigned MI on the export resource | Write daily CSVs to Blob Storage |
-| **Container App MI** | SystemAssigned MI on the Container App | Read blobs/tables + pull from ACR + read Key Vault secrets |
-
-Operational note: runtime subscription add/remove actions are logged with a shared correlation ID across `Home`, `SubscriptionStoreService`, `MainLayout`, and `ExportProvisioningService` log lines. This traceability feature does not require any additional role assignments beyond those listed below.
-
----
-
-## 1 – Entra App Service Principal (Query API mode)
-
-Used when `AzureCostManagement:ExportBlob:Enabled = false`, and also needed in blob-export mode for automated export provisioning (`ExportProvisioningService`).
-
-### Subscription scope
-
-| Role | Role ID | Scope | Why |
-|---|---|---|---|
-| **Cost Management Contributor** | `434105ed-43f6-45c7-a02f-909b2ba83430` | Each target subscription | Read cost data via the Query API **and** auto-create exports when subscriptions are added via the UI |
-
-```bash
-az role assignment create \
-  --assignee "<app-client-id>" \
-  --role "Cost Management Contributor" \
-  --scope "/subscriptions/<subscription-id>"
-```
-
-### Billing account scope (CSP – if querying at billing account level)
-
-The Cost Management Query API can also target the billing account scope
-(`/providers/Microsoft.Billing/billingAccounts/{id}`). This requires a higher privilege:
-
-| Role | Assigned in | Why |
-|---|---|---|
-| **Billing Account Reader** | Partner Center / EA Portal | Read all subscriptions' costs under the billing account |
-
-This cannot be assigned via standard RBAC (`az role assignment create`). It must be set in
-**Partner Center → Billing → Billing account → Access control** or via the Billing REST API.
-
-### CSP indirect cost visibility (mandatory for CSP subscriptions)
-
-Cost data is hidden for CSP customer subscriptions by default. Regardless of RBAC, a
-Partner Center Global Admin must enable it:
-
-1. Sign in to [Partner Center](https://partner.microsoft.com)
-2. Navigate to **Customers → {customer} → Service management → Azure subscriptions**
-3. Enable **Cost visibility for customer** (IndirectCostEnabled)
-
-Without this step the Query API returns HTTP 400 `IndirectCostDisabled`.
-
----
-
-## 2 – Cost Management Export Setup
-
-Applies to both `export-sub.bicep` (subscription scope) and `export-billing.bicep`
-(billing account scope).
-
-### 2a – Subscription scope export
-
-The export resource (`Microsoft.CostManagement/exports`) uses a **SystemAssigned managed identity**
-which needs write access to the storage account where CSVs are dropped.
-
-| Role | Role ID | Scope | Who |
-|---|---|---|---|
-| **Storage Blob Data Contributor** | `ba92f5b4-2d11-453d-a403-e96b0029c9fe` | Storage account (app RG) | Export resource MI |
-
-This role assignment is created automatically by `infra/modules/storage.bicep` when you pass
-`exportManagedIdentityPrincipalId`. The value is available as the `managedIdentityPrincipalId`
-output from `infra/modules/export-sub.bicep`.
-
-The person **deploying** the export must have at minimum:
-
-| Role | Scope | Why |
-|---|---|---|
-| **Cost Management Contributor** or **Owner** | The subscription | Create the `Microsoft.CostManagement/exports` resource |
-| **Contributor** | Export storage RG | Deploy `main.bicep` and create role assignments |
-
-```bash
-# Assign Cost Management Contributor on a subscription
-az role assignment create \
-  --assignee "<deployer-user-or-sp>" \
-  --role "Cost Management Contributor" \
-  --scope "/subscriptions/<subscription-id>"
-```
-
-### 2b – Billing account scope export
-
-The billing-account export (`export-billing.bicep`) uses a SAS token instead of a managed
-identity (managed identity is not supported at billing account scope).
-
-The person deploying must have:
-
-| Role | Where | Why |
-|---|---|---|
-| **Billing Account Owner** or **Contributor** | Partner Center / EA Portal | Create the export resource at billing account scope |
-| **Contributor** | Export storage RG | Deploy storage + generate SAS token |
-
-The SAS token requires the following permissions on the target container:
-`acwl` — **A**dd, **C**reate, **W**rite, **L**ist.
-
-Generate the SAS token:
-```bash
-END=$(date -u -d "+2 years" '+%Y-%m-%dT%H:%MZ')
-SAS=$(az storage container generate-sas \
-  --account-name <storageAccountName> \
-  --name cost-exports \
-  --permissions acwl \
-  --expiry "$END" \
-  --auth-mode login \
-  --as-user \
-  --output tsv)
-```
-
----
-
-## 3 – Container App Managed Identity (Application infrastructure)
-
-The Container App runs with a **SystemAssigned managed identity**. It needs the following roles:
-
-### 3a – Read cost export blobs and write/read the app cache
-
-| Role | Role ID | Scope | Why |
-|---|---|---|---|
-| **Storage Blob Data Reader** | `2a2b9908-6ea1-4ae2-8e65-a410df84e7d1` | Export storage account | Read cost export CSVs + read large cache blobs |
-| **Storage Table Data Contributor** | `0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3` | Export storage account | Read and write small cache entries in Table Storage |
-
-Both assignments are created automatically by `infra/modules/storage.bicep` when `appManagedIdentityPrincipalId` is provided.
-
-```bash
-APP_MI=$(az deployment group show -g rg-cmcsp-app -n app \
-  --query "properties.outputs.containerAppPrincipalId.value" -o tsv)
-
-STORAGE_ID=$(az storage account show -n <storageAccountName> -g rg-cmcsp-app \
-  --query id -o tsv)
-
-az role assignment create --assignee "$APP_MI" \
-  --role "Storage Blob Data Reader" --scope "$STORAGE_ID"
-
-az role assignment create --assignee "$APP_MI" \
-  --role "Storage Table Data Contributor" --scope "$STORAGE_ID"
-```
-
-### 3b – Pull images from ACR
-
-| Role | Role ID | Scope | Why |
-|---|---|---|---|
-| **AcrPull** | `7f951dda-4ed3-4680-a7ca-43fe172d538d` | Azure Container Registry | Pull the CmCSP container image without admin credentials |
-
-Created automatically by `infra/modules/app.bicep`.
-
-### 3c – Persist user-added subscriptions in Key Vault
-
-| Role | Role ID | Scope | Why |
-|---|---|---|---|
-| **Key Vault Secrets User** | `4633458b-17de-408a-b874-0445c86b69e6` | Key Vault | Read `ClientSecret` and other runtime secrets at startup |
-| **Key Vault Secrets Officer** | `b86a8fe4-44ce-4948-aee5-eccb2c155cd7` | Key Vault | Write the `CmCSP--UserSubscriptionIds` secret when subscriptions are added or removed via the UI |
-
-Both are created automatically by `infra/modules/app.bicep`.
-
-### 3d – Grant Storage Blob Data Contributor to export MIs (blob mode only)
-
-| Role | Role ID | Scope | Why |
-|---|---|---|---|
-| **User Access Administrator** | `18d7d88d-d35e-4fb5-a5c3-7773c20a72d9` | Export storage account | Allows `ExportProvisioningService` to assign `Storage Blob Data Contributor` to the export resource MI for each new subscription added via the UI |
-
-Created automatically by `infra/modules/storage.bicep` when `appManagedIdentityPrincipalId` is provided.
-
-`ash
-az role assignment create --assignee "$APP_MI" \
-  --role "User Access Administrator" --scope "$STORAGE_ID"
-`\n
-### 3e – (Optional) Call the Cost Management Query API
-
-If running in Query API mode (`ExportBlob:Enabled = false`) and you want to use managed
-identity instead of a client secret, assign **Cost Management Contributor** to the Container App MI
-on each target subscription instead of (or in addition to) the Entra App SP.
-
-```bash
-az role assignment create \
-  --assignee "$APP_MI" \
-  --role "Cost Management Contributor" \
-  --scope "/subscriptions/<subscription-id>"
-```
-
----
-
-## 4 – Azure Advisor Recommendations (Entra App SP)
-
-The Advisor Cost Savings page (`/advisor`) fetches recommendations from the Azure Advisor REST API.
-This requires the **Reader** role on each subscription — the existing `Cost Management Reader` role
-does **not** cover the `Microsoft.Advisor/recommendations/read` action.
-
-| Role | Role ID | Scope | Why |
-|---|---|---|---|
-| **Reader** | `acdd72a7-3385-48ef-bd42-f606fba81ae7` | Each target subscription | Grants `*/read`, which includes `Microsoft.Advisor/recommendations/read` |
-
-> **Scope note:** `Reader` is a broader grant than `Cost Management Reader` — it provides read
-> access to all resource types in the subscription. Consider informing customers before assigning
-> it to the service principal.
-
-```bash
-az role assignment create \
-  --assignee "<app-client-id>" \
-  --role "Reader" \
-  --scope "/subscriptions/<subscription-id>"
-```
-
-Repeat for every subscription in `SubscriptionIds`.
-
-If the Advisor page shows an empty state with no recommendations, confirm that:
-1. The **Reader** role assignment has propagated (allow up to 5 minutes).
-2. The subscription has resources that Advisor has analysed (new subscriptions may show no recommendations for up to 24 hours).
-
----
-
-## 4b – Azure Resource Graph inventory & optimization (Phase 7)
-
-The **Optimization** page (`/optimization`), the live tag-coverage panel on **Tag Chargeback**, and
-the **purchase recommendations / expiry** sections on **Reservations** join cost data to live Azure
-inventory. They call:
-
-- **Azure Resource Graph** (`Microsoft.ResourceGraph/resources`) — full inventory + orphaned/idle
-  resource finder.
-- **Microsoft.Consumption** (`reservationRecommendations`) — reservation / savings-plan purchase
-  recommendations.
-- **Microsoft.Capacity** (`reservationOrders`) — existing reservation orders + expiry dates.
-
-These run as the **Container App** and **collector** managed identities (or the Entra App SP). The
-built-in **Reader** role covers all of them — Resource Graph and `Microsoft.Consumption/.../read`
-are both included in `*/read`.
-
-| Role | Role ID | Scope | Why |
-|---|---|---|---|
-| **Reader** | `acdd72a7-3385-48ef-bd42-f606fba81ae7` | Each target subscription | Grants `*/read` → Resource Graph, Consumption reservation recommendations, resource inventory |
-
-> Reservation **expiry** (`Microsoft.Capacity/reservationOrders`) is tenant-scoped and may
-> additionally require **Reservations Reader** at the tenant root. When it is missing the
-> Reservations page simply hides the expiry table — the rest of the page still works.
-
-### Assigned by Bicep
-
-- **Deployment subscription:** `infra/main.bicep` assigns **Reader** to both the Container App and
-  collector managed identities when `grantReaderOnSubscription = true` (the default).
-- **Other target subscriptions:** deploy `infra/modules/reader-sub.bicep` once per subscription:
-
-```bash
-APP_MI=$(az deployment sub show -n cmcsp \
-  --query "properties.outputs.CONTAINER_APP_PRINCIPAL_ID.value" -o tsv)   # or read from the portal
-COLLECT_MI=<collector job principal id>
-
-az deployment sub create \
-  --subscription "<targetSubscriptionId>" \
-  --location "<region>" \
-  --template-file infra/modules/reader-sub.bicep \
-  --parameters appPrincipalId="$APP_MI" collectPrincipalId="$COLLECT_MI"
-```
-
-If the Optimization page shows the "needs Reader role" banner, confirm the Reader assignment has
-propagated (allow up to ~5 minutes) on every subscription in `SubscriptionIds`.
-
-> **Scope note:** like the Advisor grant, `Reader` is broader than `Cost Management Reader` — it
-> exposes resource metadata across the subscription. Inform customers before assigning it.
-
----
-
-## 4c – Security posture & sustainability (Phase 8)
-
-The **Security Posture** page (`/security`) and the **Sustainability** page (`/sustainability`) read
-two more Azure-only feeds as the Container App / collector managed identities:
-
-- **Microsoft Defender for Cloud** (`Microsoft.Security/secureScores` + `secureScoreControls`) — the
-  Azure secure-score percentage per subscription and the top control gaps. *Azure security posture
-  only — not the Microsoft 365 Secure Score.*
-- **Carbon Optimization** (`Microsoft.Carbon/carbonEmissionReports`) — estimated emissions
-  (kg CO₂e, scopes 1–3) per month and per resource type.
-
-**The Phase 7 `Reader` grant already covers both** — `Microsoft.Security/*/read` is part of `*/read`,
-and a subscription **Reader** can view Carbon emissions data per Microsoft's documentation. So no new
-role assignment is required on subscriptions that already have the Reader grant above.
-
-For **least-privilege** deployments that prefer *not* to grant full Reader, assign these narrower
-read-only roles instead:
-
-| Role | Role ID | Scope | Why |
-|---|---|---|---|
-| **Security Reader** | `39bc4728-0917-49c7-9d2c-d95423bc2eb4` | Each target subscription | `Microsoft.Security/*/read` → Defender for Cloud secure score + controls |
-| **Carbon Optimization Reader** | `fa0d39e6-28e5-40cf-8521-1eb320653a4c` | Each target subscription | View emissions data (Carbon Optimization API) — assignable at subscription scope only |
-
-### Assigned by Bicep
-
-- **Default (Reader already granted):** nothing to do — both pages work off the Phase 7 Reader grant.
-- **Least-privilege:** set `grantReaderOnSubscription = false` and `grantSecurityCarbonRolesOnSubscription = true`
-  in `infra/main.bicep` to assign **Security Reader** + **Carbon Optimization Reader** to both managed
-  identities on the deployment subscription. For other target subscriptions, grant the same two roles
-  (or Reader) manually / via your own per-subscription module.
-
-> If the Security or Sustainability page shows the "needs role" banner, confirm the assignment has
-> propagated and that Defender for Cloud (Security) / Carbon Optimization data exists for the
-> subscription. Carbon data covers a rolling ~12-month window with roughly a one-month lag.
-
----
-
-## 5 – Summary table
-
-| Identity | Role | Scope | Assigned by |
-|---|---|---|---|
-| Entra App SP | Cost Management Contributor | Each subscription | `az role assignment create` |
-| Entra App SP | Reader | Each subscription | `az role assignment create` (Advisor page) |
-| Container App MI | Reader | Each subscription | `infra/main.bicep` (deploy sub) + `infra/modules/reader-sub.bicep` (other subs) — Phase 7 inventory/optimization |
-| Collector job MI | Reader | Each subscription | `infra/main.bicep` (deploy sub) + `infra/modules/reader-sub.bicep` (other subs) — Phase 7 inventory/optimization |
-| Container App MI | Security Reader *(optional)* | Each subscription | `infra/main.bicep` `grantSecurityCarbonRolesOnSubscription` — Phase 8 secure score (least-privilege alt to Reader) |
-| Collector job MI | Carbon Optimization Reader *(optional)* | Each subscription | `infra/main.bicep` `grantSecurityCarbonRolesOnSubscription` — Phase 8 emissions (least-privilege alt to Reader) |
-| Entra App SP | Billing Account Reader | Billing account | Partner Center / Billing API |
-| *(CSP admin)* | IndirectCostEnabled | Customer subscription | Partner Center UI |
-| Export resource MI | Storage Blob Data Contributor | Export storage account | `infra/modules/storage.bicep` |
-| Container App MI | Storage Blob Data Reader | Export storage account | `infra/modules/storage.bicep` |
-| Container App MI | Storage Table Data Contributor | Export storage account | `infra/modules/storage.bicep` |
-| Container App MI | AcrPull | Container Registry | `infra/modules/app.bicep` |
-| Container App MI | Key Vault Secrets User | Key Vault | `infra/modules/app.bicep` |
-| Container App MI | Key Vault Secrets Officer | Key Vault | `infra/modules/app.bicep` |
-| Container App MI | User Access Administrator | Export storage account | `infra/modules/storage.bicep` (blob mode) |
-| Container App MI | Cost Management Contributor | Each subscription | Manual (Query API mode only) |
-| Deployer | Cost Management Contributor | Subscription | Pre-requisite |
-| Deployer | Contributor | Resource groups | Pre-requisite |
-
----
-
-## Mode 1 – Query API (Entra App Registration)
-
-This is the development / out-of-the-box mode. A service principal (Entra app registration) calls the Cost Management REST API directly.
-
-### Required permission
-
-| Scope | Role | Role ID | Who needs it |
-|---|---|---|---|
-| Each target subscription | **Cost Management Contributor** | `434105ed-43f6-45c7-a02f-909b2ba83430` | The Entra app service principal |
-
-### How to assign in the Azure Portal
-
-1. Open **Azure Portal → Subscriptions → {subscription name}**
-2. Click **Access control (IAM) → Add → Add role assignment**
-3. Role: **Cost Management Contributor**
-4. Members: select **User, group, or service principal** → search for your app registration name
-5. Save. Repeat for every subscription in `SubscriptionIds`.
-
-### How to assign with Azure CLI
-
-```bash
-# Run once per subscription
-az role assignment create \
-  --assignee "<application-client-id>" \
-  --role "Cost Management Contributor" \
-  --scope "/subscriptions/<subscription-id>"
-```
-
-### CSP-specific requirement
-
-For Cloud Solution Provider (CSP) subscriptions, the cost data is hidden by default. A **Partner Center** administrator must enable it before any reader can see costs:
-
-1. Sign in to [Partner Center](https://partner.microsoft.com)
-2. Navigate to **Customers → {customer name} → Service management → Azure subscriptions**
-3. Enable **Cost visibility for customer** (also called **Indirect cost visibility**)
-
-Without this, the Query API returns HTTP 400 with `"IndirectCostDisabled"` regardless of the RBAC role assigned.
-
----
-
-## Mode 2 – Blob Exports
-
-This mode involves two separate identities with different roles: one that **writes** export files (the export managed identity), and one that **reads** them (the application identity).
-
-### Identity 1 – Export Managed Identity (writer)
-
-The `Microsoft.CostManagement/exports` resource in `infra/modules/export-sub.bicep` is deployed with a `SystemAssigned` managed identity. This identity needs write access to the storage account.
-
-| Scope | Role | Role ID | Who needs it |
-|---|---|---|---|
-| Storage account | **Storage Blob Data Contributor** | `ba92f5b4-2d11-453d-a403-e96b0029c9fe` | The export resource's managed identity |
-
-This role assignment is handled automatically by `infra/modules/storage.bicep` when you pass `exportManagedIdentityPrincipalId`. The principal ID is available as an output from `export-sub.bicep` (`managedIdentityPrincipalId`).
-
-**Typical two-step Bicep deploy:**
-
-```bash
-# Step 1: Deploy storage account (no principal ID yet)
-az deployment group create \
-  --resource-group rg-cmcsp \
-  --template-file infra/modules/storage.bicep \
-  --parameters storageAccountName=cmcspcostexports
-
-# Step 2: Deploy the export (this creates the managed identity)
-az deployment sub create \
-  --location swedencentral \
-  --template-file infra/modules/export-sub.bicep \
-  --parameters \
-    exportName=daily-cost-export \
-    storageAccountResourceId="<storage-account-resource-id>" \
-    recurrenceFrom="2026-01-01T02:00:00Z"
-
-# Step 3: Re-deploy storage.bicep with the principal ID to grant the write role
-PRINCIPAL_ID=$(az deployment sub show \
-  --name export-sub \
-  --query "properties.outputs.managedIdentityPrincipalId.value" -o tsv)
-
-az deployment group create \
-  --resource-group rg-cmcsp \
-  --template-file infra/modules/storage.bicep \
-  --parameters \
-    storageAccountName=cmcspcostexports \
-    exportManagedIdentityPrincipalId="$PRINCIPAL_ID"
-```
-
-### Identity 2 – Application identity (reader)
-
-The CmCSP Blazor application reads blobs from the same storage account. It needs read-only access.
-
-| Scope | Role | Role ID | Who needs it |
-|---|---|---|---|
-| Storage account | **Storage Blob Data Reader** | `2a2b9908-6ea1-4ae2-8e65-a410df84e7d1` | The identity the app authenticates with |
-
-The identity used depends on where the app runs:
-
-#### Option A – Azure App Service / Container Apps (recommended for production)
-
-Enable the **System-assigned managed identity** on the App Service, then assign `Storage Blob Data Reader` to it.
-
-```bash
-# Enable managed identity on the App Service
-az webapp identity assign \
-  --name cmcsp-dashboard \
-  --resource-group rg-cmcsp
-
-# Get the principal ID
-PRINCIPAL_ID=$(az webapp identity show \
-  --name cmcsp-dashboard \
-  --resource-group rg-cmcsp \
-  --query principalId -o tsv)
-
-# Assign Storage Blob Data Reader
-az role assignment create \
-  --assignee "$PRINCIPAL_ID" \
-  --role "Storage Blob Data Reader" \
-  --scope "<storage-account-resource-id>"
-```
-
-Set `AzureCostManagement:ExportBlob:StorageAccountUri` to `https://<account>.blob.core.windows.net`. The app uses `DefaultAzureCredential` which picks up the managed identity automatically. No `ClientSecret` or `ConnectionString` is needed.
-
-#### Option B – Local development with `az login`
-
-Run `az login` in a terminal. `DefaultAzureCredential` will pick up your signed-in account. Your Azure user account needs `Storage Blob Data Reader` on the storage account.
-
-```bash
-az role assignment create \
-  --assignee "<your-azure-user-object-id>" \
-  --role "Storage Blob Data Reader" \
-  --scope "<storage-account-resource-id>"
-```
-
-Set `AzureCostManagement:ExportBlob:StorageAccountUri` via `dotnet user-secrets`.
-
-#### Option C – Local development with a connection string
-
-If you don't have `az login` available, set `AzureCostManagement:ExportBlob:ConnectionString` via `dotnet user-secrets`:
-
-```bash
-dotnet user-secrets set "AzureCostManagement:ExportBlob:ConnectionString" "<connection-string>"
-```
-
-Get the connection string from **Azure Portal → Storage account → Access keys → Connection string**. Never commit this value.
-
-### Billing scope export (export-billing.bicep)
-
-The billing scope export (`infra/modules/export-billing.bicep`) targets a CSP Billing Account and requires:
-
-- **Billing Account Owner** or **Contributor** to deploy the export resource (tenant-level Bicep deployment requires elevated permissions)
-- The SAS token passed at deploy time must grant `acwl` (add, create, write, list) on the container
-- The application still only needs `Storage Blob Data Reader` to read the resulting files — the same as above
-
----
-
-## Summary table
-
-| Identity | Role | Scope | Required for |
-|---|---|---|---|
-| Entra App SP | Cost Management Contributor | Per subscription | Query API mode + automated export provisioning |
-| Export managed identity | Storage Blob Data Contributor | Storage account | Writing export files (blob mode) |
-| App Service MI / developer | Storage Blob Data Reader | Storage account | Reading export files (blob mode) |
-| *(CSP Partner Center admin)* | Indirect cost visibility | Customer subscription | Either mode — unlocks CSP billing data |
-
----
-
-## Principle of least privilege in production
-
-The recommended production setup eliminates the Entra App client secret entirely:
-
-```
-App Service (SystemAssigned MI)
-  ├── Cost Management Contributor → each subscription   [for Query API + export provisioning]
-  └── Storage Blob Data Reader  → storage account     [for Blob Export mode]
-
-Export resource (SystemAssigned MI)
-  └── Storage Blob Data Contributor → storage account [for writing export files]
-```
-
-With this setup no secrets are stored anywhere — only managed identity object IDs and resource IDs in configuration.
+| Deployment operator | Resource deployment and required role-assignment rights | Deployment subscription/resource group |
+| API-token identity | Cost Management Reader for read-only cost operations | Each target subscription or supported billing scope |
+| Export provisioning operator | Export write permissions, plus authority to grant delivery access | Target subscription and export storage |
+| Export managed identity | Storage Blob Data Contributor | Export destination storage |
+| Web/collector managed identities | Storage Blob Data Reader | Export storage account |
+| Web/collector managed identities | Storage Blob Data Contributor | Cache blob container |
+| Web/collector managed identities | Storage Table Data Contributor | Storage account, for legacy cache/audit |
+| Image pull identity | AcrPull | Container registry |
+| Runtime managed identities | Key Vault Secrets User | Required vault |
+| Web identity | Collector-specific custom operator role | Collector job only |
+| SQL runtime identities | Contained users in `db_datareader` and `db_datawriter` | Application database |
+| Redis runtime identities | Entra data-access policies | Managed Redis database |
+
+`storage.bicep`, `app.bicep`, `data.bicep`, and `main.bicep` define the deployed
+assignments. The web application's runtime setting persistence can also require
+the vault write rights configured in the app module for the non-SQL fallback.
+
+The custom collector role allows `Microsoft.App/jobs/read`,
+`Microsoft.App/jobs/start/action`, and `Microsoft.App/jobs/executions/read`.
+It does not grant general Container Apps administration.
+
+## Subscription cost and exports
+
+Read-only cost access and export management are different privileges. Export
+creation needs Cost Management Contributor or equivalent write rights, but some
+CSP scopes reject application-identity export writes even with that role.
+Provision through the authorized deployer using the postprovision hook when
+runtime creation returns `RBACAccessDenied`.
+
+The Entra service principal is used in client-secret mode; managed identity is
+used by the token service when no application secret is configured. Assign
+read permissions to the identity that actually acquires the token.
+
+Cost visibility must also be enabled in Partner Center for applicable CSP
+subscriptions. `IndirectCostDisabled` is an agreement/visibility issue rather
+than simply a missing role assignment.
+
+## Inventory, security, sustainability, reservations
+
+- Subscription **Reader** supports Resource Graph and the relevant read-only
+  enrichment feeds. `grantReaderOnSubscription` covers the deployment subscription.
+- Additional subscriptions require their own grants; use
+  [reader-sub.bicep](../infra/modules/reader-sub.bicep) or an approved parent scope.
+- **Security Reader** and **Carbon Optimization Reader** are optional narrower
+  alternatives configured by `grantSecurityCarbonRolesOnSubscription`.
+- Reservation expiry data may need **Reservations Reader** at the applicable
+  reservation/tenant scope.
+- Billing-account/customer access must follow the billing agreement's authorization
+  model. Do not assume subscription RBAC grants billing-account access.
+
+## Managed data platform
+
+SQL uses `Authentication=Active Directory Default`; Redis uses Entra tokens over
+TLS on port 10000. Neither requires committed passwords/access keys.
+The provisioning hook applies SQL schema and contained users as the configured
+Entra SQL administrator. Azure resource RBAC alone does not grant SQL table access.
+
+## Multi-tenant deployments
+
+Customer consent, GDAP relationship setup, and Azure subscription RBAC are distinct.
+The application registration must be present/consented in the customer tenant and
+its API-token identity must have the needed Azure access there. A home-tenant
+managed identity cannot be used as a general cross-tenant identity.
+
+See [multi-tenancy](phase9-multitenancy.md), [CSP setup](csp-deployment-guide.md),
+and [collection operations](data-collection.md).

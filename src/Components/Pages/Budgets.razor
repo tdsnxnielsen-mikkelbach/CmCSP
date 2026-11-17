@@ -7,69 +7,62 @@
 
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
-         data-tour="10"
-         data-tour-title="Budgets"
-         data-tour-desc="Track Azure Cost Management budgets &mdash; spend vs limit, variance, and burn-down per subscription.">Budgets</MudText>
+<RadzenText Class="mb-4 fw-bold" data-tour="10" data-tour-title="Budgets" data-tour-desc="Track Azure Cost Management budgets &mdash; spend vs limit, variance, and burn-down per subscription." TextStyle="TextStyle.H5">Budgets</RadzenText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @if (!_loading && _budgets.Count == 0)
 {
-    <MudAlert Severity="Severity.Info">
+    <RadzenAlert AlertStyle="AlertStyle.Info" AllowClose="false">
         No subscription-scope budgets found. Create a budget in Azure Portal
         (<strong>Cost Management &rarr; Budgets</strong>) on one or more subscriptions
         to see budget tracking here.
-    </MudAlert>
+    </RadzenAlert>
 }
 else if (_budgets.Count > 0)
 {
     @* ── KPI cards ─────────────────────────────────────────────────────────── *@
-    <MudGrid Spacing="3" Class="mb-4">
-        <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4 h-100 budgets-kpi-card" Elevation="2">
-                <MudText Typo="Typo.caption" Color="Color.Secondary">Total Budget</MudText>
-                <MudText Typo="Typo.h5" Class="mt-1 fw-bold budgets-kpi-value">@Fmt(_totalBudget)</MudText>
-                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="budgets-kpi-footer">@_budgets.Count budget(s)</MudText>
-            </MudPaper>
-        </MudItem>
-        <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4 h-100 budgets-kpi-card" Elevation="2">
-                <MudText Typo="Typo.caption" Color="Color.Secondary">Current Period Spend</MudText>
-                <MudText Typo="Typo.h5" Class="mt-1 fw-bold budgets-kpi-value">@Fmt(_totalCurrentSpend)</MudText>
-                <MudText Typo="Typo.caption" Color="Color.Transparent" Class="budgets-kpi-footer">@("\u00A0")</MudText>
-            </MudPaper>
-        </MudItem>
-        <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4 h-100 budgets-kpi-card" Elevation="2">
-                <MudText Typo="Typo.caption" Color="Color.Secondary">Budget Variance</MudText>
-                <MudText Typo="Typo.h5"
-                         Class="mt-1 fw-bold budgets-kpi-value"
-                         Color="@(_variance > 0 ? Color.Error : Color.Success)">
+    <RadzenRow Class="mb-4" Gap="1rem">
+        <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+            <RadzenCard Class="pa-4 h-100 budgets-kpi-card">
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Total Budget</RadzenText>
+                <RadzenText Class="mt-1 fw-bold budgets-kpi-value" TextStyle="TextStyle.H5">@Fmt(_totalBudget)</RadzenText>
+                <RadzenText Class="budgets-kpi-footer" TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">@_budgets.Count budget(s)</RadzenText>
+            </RadzenCard>
+        </RadzenColumn>
+        <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+            <RadzenCard Class="pa-4 h-100 budgets-kpi-card">
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Current Period Spend</RadzenText>
+                <RadzenText Class="mt-1 fw-bold budgets-kpi-value" TextStyle="TextStyle.H5">@Fmt(_totalCurrentSpend)</RadzenText>
+                <RadzenText Class="budgets-kpi-footer" TextStyle="TextStyle.Caption" Style="color: var(--rz-text-color);">@("\u00A0")</RadzenText>
+            </RadzenCard>
+        </RadzenColumn>
+        <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+            <RadzenCard Class="pa-4 h-100 budgets-kpi-card">
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Budget Variance</RadzenText>
+                <RadzenText Class="mt-1 fw-bold budgets-kpi-value" TextStyle="TextStyle.H5" Style="@($"color: var(--rz-{(_variance > 0 ? BadgeStyle.Danger : BadgeStyle.Success).ToString().ToLowerInvariant()});")">
                     @Fmt(_variance)
-                </MudText>
-                <MudText Typo="Typo.caption" Color="@(_variance > 0 ? Color.Error : Color.Success)" Class="budgets-kpi-footer">
+                </RadzenText>
+                <RadzenText Class="budgets-kpi-footer" TextStyle="TextStyle.Caption" Style="@($"color: var(--rz-{(_variance > 0 ? BadgeStyle.Danger : BadgeStyle.Success).ToString().ToLowerInvariant()});")">
                     @(_variance > 0 ? "over budget" : "under budget")
-                </MudText>
-            </MudPaper>
-        </MudItem>
-        <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4 h-100 budgets-kpi-card" Elevation="2">
-                <MudText Typo="Typo.caption" Color="Color.Secondary">Budget Variance %</MudText>
-                <MudText Typo="Typo.h5"
-                         Class="mt-1 fw-bold budgets-kpi-value"
-                         Color="@(_variancePct > 0 ? Color.Error : Color.Success)">
+                </RadzenText>
+            </RadzenCard>
+        </RadzenColumn>
+        <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+            <RadzenCard Class="pa-4 h-100 budgets-kpi-card">
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Budget Variance %</RadzenText>
+                <RadzenText Class="mt-1 fw-bold budgets-kpi-value" TextStyle="TextStyle.H5" Style="@($"color: var(--rz-{(_variancePct > 0 ? BadgeStyle.Danger : BadgeStyle.Success).ToString().ToLowerInvariant()});")">
                     @_variancePct.ToString("F1")%
-                </MudText>
-                <MudText Typo="Typo.caption" Color="Color.Transparent" Class="budgets-kpi-footer">@("\u00A0")</MudText>
-            </MudPaper>
-        </MudItem>
-    </MudGrid>
+                </RadzenText>
+                <RadzenText Class="budgets-kpi-footer" TextStyle="TextStyle.Caption" Style="color: var(--rz-text-color);">@("\u00A0")</RadzenText>
+            </RadzenCard>
+        </RadzenColumn>
+    </RadzenRow>
 
     @* ── Gauge + per-subscription bar ──────────────────────────────────────── *@
-    <MudGrid Spacing="3" Class="mb-4">
-        <MudItem xs="12" md="4">
-            <MudPaper Class="pa-4" Elevation="2">
-                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Spend vs Budget (Current Period)</MudText>
+    <RadzenRow Class="mb-4" Gap="1rem">
+        <RadzenColumn Size="12" SizeMD="4">
+            <RadzenCard Class="pa-4">
+                <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Spend vs Budget (Current Period)</RadzenText>
                 <ApexChart TItem="GaugePoint" Options="_gaugeOpts">
                     <ApexPointSeries TItem="GaugePoint"
                                      Items="_gaugeData"
@@ -78,15 +71,15 @@ else if (_budgets.Count > 0)
                                      YValue="@(e => (decimal?)e.Pct)"
                                      SeriesType="SeriesType.RadialBar" />
                 </ApexChart>
-                <MudText Typo="Typo.caption" Align="Align.Center" Class="mt-2">
+                <RadzenText Class="mt-2" TextStyle="TextStyle.Caption" TextAlign="TextAlign.Center">
                     @Fmt(_totalCurrentSpend) of @Fmt(_totalBudget)
-                </MudText>
-            </MudPaper>
-        </MudItem>
+                </RadzenText>
+            </RadzenCard>
+        </RadzenColumn>
 
-        <MudItem xs="12" md="8">
-            <MudPaper Class="pa-4" Elevation="2">
-                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Budget vs Current Spend by Subscription</MudText>
+        <RadzenColumn Size="12" SizeMD="8">
+            <RadzenCard Class="pa-4">
+                <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Budget vs Current Spend by Subscription</RadzenText>
                 <ApexChart TItem="SubBudgetPoint" Options="_subBarOpts">
                     <ApexPointSeries TItem="SubBudgetPoint"
                                      Items="_subBudgetData"
@@ -101,18 +94,18 @@ else if (_budgets.Count > 0)
                                      YValue="@(e => (decimal?)e.Spend)"
                                      SeriesType="SeriesType.Bar" />
                 </ApexChart>
-            </MudPaper>
-        </MudItem>
-    </MudGrid>
+            </RadzenCard>
+        </RadzenColumn>
+    </RadzenRow>
 
     @* ── Monthly spend vs total budget ──────────────────────────────────────── *@
-    <MudGrid Spacing="3">
-        <MudItem xs="12">
-            <MudPaper Class="pa-4" Elevation="2">
-                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Spend vs Total Budget (Last 6 Months)</MudText>
-                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-2">
+    <RadzenRow Gap="1rem">
+        <RadzenColumn Size="12">
+            <RadzenCard Class="pa-4">
+                <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Monthly Spend vs Total Budget (Last 6 Months)</RadzenText>
+                <RadzenText Class="mb-2" TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">
                     Actual spend is stacked by subscription@(ShowTenantColumn ? " and tenant" : "") against the total budget line.
-                </MudText>
+                </RadzenText>
                 <ApexChart TItem="MonthBudgetPoint" Options="_groupedBarOpts">
                     @foreach (var subId in _monthlySubIds)
                     {
@@ -131,38 +124,33 @@ else if (_budgets.Count > 0)
                                      YValue="@(e => (decimal?)e.Budget)"
                                      SeriesType="SeriesType.Line" />
                 </ApexChart>
-            </MudPaper>
-        </MudItem>
+            </RadzenCard>
+        </RadzenColumn>
 
-        <MudItem xs="12">
-            <MudPaper Class="pa-4" Elevation="2">
-                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Budget Details by Subscription</MudText>
-                <MudDataGrid T="BudgetRow"
-                             Items="_budgetRows"
-                             Dense
-                             SortMode="SortMode.Single"
-                             Filterable
-                             FilterMode="DataGridFilterMode.ColumnFilterRow">
+        <RadzenColumn Size="12">
+            <RadzenCard Class="pa-4">
+                <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Budget Details by Subscription</RadzenText>
+                <RadzenDataGrid FilterMode="Radzen.FilterMode.Simple" TItem="BudgetRow" Data="_budgetRows" AllowSorting="true" AllowMultiColumnSorting="false" AllowFiltering="true" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
                     <Columns>
-                        <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" />
+                        <RadzenDataGridColumn Property="SubscriptionName" Title="Subscription" TItem="BudgetRow" />
                         @if (ShowTenantColumn)
                         {
-                            <PropertyColumn Property="r => r.Tenant" Title="Tenant" />
+                            <RadzenDataGridColumn Property="Tenant" Title="Tenant" TItem="BudgetRow" />
                         }
-                        <PropertyColumn Property="r => r.SubscriptionId" Title="Subscription ID" />
-                        <PropertyColumn Property="r => r.BudgetName" Title="Budget" />
-                        <PropertyColumn Property="r => r.Amount" Title="Budget Amount" Format="N0" />
-                        <PropertyColumn Property="r => r.CurrentSpend" Title="Current Spend" Format="N0" />
-                        <TemplateColumn Title="Usage %">
-                            <CellTemplate>
-                                @context.Item.UsagePct.ToString("F1")%
-                            </CellTemplate>
-                        </TemplateColumn>
+                        <RadzenDataGridColumn Property="SubscriptionId" Title="Subscription ID" TItem="BudgetRow" />
+                        <RadzenDataGridColumn Property="BudgetName" Title="Budget" TItem="BudgetRow" />
+                        <RadzenDataGridColumn Property="Amount" Title="Budget Amount" TItem="BudgetRow" FormatString="{0:N0}" />
+                        <RadzenDataGridColumn Property="CurrentSpend" Title="Current Spend" TItem="BudgetRow" FormatString="{0:N0}" />
+                        <RadzenDataGridColumn Title="Usage %" TItem="BudgetRow" Sortable="false" Filterable="false">
+                            <Template Context="context">
+                                @context.UsagePct.ToString("F1")%
+                            </Template>
+                        </RadzenDataGridColumn>
                     </Columns>
-                </MudDataGrid>
-            </MudPaper>
-        </MudItem>
-    </MudGrid>
+                </RadzenDataGrid>
+            </RadzenCard>
+        </RadzenColumn>
+    </RadzenRow>
 }
 
 @code {

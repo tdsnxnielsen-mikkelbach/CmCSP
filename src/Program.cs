@@ -12,7 +12,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using Microsoft.IdentityModel.Tokens;
-using MudBlazor.Services;
+using Radzen;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -33,8 +33,8 @@ if (!string.IsNullOrWhiteSpace(keyVaultUri))
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-// ── MudBlazor ───────────────────────────────────────────────────────────────
-builder.Services.AddMudServices();
+// ── Radzen ──────────────────────────────────────────────────────────────────
+builder.Services.AddRadzenComponents();
 
 // ── Authentication (Entra OIDC) ──────────────────────────────────────────────
 // Reuses AzureCostManagement:TenantId / ClientId / ClientSecret from the same

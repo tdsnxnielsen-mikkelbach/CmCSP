@@ -1,20 +1,20 @@
-<MudPaper Class="pa-2 mb-4 d-flex align-center flex-wrap gap-2" Outlined="true" Elevation="0">
-    <MudIcon Icon="@Icons.Material.Outlined.FilterAlt" Size="Size.Small" Color="Color.Primary" />
-    <MudText Typo="Typo.caption" Class="mr-1">@Label</MudText>
+<RadzenCard Class="pa-2 mb-4 d-flex align-center flex-wrap gap-2">
+    <RadzenIcon Icon="filter_alt"  IconColor="var(--rz-primary)" />
+    <RadzenText Class="mr-1" TextStyle="TextStyle.Caption">@Label</RadzenText>
 
-    <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">
+    <RadzenBadge BadgeStyle="BadgeStyle.Primary" Variant="Variant.Outlined">
         @SelectedCount selected
-    </MudChip>
+    </RadzenBadge>
 
-    <MudChip T="string" Size="Size.Small" Color="@(_withDataColor)" Variant="Variant.Outlined">
+    <RadzenBadge BadgeStyle="@(_withDataColor)" Variant="Variant.Outlined">
         @WithDataCount with data
-    </MudChip>
-</MudPaper>
+    </RadzenBadge>
+</RadzenCard>
 
 @code {
     [Parameter] public int SelectedCount { get; set; }
     [Parameter] public int WithDataCount { get; set; }
     [Parameter] public string Label { get; set; } = "Subscription scope";
 
-    private Color _withDataColor => WithDataCount >= SelectedCount ? Color.Success : Color.Warning;
+    private BadgeStyle _withDataColor => WithDataCount >= SelectedCount ? BadgeStyle.Success : BadgeStyle.Warning;
 }

@@ -22,13 +22,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Azure.Extensions.AspNetCore.Configuration.Secrets" Version="1.5.1" />
-    <PackageReference Include="Azure.Identity" Version="*" />
+    <PackageReference Include="Azure.Extensions.AspNetCore.Configuration.Secrets" Version="1.5.2" />
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
     <!-- Unify Microsoft.Identity.Client: Azure.Identity pulls an older build transitively, which
          conflicts (MSB3277) with the newer version referenced by CmCSP.Core. A direct reference
          pins the higher version as primary so the assembly versions resolve cleanly. -->
-    <PackageReference Include="Microsoft.Identity.Client" Version="*" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="*" />
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.92.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.15" />
   </ItemGroup>
 
 </Project>

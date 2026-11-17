@@ -7,72 +7,60 @@
 
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
-         data-tour="10"
-         data-tour-title="Advisor Overview"
-         data-tour-desc="Azure Advisor cost recommendations, category health scores, and estimated savings across your subscriptions.">Advisor Overview</MudText>
+<RadzenText Class="mb-4 fw-bold" data-tour="10" data-tour-title="Advisor Overview" data-tour-desc="Azure Advisor cost recommendations, category health scores, and estimated savings across your subscriptions." TextStyle="TextStyle.H5">Advisor Overview</RadzenText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_scoredSubCount" />
 
-<MudPaper Class="pa-4 mb-4" Elevation="2"
-          data-tour="12"
-          data-tour-title="Advisor scope"
-          data-tour-desc="Focus the recommendations on one subscription or all selected subscriptions.">
-    <MudText Typo="Typo.subtitle2" Class="mb-2">Advisor Scope</MudText>
-    <MudSelect T="string"
-               Value="_selectedAdvisorSubId"
-               ValueChanged="OnAdvisorSubChanged"
-               Label="Subscription"
-               Variant="Variant.Outlined"
-               Dense="true"
-               Class="advisor-scope-select">
-        <MudSelectItem T="string" Value="@AllSubsToken">All selected subscriptions</MudSelectItem>
-        @foreach (var id in GetOrderedSubscriptionIds())
-        {
-            var capturedId = id;
-            <MudSelectItem T="string" Value="@capturedId">@SubChartLabel(capturedId)</MudSelectItem>
-        }
-    </MudSelect>
-</MudPaper>
+<RadzenCard Class="pa-4 mb-4" data-tour="12" data-tour-title="Advisor scope" data-tour-desc="Focus the recommendations on one subscription or all selected subscriptions.">
+    <RadzenText Class="mb-2" TextStyle="TextStyle.Subtitle2">Advisor Scope</RadzenText>
+    <RadzenDropDown TValue="string"
+                    Value="@_selectedAdvisorSubId"
+                    Change="@(value => OnAdvisorSubChanged((string)value))"
+                    Data="@AdvisorScopeOptions"
+                    TextProperty="Label"
+                    ValueProperty="Id"
+                    aria-label="Subscription"
+                    Class="advisor-scope-select" />
+</RadzenCard>
 
 @* ── Category health scores ─────────────────────────────────────────────────── *@
 @if (!_loading && (_scores.Count > 0 || _error is null))
 {
-    <MudText Typo="Typo.subtitle1" Class="mb-2 fw-bold">Advisor Health Scores</MudText>
-    <MudGrid Spacing="3" Class="mb-2">
+    <RadzenText Class="mb-2 fw-bold" TextStyle="TextStyle.Subtitle1">Advisor Health Scores</RadzenText>
+    <RadzenRow Class="mb-2" Gap="1rem">
         @foreach (var cat in _categoryOrder)
         {
             var score = _avgScores.TryGetValue(cat.Key, out var s) ? s : null;
             var noIssues = score.HasValue && score.Value >= 99.9;
             var noData   = score is null;
-            <MudItem xs="12" sm="6" md="@(12 / _categoryOrder.Count)">
-                <MudPaper Class="pa-4" Elevation="2">
-                    <MudText Typo="Typo.caption" Color="Color.Secondary">@cat.Label</MudText>
+            <RadzenColumn Size="12" SizeSM="6" SizeMD="@(12 / _categoryOrder.Count)">
+                <RadzenCard Class="pa-4">
+                    <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">@cat.Label</RadzenText>
                     @if (noData)
                     {
-                        <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Default">—</MudText>
-                        <MudText Typo="Typo.caption" Color="Color.Secondary">no data</MudText>
+                        <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5" Style="color: var(--rz-text-color);">—</RadzenText>
+                        <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">no data</RadzenText>
                     }
                     else if (noIssues)
                     {
-                        <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Success">✓</MudText>
-                        <MudText Typo="Typo.caption" Color="Color.Success">No open recommendations</MudText>
+                        <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5" Style="color: var(--rz-success);">✓</RadzenText>
+                        <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-success);">No open recommendations</RadzenText>
                     }
                     else
                     {
-                        <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="@ScoreColor(score!.Value)">
+                        <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5" Style="@($"color: var(--rz-{(ScoreColor(score!.Value)).ToString().ToLowerInvariant()});")">
                             @score!.Value.ToString("F0")%
-                        </MudText>
-                        <MudText Typo="Typo.caption" Color="@ScoreColor(score!.Value)">
+                        </RadzenText>
+                        <RadzenText TextStyle="TextStyle.Caption" Style="@($"color: var(--rz-{(ScoreColor(score!.Value)).ToString().ToLowerInvariant()});")">
                             @ScoreLabel(score!.Value)
-                        </MudText>
+                        </RadzenText>
                     }
-                </MudPaper>
-            </MudItem>
+                </RadzenCard>
+            </RadzenColumn>
         }
-    </MudGrid>
+    </RadzenRow>
 
     @* Scope note ────────────────────────────────────────────────────────────── *@
-    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-4" Icon="@Icons.Material.Outlined.Info">
+    <RadzenAlert AlertStyle="AlertStyle.Info" Class="mb-4" Icon="info"  AllowClose="false">
         KPI cards above are summarized across <strong>all selected subscriptions</strong>.
         Detail scope below: <strong>@_advisorScopeLabel</strong>.
         Score data currently returned for @_scopedScoredSubCount subscription(s) in this scope.
@@ -82,67 +70,67 @@
         <a href="https://portal.azure.com/#view/Microsoft_Azure_Security/SecurityMenuBlade/~/0" target="_blank" rel="noopener">Microsoft Defender for Cloud</a>
         and <a href="https://portal.azure.com/#view/Microsoft_Azure_Monitoring/AzureMonitoringBrowseBlade/~/overview" target="_blank" rel="noopener">Azure Monitor</a>
         respectively.
-    </MudAlert>
+    </RadzenAlert>
 }
 
 @* ── Cost recommendations ───────────────────────────────────────────────────── *@
-<MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Cost Recommendations</MudText>
+<RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Cost Recommendations</RadzenText>
 
 @if (!_loading && _summaryRecCount == 0 && _error is null)
 {
-    <MudAlert Severity="Severity.Success">
+    <RadzenAlert AlertStyle="AlertStyle.Success" AllowClose="false">
         No open Cost recommendations — all resources appear right-sized.
         If you expect recommendations, confirm the <strong>Reader</strong> role is assigned to the app registration
         on each subscription. New resources may take up to 24 hours to appear in Advisor.
-    </MudAlert>
+    </RadzenAlert>
 }
 else if (_summaryRecCount > 0)
 {
     @* ── KPI cards ─────────────────────────────────────────────────────────── *@
-    <MudGrid Spacing="3" Class="mb-4">
-        <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4" Elevation="2">
-                <MudText Typo="Typo.caption" Color="Color.Secondary">Total Potential Annual Savings</MudText>
-                <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Success">@Fmt(_totalSavings)</MudText>
-                <MudText Typo="Typo.caption" Color="Color.Secondary">@_summaryRecCount recommendation(s)</MudText>
-            </MudPaper>
-        </MudItem>
-        <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4" Elevation="2">
-                <MudText Typo="Typo.caption" Color="Color.Secondary">High Impact</MudText>
-                <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Error">@_highCount</MudText>
-                <MudText Typo="Typo.caption" Color="Color.Secondary">@Fmt(_highSavings) potential saving</MudText>
-            </MudPaper>
-        </MudItem>
-        <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4" Elevation="2">
-                <MudText Typo="Typo.caption" Color="Color.Secondary">Medium Impact</MudText>
-                <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Warning">@_mediumCount</MudText>
-                <MudText Typo="Typo.caption" Color="Color.Secondary">@Fmt(_mediumSavings) potential saving</MudText>
-            </MudPaper>
-        </MudItem>
-        <MudItem xs="12" sm="6" md="3">
-            <MudPaper Class="pa-4" Elevation="2">
-                <MudText Typo="Typo.caption" Color="Color.Secondary">Low Impact</MudText>
-                <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@_lowCount</MudText>
-                <MudText Typo="Typo.caption" Color="Color.Secondary">@Fmt(_lowSavings) potential saving</MudText>
-            </MudPaper>
-        </MudItem>
-    </MudGrid>
+    <RadzenRow Class="mb-4" Gap="1rem">
+        <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+            <RadzenCard Class="pa-4">
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Total Potential Annual Savings</RadzenText>
+                <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5" Style="color: var(--rz-success);">@Fmt(_totalSavings)</RadzenText>
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">@_summaryRecCount recommendation(s)</RadzenText>
+            </RadzenCard>
+        </RadzenColumn>
+        <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+            <RadzenCard Class="pa-4">
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">High Impact</RadzenText>
+                <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5" Style="color: var(--rz-danger);">@_highCount</RadzenText>
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">@Fmt(_highSavings) potential saving</RadzenText>
+            </RadzenCard>
+        </RadzenColumn>
+        <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+            <RadzenCard Class="pa-4">
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Medium Impact</RadzenText>
+                <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5" Style="color: var(--rz-warning);">@_mediumCount</RadzenText>
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">@Fmt(_mediumSavings) potential saving</RadzenText>
+            </RadzenCard>
+        </RadzenColumn>
+        <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+            <RadzenCard Class="pa-4">
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Low Impact</RadzenText>
+                <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5">@_lowCount</RadzenText>
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">@Fmt(_lowSavings) potential saving</RadzenText>
+            </RadzenCard>
+        </RadzenColumn>
+    </RadzenRow>
 
     @if (_visibleRecs.Count == 0)
     {
-        <MudAlert Severity="Severity.Info" Class="mb-4">
+        <RadzenAlert AlertStyle="AlertStyle.Info" Class="mb-4" AllowClose="false">
             No cost recommendations in the current scope (<strong>@_advisorScopeLabel</strong>).
             KPI cards above still show totals across all selected subscriptions.
-        </MudAlert>
+        </RadzenAlert>
     }
 
     @* ── Charts ───────────────────────────────────────────────────────────── *@
-    <MudGrid Spacing="3" Class="mb-4">
-        <MudItem xs="12" md="6">
-            <MudPaper Class="pa-4" Elevation="2">
-                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Potential Savings by Subscription</MudText>
+    <RadzenRow Class="mb-4" Gap="1rem">
+        <RadzenColumn Size="12" SizeMD="6">
+            <RadzenCard Class="pa-4">
+                <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Potential Savings by Subscription</RadzenText>
                 <ApexChart TItem="SubPoint" Options="_hbarOpts">
                     <ApexPointSeries TItem="SubPoint"
                                      Items="_bySub"
@@ -151,11 +139,11 @@ else if (_summaryRecCount > 0)
                                      YValue="@(e => (decimal?)e.Saving)"
                                      SeriesType="SeriesType.Bar" />
                 </ApexChart>
-            </MudPaper>
-        </MudItem>
-        <MudItem xs="12" md="6">
-            <MudPaper Class="pa-4" Elevation="2">
-                <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top Resource Types by Saving Opportunity</MudText>
+            </RadzenCard>
+        </RadzenColumn>
+        <RadzenColumn Size="12" SizeMD="6">
+            <RadzenCard Class="pa-4">
+                <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Top Resource Types by Saving Opportunity</RadzenText>
                 <ApexChart TItem="TypePoint" Options="_hbarOpts2">
                     <ApexPointSeries TItem="TypePoint"
                                      Items="_byType"
@@ -164,64 +152,61 @@ else if (_summaryRecCount > 0)
                                      YValue="@(e => (decimal?)e.Saving)"
                                      SeriesType="SeriesType.Bar" />
                 </ApexChart>
-            </MudPaper>
-        </MudItem>
-    </MudGrid>
+            </RadzenCard>
+        </RadzenColumn>
+    </RadzenRow>
 
     @* ── Recommendations table ────────────────────────────────────────────── *@
-    <MudPaper Class="pa-4" Elevation="2">
-        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">All Cost Recommendations</MudText>
-        <MudDataGrid T="AdvisorRecommendation"
-                     Items="_visibleRecs"
-                     Filterable="true"
-                     FilterMode="DataGridFilterMode.ColumnFilterRow"
-                     SortMode="SortMode.Multiple"
-                     Striped="true"
-                     Dense="true"
-                     Hover="true">
+    <RadzenCard Class="pa-4">
+        <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">All Cost Recommendations</RadzenText>
+        <RadzenDataGrid FilterMode="Radzen.FilterMode.Simple" TItem="AdvisorGridRow" Data="@AdvisorGridRows" AllowSorting="true" AllowMultiColumnSorting="true" AllowFiltering="true" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
             <Columns>
-                <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" Sortable="true" />
+                <RadzenDataGridColumn Property="Recommendation.SubscriptionName" Title="Subscription" Sortable="true" TItem="AdvisorGridRow" />
                 @if (ShowTenantColumn)
                 {
-                    <TemplateColumn Title="Tenant" Sortable="true" SortBy="r => SubTenantName(r.SubscriptionId)">
-                        <CellTemplate>@SubTenantName(context.Item.SubscriptionId)</CellTemplate>
-                    </TemplateColumn>
+                    <RadzenDataGridColumn Title="Tenant" Sortable="true" TItem="AdvisorGridRow" Property="Tenant">
+                        <Template Context="context">@context.Tenant</Template>
+                    </RadzenDataGridColumn>
                 }
-                <PropertyColumn Property="r => r.ImpactedValue" Title="Resource" Sortable="true" />
-                <TemplateColumn Title="Resource Type" Sortable="true" SortBy="r => r.ImpactedField">
-                    <CellTemplate>
-                        <MudTooltip Text="@context.Item.ImpactedField">
-                            <MudText Typo="Typo.body2">@FormatResourceType(context.Item.ImpactedField)</MudText>
-                        </MudTooltip>
-                    </CellTemplate>
-                </TemplateColumn>
-                <TemplateColumn Title="Impact" Sortable="true" SortBy="r => ImpactOrder(r.Impact)">
-                    <CellTemplate>
-                        <MudChip T="string"
-                                 Color="@ImpactColor(context.Item.Impact)"
-                                 Size="Size.Small"
-                                 Variant="Variant.Outlined">
-                            @context.Item.Impact
-                        </MudChip>
-                    </CellTemplate>
-                </TemplateColumn>
-                <PropertyColumn Property="r => r.Problem" Title="Problem" Sortable="false" />
-                <TemplateColumn Title="Annual Saving" Sortable="true" SortBy="r => r.NormalizedAnnualSavings">
-                    <CellTemplate>
-                        <MudText Typo="Typo.body2" Color="Color.Success" Class="fw-bold">
-                            @(context.Item.NormalizedAnnualSavings > 0
-                                ? Fmt(context.Item.NormalizedAnnualSavings)
+                <RadzenDataGridColumn Property="Recommendation.ImpactedValue" Title="Resource" Sortable="true" TItem="AdvisorGridRow" />
+                <RadzenDataGridColumn Title="Resource Type" Sortable="true" TItem="AdvisorGridRow" Property="Recommendation.ImpactedField">
+                    <Template Context="context">
+                        <RadzenStack Gap="0" MouseEnter="@(element => Tooltips.Open(element, context.Recommendation.ImpactedField))" MouseLeave="@(_ => Tooltips.Close())">
+                            <RadzenText TextStyle="TextStyle.Body2">@FormatResourceType(context.Recommendation.ImpactedField)</RadzenText>
+                        </RadzenStack>
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn Title="Impact" Sortable="true" TItem="AdvisorGridRow" Property="Recommendation.Impact" SortProperty="ImpactRank">
+                    <Template Context="context">
+                        <RadzenBadge BadgeStyle="@ImpactColor(context.Recommendation.Impact)" Variant="Variant.Outlined">
+                            @context.Recommendation.Impact
+                        </RadzenBadge>
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn Property="Recommendation.Problem" Title="Problem" Sortable="false" TItem="AdvisorGridRow" />
+                <RadzenDataGridColumn Title="Annual Saving" Sortable="true" TItem="AdvisorGridRow" Property="Recommendation.NormalizedAnnualSavings">
+                    <Template Context="context">
+                        <RadzenText Class="fw-bold" TextStyle="TextStyle.Body2" Style="color: var(--rz-success);">
+                            @(context.Recommendation.NormalizedAnnualSavings > 0
+                                ? Fmt(context.Recommendation.NormalizedAnnualSavings)
                                 : "—")
-                        </MudText>
-                    </CellTemplate>
-                </TemplateColumn>
+                        </RadzenText>
+                    </Template>
+                </RadzenDataGridColumn>
             </Columns>
-        </MudDataGrid>
-    </MudPaper>
+        </RadzenDataGrid>
+    </RadzenCard>
 }
 
 @code {
     private const string AllSubsToken = "__all__";
+    private IEnumerable<AdvisorScopeOption> AdvisorScopeOptions =>
+        new[] { new AdvisorScopeOption(AllSubsToken, "All selected subscriptions") }
+            .Concat(GetOrderedSubscriptionIds().Select(id => new AdvisorScopeOption(id, SubChartLabel(id))));
+    private record AdvisorScopeOption(string Id, string Label);
+    private record AdvisorGridRow(AdvisorRecommendation Recommendation, string Tenant, int ImpactRank);
+    private IEnumerable<AdvisorGridRow> AdvisorGridRows => _visibleRecs.Select(recommendation =>
+        new AdvisorGridRow(recommendation, SubTenantName(recommendation.SubscriptionId), ImpactOrder(recommendation.Impact)));
 
     private record SubPoint(string Name, decimal Saving);
     private record TypePoint(string Name, decimal Saving);
@@ -383,11 +368,11 @@ else if (_summaryRecCount > 0)
             : impactedField;
     }
 
-    private static Color ScoreColor(double score) => score switch
+    private static BadgeStyle ScoreColor(double score) => score switch
     {
-        >= 80 => Color.Success,
-        >= 60 => Color.Warning,
-        _     => Color.Error
+        >= 80 => BadgeStyle.Success,
+        >= 60 => BadgeStyle.Warning,
+        _     => BadgeStyle.Danger
     };
 
     private static string ScoreLabel(double score) => score switch
@@ -397,11 +382,11 @@ else if (_summaryRecCount > 0)
         _     => "Critical"
     };
 
-    private static Color ImpactColor(string impact) => impact switch
+    private static BadgeStyle ImpactColor(string impact) => impact switch
     {
-        { } s when s.Equals("High",   StringComparison.OrdinalIgnoreCase) => Color.Error,
-        { } s when s.Equals("Medium", StringComparison.OrdinalIgnoreCase) => Color.Warning,
-        _ => Color.Default
+        { } s when s.Equals("High",   StringComparison.OrdinalIgnoreCase) => BadgeStyle.Danger,
+        { } s when s.Equals("Medium", StringComparison.OrdinalIgnoreCase) => BadgeStyle.Warning,
+        _ => BadgeStyle.Base
     };
 
     private static int ImpactOrder(string impact) => impact switch

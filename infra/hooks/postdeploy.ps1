@@ -11,8 +11,8 @@
     Jobs handled:
       • cost collector (src/CostCollectorJob  → cmcsp-collect → COLLECT_JOB_NAME)
 
-    Mirrors the job portion of scripts/deploy-image.ps1, reusing the ACR token +
-    Docker-config credential injection pattern.
+    Uses an isolated temporary Docker credential directory, without modifying
+    the operator's shared Docker configuration.
 
 .NOTES
     Inputs come from azd outputs:
@@ -61,29 +61,23 @@ Write-Host "──────────────────────�
 
 # ── ACR token (no Docker daemon required) ─────────────────────────────────────
 $tokenJson   = az acr login --name $acrName --expose-token --output json --only-show-errors
+if ($LASTEXITCODE -ne 0) { Write-Error "Failed to obtain ACR token for '$acrName'." }
 $acrPassword = ($tokenJson | ConvertFrom-Json).accessToken
 if (-not $acrPassword) { Write-Error "Failed to obtain ACR token for '$acrName'." }
 
-# ── Inject credentials into Docker config (credsStore beats auths, so suspend it) ──
-$dockerConfigPath = Join-Path $env:USERPROFILE '.docker' 'config.json'
-$dockerConfigDir  = Split-Path $dockerConfigPath -Parent
-if (-not (Test-Path $dockerConfigDir)) { New-Item -ItemType Directory -Path $dockerConfigDir | Out-Null }
-$originalDockerConfig = if (Test-Path $dockerConfigPath) { Get-Content $dockerConfigPath -Raw } else { $null }
-$dockerConfig = if ($originalDockerConfig) { $originalDockerConfig | ConvertFrom-Json } else { [PSCustomObject]@{} }
-$dockerConfig.PSObject.Properties.Remove('credsStore')
-$authValue = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("00000000-0000-0000-0000-000000000000:$acrPassword"))
-if (-not $dockerConfig.PSObject.Properties['auths']) {
-    $dockerConfig | Add-Member -MemberType NoteProperty -Name 'auths' -Value ([PSCustomObject]@{})
-}
-$dockerConfig.auths | Add-Member -MemberType NoteProperty -Name $acrLoginServer -Value ([PSCustomObject]@{ auth = $authValue }) -Force
-$dockerConfig | ConvertTo-Json -Depth 10 | Set-Content $dockerConfigPath
-
+$originalDockerConfigDir = $env:DOCKER_CONFIG
+$dockerConfigDir = Join-Path ([IO.Path]::GetTempPath()) "cmcsp-publish-$([Guid]::NewGuid().ToString('N'))"
 try {
+    New-Item -ItemType Directory -Path $dockerConfigDir | Out-Null
+    $env:DOCKER_CONFIG = $dockerConfigDir
+    $authValue = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("00000000-0000-0000-0000-000000000000:$acrPassword"))
+    @{ auths = @{ $acrLoginServer = @{ auth = $authValue } } } |
+        ConvertTo-Json -Depth 10 | Set-Content (Join-Path $dockerConfigDir 'config.json')
+
     foreach ($job in $jobs) {
         $projectPath = Join-Path $repoRoot 'src' $job.Project "$($job.Project).csproj"
         if (-not (Test-Path $projectPath)) {
-            Write-Host "  $($job.Project) project not found at $projectPath – skipping." -ForegroundColor Yellow
-            continue
+            Write-Error "$($job.Project) project not found at $projectPath."
         }
 
         $fullImage = "$acrLoginServer/$($job.Repository)`:$tag"
@@ -100,15 +94,19 @@ try {
         # ── Resolve digest and update the job ─────────────────────────────────
         $digest = az acr manifest show-metadata --registry $acrName --name "$($job.Repository)`:$tag" `
             --query 'digest' -o tsv --only-show-errors
-        $imageRef = if ($digest) { "$acrLoginServer/$($job.Repository)@$digest" } else { $fullImage }
+        if ($LASTEXITCODE -ne 0 -or -not $digest) {
+            Write-Error "Failed to resolve published digest for $fullImage."
+        }
+        $imageRef = "$acrLoginServer/$($job.Repository)@$($digest.Trim())"
 
         Write-Host "  Updating job '$($job.JobName)' → $imageRef"
         az containerapp job update --name $job.JobName --resource-group $appRg `
             --image $imageRef --only-show-errors | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Error "Failed to update job '$($job.JobName)'." }
 
         Write-Host "  $($job.JobName) image updated." -ForegroundColor Green
     }
 } finally {
-    if ($null -ne $originalDockerConfig) { Set-Content -Path $dockerConfigPath -Value $originalDockerConfig }
-    else { Remove-Item -Path $dockerConfigPath -ErrorAction SilentlyContinue }
+    $env:DOCKER_CONFIG = $originalDockerConfigDir
+    if (Test-Path $dockerConfigDir) { Remove-Item -LiteralPath $dockerConfigDir -Recurse -Force }
 }

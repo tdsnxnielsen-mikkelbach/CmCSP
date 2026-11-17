@@ -14,125 +14,101 @@
 
 @if (_loading)
 {
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+    <RadzenProgressBar Class="mb-4" ShowValue="false" ProgressBarStyle="ProgressBarStyle.Primary" Mode="ProgressBarMode.Indeterminate" />
 }
 @if (_error is not null)
 {
-    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+    <RadzenAlert AlertStyle="AlertStyle.Danger" Class="mb-4" AllowClose="false">@_error</RadzenAlert>
 }
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
-         data-tour="10"
-         data-tour-title="Reservations"
-         data-tour-desc="Reservation and savings-plan utilisation, purchase recommendations, and upcoming expiries.">Reservations</MudText>
+<RadzenText Class="mb-4 fw-bold" data-tour="10" data-tour-title="Reservations" data-tour-desc="Reservation and savings-plan utilisation, purchase recommendations, and upcoming expiries." TextStyle="TextStyle.H5">Reservations</RadzenText>
 
 @* ── Scope info banner ──────────────────────────────────────────────────────── *@
 @if (CostDetails.HasBillingAccountAccess)
 {
-    <MudAlert Severity="Severity.Info" Class="mb-4" Dense>
+    <RadzenAlert AlertStyle="AlertStyle.Info" Class="mb-4" AllowClose="false">
         Fetching data at <strong>billing-account / customer scope</strong> — full Used/Unused
         breakdown per customer is available.
-    </MudAlert>
+    </RadzenAlert>
 }
 else
 {
-    <MudAlert Severity="Severity.Warning" Class="mb-4" Dense>
+    <RadzenAlert AlertStyle="AlertStyle.Warning" Class="mb-4" AllowClose="false">
         <strong>Billing account not configured.</strong> Showing reservation data at
         <strong>subscription scope</strong> only — reservations shared across customers
         are not visible. Configure <code>AzureCostManagement:BillingAccount</code> to
         enable per-customer billing-scope queries.
-    </MudAlert>
+    </RadzenAlert>
 }
 
 @if (!Options.CostDetails.Enabled)
 {
-    <MudAlert Severity="Severity.Warning" Class="mb-4">
-        <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Wrap="Wrap.Wrap">
-            <MudText>
+    <RadzenAlert AlertStyle="AlertStyle.Warning" Class="mb-4" AllowClose="false">
+        <RadzenStack AlignItems="AlignItems.Center" Wrap="FlexWrap.Wrap" Orientation="Radzen.Orientation.Horizontal" Gap="0.5rem" JustifyContent="JustifyContent.SpaceBetween">
+            <RadzenText>
                 Cost Details API is disabled. Enable it to fetch reservation and amortized-cost data.
-            </MudText>
-            <MudButton Variant="Variant.Filled"
-                       Color="Color.Warning"
-                       Size="Size.Small"
-                       StartIcon="@Icons.Material.Filled.PowerSettingsNew"
-                       Disabled="_enabling"
-                       OnClick="EnableCostDetailsAsync">
-                @(_enabling ? "Enabling…" : "Enable Now")
-            </MudButton>
-        </MudStack>
-    </MudAlert>
+            </RadzenText>
+            <RadzenButton Variant="Variant.Filled" Size="ButtonSize.Small"  Disabled="_enabling" ButtonStyle="ButtonStyle.Warning" Click="EnableCostDetailsAsync" Icon="power_settings_new" Text="@(_enabling ? "Enabling…" : "Enable Now")" />
+        </RadzenStack>
+    </RadzenAlert>
 }
 
 @* ── Controls ───────────────────────────────────────────────────────────────── *@
-<MudPaper Class="pa-4 mb-4" Elevation="2">
-    <MudGrid Spacing="2">
-        <MudItem xs="12" sm="4">
-            <MudDatePicker Label="Period (month)"
-                           Date="_selectedMonth"
-                           DateChanged="OnMonthChanged"
-                           OpenTo="OpenTo.Month"
-                           FixDay="1"
-                           Variant="Variant.Outlined" />
-        </MudItem>
+<RadzenCard Class="pa-4 mb-4">
+    <RadzenRow Gap="1rem">
+        <RadzenColumn Size="12" SizeSM="4">
+            <RadzenDatePicker TValue="DateTime?" Value="_selectedMonth" Change="OnMonthChanged" DateFormat="MMMM yyyy" ShowDays="false" AllowClear="false" />
+        </RadzenColumn>
         @if (CostDetails.HasBillingAccountAccess)
         {
-            <MudItem xs="12" sm="4">
-                <MudSelect T="string" Label="Scope" Value="_selectedScope"
-                           ValueChanged="OnScopeChanged"
-                           Variant="Variant.Outlined">
-                    <MudSelectItem Value=@("billing")>Billing Account (all customers)</MudSelectItem>
-                    <MudSelectItem Value=@("subscription")>Subscriptions</MudSelectItem>
-                </MudSelect>
-            </MudItem>
+            <RadzenColumn Size="12" SizeSM="4">
+                <RadzenDropDown TValue="string" Value="@_selectedScope"
+                                Change="@(value => OnScopeChanged((string)value))"
+                                Data="@(new[] { new { Id = "billing", Label = "Billing Account (all customers)" }, new { Id = "subscription", Label = "Subscriptions" } })"
+                                TextProperty="Label" ValueProperty="Id" aria-label="Scope" />
+            </RadzenColumn>
         }
-        <MudItem xs="12" sm="4">
-            <MudButton Variant="Variant.Outlined"
-                       StartIcon="@Icons.Material.Filled.Refresh"
-                       OnClick="LoadAsync"
-                       Disabled="_loading">
-                Refresh
-            </MudButton>
-        </MudItem>
-    </MudGrid>
-</MudPaper>
+        <RadzenColumn Size="12" SizeSM="4">
+            <RadzenButton Variant="Variant.Outlined"  Disabled="_loading" ButtonStyle="ButtonStyle.Primary" Click="LoadAsync" Icon="refresh" Text="Refresh" />
+        </RadzenColumn>
+    </RadzenRow>
+</RadzenCard>
 
 @* ── KPI cards ──────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4">
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Total RI Cost</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold">@Fmt(_totalCost)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Used Cost</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Success">@Fmt(_usedCost)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Unused Cost</MudText>
-            <MudText Typo="Typo.h5" Class="mt-1 fw-bold" Color="Color.Error">@Fmt(_unusedCost)</MudText>
-        </MudPaper>
-    </MudItem>
-    <MudItem xs="12" sm="6" md="3">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.caption" Color="Color.Secondary">Overall Utilisation</MudText>
-            <MudText Typo="Typo.h5"
-                     Class="mt-1 fw-bold"
-                     Color="@(_utilPct >= 80 ? Color.Success : _utilPct >= 50 ? Color.Warning : Color.Error)">
+<RadzenRow Class="mb-4" Gap="1rem">
+    <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+        <RadzenCard Class="pa-4">
+            <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Total RI Cost</RadzenText>
+            <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5">@Fmt(_totalCost)</RadzenText>
+        </RadzenCard>
+    </RadzenColumn>
+    <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+        <RadzenCard Class="pa-4">
+            <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Used Cost</RadzenText>
+            <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5" Style="color: var(--rz-success);">@Fmt(_usedCost)</RadzenText>
+        </RadzenCard>
+    </RadzenColumn>
+    <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+        <RadzenCard Class="pa-4">
+            <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Unused Cost</RadzenText>
+            <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5" Style="color: var(--rz-danger);">@Fmt(_unusedCost)</RadzenText>
+        </RadzenCard>
+    </RadzenColumn>
+    <RadzenColumn Size="12" SizeSM="6" SizeMD="3">
+        <RadzenCard Class="pa-4">
+            <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">Overall Utilisation</RadzenText>
+            <RadzenText Class="mt-1 fw-bold" TextStyle="TextStyle.H5" Style="@($"color: var(--rz-{(_utilPct >= 80 ? BadgeStyle.Success : _utilPct >= 50 ? BadgeStyle.Warning : BadgeStyle.Danger).ToString().ToLowerInvariant()});")">
                 @_utilPct.ToString("F1")%
-            </MudText>
-        </MudPaper>
-    </MudItem>
-</MudGrid>
+            </RadzenText>
+        </RadzenCard>
+    </RadzenColumn>
+</RadzenRow>
 
 @* ── Utilisation chart ──────────────────────────────────────────────────────── *@
 @if (_chartData.Count > 0)
 {
-    <MudPaper Class="pa-4 mb-4" Elevation="2">
-        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Used vs Unused by Reservation</MudText>
+    <RadzenCard Class="pa-4 mb-4">
+        <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Used vs Unused by Reservation</RadzenText>
         <ApexChart TItem="ChartPoint" Options="_barOpts">
             <ApexPointSeries TItem="ChartPoint"
                              Items="_chartData.OrderByDescending(x => x.UsedCost).Take(20).ToList()"
@@ -147,17 +123,17 @@ else
                              YValue="@(e => (decimal?)e.UnusedCost)"
                              SeriesType="SeriesType.Bar" />
         </ApexChart>
-    </MudPaper>
+    </RadzenCard>
 }
 
 @* ── Utilisation trend (last 6 months) ──────────────────────────────────────── *@
 @if (_trendLoading || _trendData.Count > 0)
 {
-    <MudPaper Class="pa-4 mb-4" Elevation="2">
-        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Utilisation Trend (last 6 months)</MudText>
+    <RadzenCard Class="pa-4 mb-4">
+        <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Utilisation Trend (last 6 months)</RadzenText>
         @if (_trendLoading)
         {
-            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-4" />
+            <RadzenProgressBar Class="my-4" ShowValue="false" ProgressBarStyle="ProgressBarStyle.Primary" Mode="ProgressBarMode.Indeterminate" />
         }
         else
         {
@@ -170,153 +146,128 @@ else
                                  SeriesType="SeriesType.Line" />
             </ApexChart>
         }
-    </MudPaper>
+    </RadzenCard>
 }
 
 @* ── Detail table ──────────────────────────────────────────────────────────── *@
-<MudPaper Class="pa-4" Elevation="2">
-    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">
+<RadzenCard Class="pa-4">
+    <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">
         Reservation Detail
         @if (!string.IsNullOrEmpty(_scopeLabel))
         {
-            <MudChip T="string" Color="Color.Info" Size="Size.Small" Class="ml-2">@_scopeLabel</MudChip>
+            <RadzenBadge BadgeStyle="BadgeStyle.Info" Class="ml-2">@_scopeLabel</RadzenBadge>
         }
-    </MudText>
+    </RadzenText>
 
     @if (!_loading && _rows.Count == 0)
     {
-        <MudAlert Severity="Severity.Info">
+        <RadzenAlert AlertStyle="AlertStyle.Info" AllowClose="false">
             No reservation data found for @_selectedMonth?.ToString("MMMM yyyy").
             Ensure the service principal has Cost Management Reader access and that
             reservations exist in the selected period.
-        </MudAlert>
+        </RadzenAlert>
     }
     else
     {
-        <MudDataGrid T="ReservationRow"
-                     Items="_rows"
-                     SortMode="SortMode.Multiple"
-                     Filterable
-                     FilterMode="DataGridFilterMode.ColumnFilterRow"
-                     Dense>
+        <RadzenDataGrid FilterMode="Radzen.FilterMode.Simple" TItem="ReservationRow" Data="_rows" AllowSorting="true" AllowMultiColumnSorting="true" AllowFiltering="true" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
             <Columns>
                 @if (CostDetails.HasBillingAccountAccess && _selectedScope == "billing")
                 {
-                    <PropertyColumn Property="r => r.CustomerName" Title="Customer" />
+                    <RadzenDataGridColumn Property="CustomerName" Title="Customer" TItem="ReservationRow" />
                 }
-                <PropertyColumn Property="r => r.ReservationName" Title="Reservation" />
-                <PropertyColumn Property="r => r.MeterCategory"   Title="Service" />
-                <PropertyColumn Property="r => r.Term"            Title="Term" />
-                <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" />
-                <PropertyColumn Property="r => r.NormalizedUsedCost"
-                                Title=@($"Used ({Options.TargetCurrency})")
-                                Format="N0" />
-                <PropertyColumn Property="r => r.NormalizedUnusedCost"
-                                Title=@($"Unused ({Options.TargetCurrency})")
-                                Format="N0" />
-                <PropertyColumn Property="r => r.NormalizedTotalCost"
-                                Title=@($"Total ({Options.TargetCurrency})")
-                                Format="N0" />
-                <TemplateColumn Title="Utilisation %">
-                    <CellTemplate>
-                        <MudProgressLinear Value="(double)context.Item.UtilizationPct"
-                                           Color="@UtilColor(context.Item.UtilizationPct)"
-                                           Rounded Striped Size="Size.Medium"
-                                           Class="my-1" />
-                        <MudText Typo="Typo.caption">@context.Item.UtilizationPct.ToString("F1")%</MudText>
-                    </CellTemplate>
-                </TemplateColumn>
+                <RadzenDataGridColumn Property="ReservationName" Title="Reservation" TItem="ReservationRow" />
+                <RadzenDataGridColumn Property="MeterCategory" Title="Service" TItem="ReservationRow" />
+                <RadzenDataGridColumn Property="Term" Title="Term" TItem="ReservationRow" />
+                <RadzenDataGridColumn Property="SubscriptionName" Title="Subscription" TItem="ReservationRow" />
+                <RadzenDataGridColumn Property="NormalizedUsedCost" Title="@($"Used ({Options.TargetCurrency})")" TItem="ReservationRow" FormatString="{0:N0}" />
+                <RadzenDataGridColumn Property="NormalizedUnusedCost" Title="@($"Unused ({Options.TargetCurrency})")" TItem="ReservationRow" FormatString="{0:N0}" />
+                <RadzenDataGridColumn Property="NormalizedTotalCost" Title="@($"Total ({Options.TargetCurrency})")" TItem="ReservationRow" FormatString="{0:N0}" />
+                <RadzenDataGridColumn Title="Utilisation %" TItem="ReservationRow" Sortable="false" Filterable="false">
+                    <Template Context="context">
+                        <RadzenProgressBar Value="(double)context.UtilizationPct" Class="my-1" ShowValue="false" ProgressBarStyle="@(Enum.Parse<ProgressBarStyle>((UtilColor(context.UtilizationPct)).ToString()))" />
+                        <RadzenText TextStyle="TextStyle.Caption">@context.UtilizationPct.ToString("F1")%</RadzenText>
+                    </Template>
+                </RadzenDataGridColumn>
             </Columns>
-        </MudDataGrid>
+        </RadzenDataGrid>
     }
-</MudPaper>
+</RadzenCard>
 
 @* ── Phase 7: purchase recommendations + expiry (Reader / Consumption read) ──── *@
 @if (Optimization.LastAccessDenied)
 {
-    <MudAlert Severity="Severity.Warning" Class="mt-4" Icon="@Icons.Material.Outlined.Lock">
+    <RadzenAlert AlertStyle="AlertStyle.Warning" Class="mt-4" Icon="lock"  AllowClose="false">
         Reservation purchase recommendations and expiry need the app identity to have the
         <strong>Reader</strong> role (and <code>Microsoft.Consumption</code> read) on the target
         subscriptions to populate these sections.
-    </MudAlert>
+    </RadzenAlert>
 }
 
-<MudPaper Class="pa-4 mt-4" Elevation="2">
-    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Purchase Recommendations</MudText>
+<RadzenCard Class="pa-4 mt-4">
+    <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Purchase Recommendations</RadzenText>
     @if (_recommendations.Count == 0)
     {
-        <MudAlert Severity="Severity.Info" Dense>
+        <RadzenAlert AlertStyle="AlertStyle.Info" AllowClose="false">
             No reservation or savings-plan purchase recommendations were returned. This is normal
             when usage is already well covered, or when the identity lacks Reader / Consumption read.
-        </MudAlert>
+        </RadzenAlert>
     }
     else
     {
-        <MudDataGrid T="ReservationPurchaseRecommendation"
-                     Items="_recommendations"
-                     SortMode="SortMode.Multiple"
-                     Filterable
-                     FilterMode="DataGridFilterMode.ColumnFilterRow"
-                     Dense>
+        <RadzenDataGrid FilterMode="Radzen.FilterMode.Simple" TItem="ReservationPurchaseRecommendation" Data="_recommendations" AllowSorting="true" AllowMultiColumnSorting="true" AllowFiltering="true" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
             <Columns>
-                <PropertyColumn Property="r => r.Sku"           Title="SKU" />
-                <PropertyColumn Property="r => r.ResourceType"  Title="Resource Type" />
-                <PropertyColumn Property="r => r.Term"          Title="Term" />
-                <PropertyColumn Property="r => r.Scope"         Title="Scope" />
-                <TemplateColumn Title="Subscription">
-                    <CellTemplate>@SubName(context.Item.SubscriptionId)</CellTemplate>
-                </TemplateColumn>
+                <RadzenDataGridColumn Property="Sku" Title="SKU" TItem="ReservationPurchaseRecommendation" />
+                <RadzenDataGridColumn Property="ResourceType" Title="Resource Type" TItem="ReservationPurchaseRecommendation" />
+                <RadzenDataGridColumn Property="Term" Title="Term" TItem="ReservationPurchaseRecommendation" />
+                <RadzenDataGridColumn Property="Scope" Title="Scope" TItem="ReservationPurchaseRecommendation" />
+                <RadzenDataGridColumn Title="Subscription" TItem="ReservationPurchaseRecommendation" Sortable="false" Filterable="false">
+                    <Template Context="context">@SubName(context.SubscriptionId)</Template>
+                </RadzenDataGridColumn>
                 @if (ShowTenant)
                 {
-                    <TemplateColumn Title="Tenant">
-                        <CellTemplate>@SubTenant(context.Item.SubscriptionId)</CellTemplate>
-                    </TemplateColumn>
+                    <RadzenDataGridColumn Title="Tenant" TItem="ReservationPurchaseRecommendation" Sortable="false" Filterable="false">
+                        <Template Context="context">@SubTenant(context.SubscriptionId)</Template>
+                    </RadzenDataGridColumn>
                 }
-                <PropertyColumn Property="r => r.RecommendedQuantity" Title="Qty" Format="N0" />
-                <PropertyColumn Property="r => r.NormalizedNetSavings"
-                                Title=@($"Est. Savings ({Options.TargetCurrency})")
-                                Format="N0" />
+                <RadzenDataGridColumn Property="RecommendedQuantity" Title="Qty" TItem="ReservationPurchaseRecommendation" FormatString="{0:N0}" />
+                <RadzenDataGridColumn Property="NormalizedNetSavings" Title="@($"Est. Savings ({Options.TargetCurrency})")" TItem="ReservationPurchaseRecommendation" FormatString="{0:N0}" />
             </Columns>
-        </MudDataGrid>
+        </RadzenDataGrid>
     }
-</MudPaper>
+</RadzenCard>
 
 @if (_orders.Count > 0)
 {
-    <MudPaper Class="pa-4 mt-4" Elevation="2">
-        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Reservation Expiry</MudText>
-        <MudDataGrid T="ReservationOrderInfo"
-                     Items="_orders"
-                     SortMode="SortMode.Multiple"
-                     Dense>
+    <RadzenCard Class="pa-4 mt-4">
+        <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Reservation Expiry</RadzenText>
+        <RadzenDataGrid TItem="ReservationOrderInfo" Data="_orders" AllowSorting="true" AllowMultiColumnSorting="true" AllowFiltering="false" FilterMode="Radzen.FilterMode.Simple" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
             <Columns>
-                <PropertyColumn Property="o => o.DisplayName" Title="Reservation" />
-                <PropertyColumn Property="o => o.Term"        Title="Term" />
-                <PropertyColumn Property="o => o.Quantity"    Title="Qty" Format="N0" />
-                <PropertyColumn Property="o => o.ProvisioningState" Title="State" />
-                <TemplateColumn Title="Expires">
-                    <CellTemplate>
-                        @(context.Item.ExpiryDate?.ToString("yyyy-MM-dd") ?? "—")
-                    </CellTemplate>
-                </TemplateColumn>
-                <TemplateColumn Title="Days Left">
-                    <CellTemplate>
-                        @if (context.Item.DaysUntilExpiry is { } d)
+                <RadzenDataGridColumn Property="DisplayName" Title="Reservation" TItem="ReservationOrderInfo" />
+                <RadzenDataGridColumn Property="Term" Title="Term" TItem="ReservationOrderInfo" />
+                <RadzenDataGridColumn Property="Quantity" Title="Qty" TItem="ReservationOrderInfo" FormatString="{0:N0}" />
+                <RadzenDataGridColumn Property="ProvisioningState" Title="State" TItem="ReservationOrderInfo" />
+                <RadzenDataGridColumn Title="Expires" TItem="ReservationOrderInfo" Sortable="false" Filterable="false">
+                    <Template Context="context">
+                        @(context.ExpiryDate?.ToString("yyyy-MM-dd") ?? "—")
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn Title="Days Left" TItem="ReservationOrderInfo" Sortable="false" Filterable="false">
+                    <Template Context="context">
+                        @if (context.DaysUntilExpiry is { } d)
                         {
-                            <MudChip T="string" Size="Size.Small"
-                                     Color="@(d < 0 ? Color.Error : d <= 30 ? Color.Warning : Color.Success)">
+                            <RadzenBadge BadgeStyle="@(d < 0 ? BadgeStyle.Danger : d <= 30 ? BadgeStyle.Warning : BadgeStyle.Success)">
                                 @(d < 0 ? "Expired" : $"{d} d")
-                            </MudChip>
+                            </RadzenBadge>
                         }
                         else
                         {
                             <text>—</text>
                         }
-                    </CellTemplate>
-                </TemplateColumn>
+                    </Template>
+                </RadzenDataGridColumn>
             </Columns>
-        </MudDataGrid>
-    </MudPaper>
+        </RadzenDataGrid>
+    </RadzenCard>
 }
 
 @code {
@@ -589,8 +540,8 @@ else
 
     private Dictionary<string, string> _subNames = new(StringComparer.OrdinalIgnoreCase);
 
-    private static Color UtilColor(decimal pct) =>
-        pct >= 80 ? Color.Success : pct >= 50 ? Color.Warning : Color.Error;
+    private static BadgeStyle UtilColor(decimal pct) =>
+        pct >= 80 ? BadgeStyle.Success : pct >= 50 ? BadgeStyle.Warning : BadgeStyle.Danger;
 
     public void Dispose() { }
 }

@@ -1,105 +1,35 @@
-﻿@inject ICostManagementService CostService
+@inject ICostManagementService CostService
 @inject DashboardStateService State
 @inject CostManagementOptions Options
 @inject CustomerStore Customers
 @inject ITenantScopeProvider ScopeProvider
 
-<MudNavMenu>
-    <MudNavLink Href="/"
-                Match="NavLinkMatch.All"
-                Icon="@Icons.Material.Filled.Dashboard">
-        Cost Overview
-    </MudNavLink>
-
-    <MudNavLink Href="/budgets"
-                Icon="@Icons.Material.Filled.AccountBalanceWallet">
-        Budgets
-    </MudNavLink>
-
-    <MudNavLink Href="/subscriptions"
-                Icon="@Icons.Material.Filled.CloudCircle">
-        Subscription Breakdown
-    </MudNavLink>
-
-    <MudNavLink Href="/resource-groups"
-                Icon="@Icons.Material.Filled.FolderOpen">
-        Resource Group Breakdown
-    </MudNavLink>
-
-    <MudNavLink Href="/tags"
-                Icon="@Icons.Material.Filled.Label">
-        Tag Chargeback
-    </MudNavLink>
-
-    <MudNavLink Href="/trend"
-                Icon="@Icons.Material.Filled.TrendingUp">
-        Trend &amp; Forecast
-    </MudNavLink>
-
-    <MudNavLink Href="/waterfall"
-                Icon="@Icons.Material.Filled.Equalizer">
-        MoM Waterfall
-    </MudNavLink>
-
-    <MudNavLink Href="/advisor"
-                Icon="@Icons.Material.Filled.Lightbulb">
-        Advisor Savings
-    </MudNavLink>
-
-    <MudNavLink Href="/reservations"
-                Icon="@Icons.Material.Filled.BookmarkAdded">
-        Reservations
-    </MudNavLink>
-
-    <MudNavLink Href="/marketplace"
-                Icon="@Icons.Material.Filled.Storefront">
-        Marketplace
-    </MudNavLink>
-
-    <MudNavLink Href="/optimization"
-                Icon="@Icons.Material.Filled.Savings">
-        Optimization
-    </MudNavLink>
-
-    <MudNavLink Href="/security"
-                Icon="@Icons.Material.Filled.Security">
-        Security Posture
-    </MudNavLink>
-
-    <MudNavLink Href="/sustainability"
-                Icon="@Icons.Material.Filled.EnergySavingsLeaf">
-        Sustainability
-    </MudNavLink>
-
+<RadzenPanelMenu>
+    <RadzenPanelMenuItem Path="/" Match="NavLinkMatch.All" Icon="dashboard" Text="Cost Overview" />
+    <RadzenPanelMenuItem Path="/budgets" Icon="account_balance_wallet" Text="Budgets" />
+    <RadzenPanelMenuItem Path="/subscriptions" Icon="cloud_circle" Text="Subscription Breakdown" />
+    <RadzenPanelMenuItem Path="/resource-groups" Icon="folder_open" Text="Resource Group Breakdown" />
+    <RadzenPanelMenuItem Path="/tags" Icon="label" Text="Tag Chargeback" />
+    <RadzenPanelMenuItem Path="/trend" Icon="trending_up" Text="Trend &amp; Forecast" />
+    <RadzenPanelMenuItem Path="/waterfall" Icon="equalizer" Text="MoM Waterfall" />
+    <RadzenPanelMenuItem Path="/advisor" Icon="lightbulb" Text="Advisor Savings" />
+    <RadzenPanelMenuItem Path="/reservations" Icon="bookmark_added" Text="Reservations" />
+    <RadzenPanelMenuItem Path="/marketplace" Icon="storefront" Text="Marketplace" />
+    <RadzenPanelMenuItem Path="/optimization" Icon="savings" Text="Optimization" />
+    <RadzenPanelMenuItem Path="/security" Icon="security" Text="Security Posture" />
+    <RadzenPanelMenuItem Path="/sustainability" Icon="eco" Text="Sustainability" />
     @if (_showCustomers)
     {
-        <MudDivider Class="my-2" />
-        <MudNavLink Href="/customers"
-                    Icon="@Icons.Material.Filled.Groups">
-            Customers
-        </MudNavLink>
+        <RadzenPanelMenuItem Path="/customers" Icon="groups" Text="Customers" />
     }
-
-    <MudDivider Class="my-2" />
-
-    <MudNavLink Href="/public-api"
-                Icon="@Icons.Material.Filled.Api">
-        Public API
-    </MudNavLink>
-
-    <MudDivider Class="my-2" />
-
-    <MudNavLink data-tour="90"
-                data-tour-title="Refresh data"
-                data-tour-desc="Re-fetch the latest collected cost data on demand."
-                data-tour-side="right"
-                data-tour-align="start"
-                Icon="@(_refreshing ? Icons.Material.Filled.HourglassEmpty : Icons.Material.Filled.Refresh)"
-                Disabled="_refreshing"
-                @onclick="RefreshAsync">
-        @(_refreshing ? "Refreshing…" : "Refresh Data")
-    </MudNavLink>
-</MudNavMenu>
+    <RadzenPanelMenuItem Path="/public-api" Icon="api" Text="Public API" />
+</RadzenPanelMenu>
+<div class="pa-3" data-tour="90" data-tour-title="Refresh data"
+     data-tour-desc="Re-fetch the latest collected cost data on demand."
+     data-tour-side="right" data-tour-align="start">
+    <RadzenButton Icon="refresh" Text="@(_refreshing ? "Refreshing..." : "Refresh Data")"
+                  Disabled="_refreshing" Click="RefreshAsync" Variant="Radzen.Variant.Text" />
+</div>
 
 @code {
     private bool _refreshing;
@@ -107,7 +37,6 @@
 
     protected override async Task OnInitializedAsync()
     {
-        // Customers admin link is partner-only and gated behind multi-tenancy.
         if (Options.MultiTenancy.Enabled && Customers.IsEnabled)
         {
             var scope = await ScopeProvider.GetScopeAsync();
@@ -119,9 +48,8 @@
     {
         _refreshing = true;
         CostService.InvalidateCache();
-        State.SetDateRange(State.SelectedRange); // fires OnStateChanged → all pages re-fetch
+        State.SetDateRange(State.SelectedRange);
         await Task.Yield();
         _refreshing = false;
     }
 }
-

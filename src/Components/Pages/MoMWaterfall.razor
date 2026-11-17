@@ -7,36 +7,34 @@
 
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
-         data-tour="10"
-         data-tour-title="Month-over-Month Waterfall"
-         data-tour-desc="Month-over-month and year-over-year cost changes, visualised as a waterfall so you can spot what moved.">Month-over-Month Waterfall</MudText>
+<RadzenText Class="mb-4 fw-bold" data-tour="10" data-tour-title="Month-over-Month Waterfall" data-tour-desc="Month-over-month and year-over-year cost changes, visualised as a waterfall so you can spot what moved." TextStyle="TextStyle.H5">Month-over-Month Waterfall</RadzenText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @* ── Global date-range slicer ─────────────────────────────────────────────── *@
-<MudPaper Class="pa-4 mb-4" Elevation="2">
-    <MudDateRangePicker Label="Date Range"
-                        DateRange="_selectedRange"
-                        DateRangeChanged="OnDateRangeChanged"
-                        Variant="Variant.Outlined" />
-</MudPaper>
+<RadzenCard Class="pa-4 mb-4">
+    <RadzenStack Orientation="Radzen.Orientation.Horizontal" Gap="1rem" Wrap="FlexWrap.Wrap">
+        <RadzenFormField Text="Start date">
+            <RadzenDatePicker TValue="DateTime?" Value="_selectedRange.Start" Max="@(_selectedRange.End ?? DateTime.MaxValue)" Change="@(date => OnDateRangeChanged(new CmCSP.Models.DashboardDateRange(date, _selectedRange.End)))" DateFormat="yyyy-MM-dd" />
+        </RadzenFormField>
+        <RadzenFormField Text="End date">
+            <RadzenDatePicker TValue="DateTime?" Value="_selectedRange.End" Min="@(_selectedRange.Start ?? DateTime.MinValue)" Change="@(date => OnDateRangeChanged(new CmCSP.Models.DashboardDateRange(_selectedRange.Start, date)))" DateFormat="yyyy-MM-dd" />
+        </RadzenFormField>
+    </RadzenStack>
+</RadzenCard>
 
 @* ── KPI cards ─────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4"
-         data-tour="12"
-         data-tour-title="Movement metrics"
-         data-tour-desc="Key movement metrics &mdash; MoM change and %, YoY %, and current-month spend.">
-    <KpiCard Label="MoM Change" Value="@Fmt(_momChange)" ValueColor="@(_momChange > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />
-    <KpiCard Label="MoM Change %" Value="@($"{_momPct:F1}%")" ValueColor="@(_momPct > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />
-    <KpiCard Label="YoY Change %" Value="@($"{_yoyPct:F1}%")" ValueColor="@(_yoyPct > 0 ? Color.Error : Color.Success)" Sm="6" Md="3" />
+<RadzenRow Class="mb-4" data-tour="12" data-tour-title="Movement metrics" data-tour-desc="Key movement metrics &mdash; MoM change and %, YoY %, and current-month spend." Gap="1rem">
+    <KpiCard Label="MoM Change" Value="@Fmt(_momChange)" ValueColor="@(_momChange > 0 ? BadgeStyle.Danger : BadgeStyle.Success)" Sm="6" Md="3" />
+    <KpiCard Label="MoM Change %" Value="@($"{_momPct:F1}%")" ValueColor="@(_momPct > 0 ? BadgeStyle.Danger : BadgeStyle.Success)" Sm="6" Md="3" />
+    <KpiCard Label="YoY Change %" Value="@($"{_yoyPct:F1}%")" ValueColor="@(_yoyPct > 0 ? BadgeStyle.Danger : BadgeStyle.Success)" Sm="6" Md="3" />
     <KpiCard Label="Current Month Spend" Value="@Fmt(_currentMonthCost)" Sm="6" Md="3" />
-</MudGrid>
+</RadzenRow>
 
-<MudGrid Spacing="3">
+<RadzenRow Gap="1rem">
     @* MoM Variance – bar chart with conditional colouring (ApexCharts waterfall-style) *@
-    <MudItem xs="12">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Month-over-Month Cost Change</MudText>
+    <RadzenColumn Size="12">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Month-over-Month Cost Change</RadzenText>
             <ApexChart TItem="MomPoint" Options="_momBarOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
@@ -49,13 +47,13 @@
                                      SeriesType="SeriesType.Bar" />
                 }
             </ApexChart>
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* MoM by Subscription *@
-    <MudItem xs="12" md="6">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">MoM Change by Subscription (latest two months)</MudText>
+    <RadzenColumn Size="12" SizeMD="6">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">MoM Change by Subscription (latest two months)</RadzenText>
             <ApexChart TItem="SubMomPoint" Options="_subMomOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
@@ -68,40 +66,37 @@
                                      SeriesType="SeriesType.Bar" />
                 }
             </ApexChart>
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* Monthly totals table *@
-    <MudItem xs="12" md="6">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Summary</MudText>
-            <MudDataGrid T="MonthSummaryRow"
-                         Items="_monthSummary"
-                         Dense
-                         SortMode="SortMode.Single">
+    <RadzenColumn Size="12" SizeMD="6">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Monthly Summary</RadzenText>
+            <RadzenDataGrid TItem="MonthSummaryRow" Data="_monthSummary" AllowSorting="true" AllowMultiColumnSorting="false" AllowFiltering="false" FilterMode="Radzen.FilterMode.Simple" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
                 <Columns>
-                    <PropertyColumn Property="r => r.Label"    Title="Month" />
-                    <PropertyColumn Property="r => r.Total"    Title="Total Cost"  Format="N0" />
-                    <PropertyColumn Property="r => r.Change"   Title="MoM Change"  Format="N0" />
-                    <TemplateColumn Title="MoM %">
-                        <CellTemplate>
-                            <MudText Color="@(context.Item.ChangePct > 0 ? Color.Error : Color.Success)">
-                                @context.Item.ChangePct.ToString("F1")%
-                            </MudText>
-                        </CellTemplate>
-                    </TemplateColumn>
+                    <RadzenDataGridColumn Property="Label" Title="Month" TItem="MonthSummaryRow" />
+                    <RadzenDataGridColumn Property="Total" Title="Total Cost" TItem="MonthSummaryRow" FormatString="{0:N0}" />
+                    <RadzenDataGridColumn Property="Change" Title="MoM Change" TItem="MonthSummaryRow" FormatString="{0:N0}" />
+                    <RadzenDataGridColumn Title="MoM %" TItem="MonthSummaryRow" Sortable="false" Filterable="false">
+                        <Template Context="context">
+                            <RadzenText Style="@($"color: var(--rz-{(context.ChangePct > 0 ? BadgeStyle.Danger : BadgeStyle.Success).ToString().ToLowerInvariant()});")">
+                                @context.ChangePct.ToString("F1")%
+                            </RadzenText>
+                        </Template>
+                    </RadzenDataGridColumn>
                 </Columns>
-            </MudDataGrid>
-        </MudPaper>
-    </MudItem>
-</MudGrid>
+            </RadzenDataGrid>
+        </RadzenCard>
+    </RadzenColumn>
+</RadzenRow>
 
 @code {
     private record MomPoint(string Label, string SubscriptionId, decimal Change);
     private record SubMomPoint(string SubscriptionId, string SubName, decimal Change);
     private record MonthSummaryRow(string Label, decimal Total, decimal Change, decimal ChangePct);
 
-    private DateRange _selectedRange = new(
+    private CmCSP.Models.DashboardDateRange _selectedRange = new(
         new DateTime(DateTime.Now.Year - 1, 1, 1),
         DateTime.Now);
 
@@ -241,7 +236,7 @@
         });
     }
 
-    private async Task OnDateRangeChanged(DateRange range)
+    private async Task OnDateRangeChanged(CmCSP.Models.DashboardDateRange range)
     {
         State.SetDateRange(range);
         _selectedRange = range;

@@ -1,29 +1,20 @@
-# Phase 9 – CSP multi-tenancy (GDAP + multi-tenant Entra app)
+# Multi-tenant subsystem
 
-> Part of the [CmCSP roadmap](../todo.md). **Status: ✅ Shipped.**
+Multi-tenancy is implemented and feature-gated. It is not enabled merely by
+upgrading the UI to Radzen or updating the .NET 10 dependencies.
 
-**Goal:** Turn the single-tenant, multi-subscription app into a **CSP product** a reseller can
-offer their customers — each customer's Azure data isolated and accessed cross-tenant.
-**Explicitly out of scope:** `api.partnercenter.microsoft.com` (no Partner Center API) and any
-M365/Graph license data — this stays **Azure spend + Azure posture only**. Cross-customer
-billing aggregation, if needed, uses the **ARM Cost Management billing-account/customer scopes**
-that [`CostDetailsService`](../../src/Services/CostDetailsService.cs) already supports — not Partner Center.
+The SQL registry maps customers to Entra tenants and subscriptions. OIDC issuer
+validation accepts the home tenant and active registered tenants. Server-side
+tenant scopes constrain queries, SQL facts, and cache keys.
 
-> **Note:** This is a platform-level effort with its own design doc:
-> [`docs/phase9-multitenancy.md`](../phase9-multitenancy.md). The foundation already exists —
-> `SubscriptionId` is in the `CostFact` natural key, `ICacheService` keys are prefixable, and
-> billing-scope code is in `CostDetailsService` — so this is an **extension, not a teardown**.
->
-> **Visibility rule:** a user signing in from the **CSP home tenant** sees **all**
-> subscriptions; a user signing in from a **customer tenant** sees **only** their own
-> tenant's subscriptions (decided by the token `tid` claim).
+Partners can administer customers through `/customers`; customer users receive
+their own data scope. Shared subscription/date controls are view filters, not
+security boundaries.
 
-| Sub-task | Priority | Status | Notes |
-|---|---|---|---|
-| **Data model: customer → tenant → subscriptions** | P1 | ✅ Shipped | Added `CustomerEntity` + `CustomerSubscriptionEntity` (above `UserSubscription`) and `CustomerId`/`TenantId` columns + `IX_CostFact_Customer_Dataset_UsageDate` on `CostFact`. Additive only — natural key already includes `SubscriptionId`. [`CmcspDbContext`](../../src/CmCSP.Core/Data/CmcspDbContext.cs) + `schema.sql` updated (idempotent `ALTER`/`CREATE`, bootstrap home customer seeded from `:home_tenant_id`). Gated by new `AzureCostManagement:MultiTenancy` flag (off = single-tenant) |
-| **Per-tenant token acquisition (multi-tenant Entra app)** | P1 | ✅ Shipped | Multi-tenant OIDC **sign-in + issuer validation** done: gated `MultiTenancy:Enabled` switches the authority to `organizations` and validates the issuer `tid` against home + active customers via [`CustomerStore`](../../src/CmCSP.Core/Services/CustomerStore.cs) ([`Program.cs`](../../src/Program.cs)). **Per-tenant ARM tokens done:** [`AzureTokenService`](../../src/CmCSP.Core/Services/AzureTokenService.cs) now reads the ambient `TenantScope` and, in client-secret mode, acquires tokens with `.AcquireTokenForClient(scopes).WithTenantId(customerTenantId)` (MSAL caches per-tenant); home/partner/unscoped requests stay on the home authority. Managed-identity mode keeps the home tenant (MI can't cross tenants — per-tenant GDAP requires the SP secret) |
-| **GDAP delegated access onboarding** | P1 | ✅ Shipped | [`GdapOnboardingService`](../../src/CmCSP.Core/Services/GdapOnboardingService.cs) drives the **Azure-only** onboarding flow on the [`/customers`](../../src/Components/Pages/Customers.razor) page: a per-customer **admin-consent link** (`/{tenant}/adminconsent?client_id=…`) the partner sends to the customer admin, then **subscription auto-discovery** — ARM `GET /subscriptions` with a per-tenant (GDAP) token via [`AzureTokenService`](../../src/CmCSP.Core/Services/AzureTokenService.cs) auto-maps the customer's enabled subscriptions onto `CustomerSubscription`, replacing manual GUID entry. The GDAP relationship id is recorded on the `Customer` row (`CustomerStore.UpdateGdapRelationshipAsync`). Cross-tenant discovery needs service-principal mode (the UI degrades gracefully on MI). The **time-bound GDAP relationship itself** is created out-of-band in the Partner Center portal — Partner Center API stays explicitly out of scope |
-| **Tenant-isolated cache + data access** | P0 | ✅ Shipped | **Critical isolation boundary.** Done: `TenantScope.CacheKeyPrefix` namespaces every cost cache key (empty in single-tenant) and [`BlobCostManagementService`](../../src/CmCSP.Core/Services/BlobCostManagementService.cs) scopes `LoadFromSqlAsync` by `WHERE CustomerId IN (scope)`, prefixes `SetCaches`/`GetOrPopulate`/`InvalidateCache`, and stamps `CustomerId`/`TenantId` on `CostFact` writes (home customer). Ambient [`TenantScopeAccessor`](../../src/CmCSP.Core/Services/TenantScope.cs) published by [`CostPageBase`](../../src/Components/Shared/CostPageBase.cs) before each load (denied tenant → access error). **API-mode prefixing done:** [`CostManagementService`](../../src/CmCSP.Core/Services/CostManagementService.cs) wraps every key (budgets/advisor/forecast/sub-names/publisher) with `Scoped()` (the load-state banner key stays unprefixed). **Per-customer warm done:** [`CacheWarmupService`](../../src/Services/CacheWarmupService.cs) rehydrates the unscoped aggregate, then loops active customers via `RehydratePartition(TenantScope.CustomerCacheKeyPrefix(id), …)` when multi-tenancy is on |
-| **Customer picker + row-level authorization** | P1 | ✅ Shipped | Authorization **spine** done: [`ITenantScopeProvider`/`TenantScopeProvider`](../../src/Services/TenantScopeProvider.cs) resolves the signed-in `tid` to a `TenantScope` (partner = all active customers, customer = own only, unknown = denied, feature-off = unscoped) backed by [`CustomerStore`](../../src/CmCSP.Core/Services/CustomerStore.cs). **Customer picker + onboarding UI done:** partner-only [`/customers`](../../src/Components/Pages/Customers.razor) admin page (onboard tenant, suspend/reactivate, map/unmap subscriptions) via `CustomerStore` write methods; gated partner picker in [`MainLayout`](../../src/Components/Layout/MainLayout.razor) + nav link in [`NavMenu`](../../src/Components/Layout/NavMenu.razor) drive `DashboardStateService.SelectedCustomerId`, which [`CostPageBase`](../../src/Components/Shared/CostPageBase.cs) uses to narrow a partner scope to one customer before each load. GDAP-driven onboarding (consent link + subscription auto-discovery) now replaces manual subscription-ID entry |
-| **Per-tenant collector fan-out** | P2 | ✅ Shipped | [`CostCollectorJob`](../../src/CostCollectorJob/Program.cs) now, when `MultiTenancy:Enabled`, iterates active customers partitioned by `COLLECT_PARTITION_INDEX/COUNT`, sets the ambient `TenantScope` (→ per-tenant token + scoped cache/SQL) per slice, refreshes each customer's subscriptions and accumulates the audit totals; single-tenant keeps the original subscription partitioning. Builds on the Phase 5 fan-out runbook |
-| **Scale-out collection for large estates** | P2 | ✅ Shipped | "Collect now" fans out to N parallel collector executions via [`JobControlService.StartScaledAsync`](../../src/Services/JobControlService.cs): it reads the job's container template and POSTs `jobs/start` N times, each overriding `COLLECT_PARTITION_INDEX/COUNT` (Container Apps Jobs have no native per-replica task index, so scale-out = N separate manual executions). Count comes from `CollectorJob:PartitionCount` (web app env), wired through `collectorPartitionCount` ([`main.bicep`](../../infra/main.bicep) → [`app.bicep`](../../infra/modules/app.bicep), env `COLLECTOR_PARTITION_COUNT` for scheduled runs). 1 = single execution (collector still fans out over customers internally) |
+Cross-tenant collection uses service-principal tokens for the customer authority.
+Home collection reads home export blobs; other customers use their mapped API
+scopes. GDAP relationships and Azure access grants require external setup.
+
+The [multi-tenancy guide](../phase9-multitenancy.md) documents the visibility model,
+onboarding, feature configuration, and validation checklist. The
+[collection runbook](../data-collection.md) describes partitioned execution.

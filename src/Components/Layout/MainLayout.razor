@@ -8,59 +8,47 @@
 @inject TenantNameService TenantName
 @inject ILogger<MainLayout> Logger
 @inject IJSRuntime JS
+@inject ThemeService ThemeService
 @implements IDisposable
 
-<MudThemeProvider @ref="_themeProvider" @bind-IsDarkMode="_isDark" />
-<MudPopoverProvider />
-<MudDialogProvider />
-<MudSnackbarProvider />
+<RadzenComponents />
 
-<MudLayout>
-    <MudAppBar Elevation="1" Color="Color.Primary">
-        <MudIconButton data-tour="4"
-                       data-tour-title="Navigation drawer"
-                       data-tour-desc="Toggle the side navigation to move between the dashboard pages."
-                       Icon="@Icons.Material.Filled.Menu"
-                       Color="Color.Inherit"
-                       Edge="Edge.Start"
-                       OnClick="ToggleDrawer" />
-        <MudText Typo="Typo.h6" Class="ml-3 fw-bold">CSP Cost Dashboard</MudText>
-        <MudSpacer />
+<RadzenLayout>
+    <RadzenHeader>
+      <RadzenStack Orientation="Radzen.Orientation.Horizontal" AlignItems="Radzen.AlignItems.Center" Gap="0.5rem" class="px-3 py-2">
+        <RadzenSidebarToggle data-tour="4"
+                             data-tour-title="Navigation drawer"
+                             data-tour-desc="Toggle the side navigation to move between the dashboard pages."
+                             Click="ToggleDrawer" />
+        <RadzenText TextStyle="TextStyle.H6" class="mb-0 fw-bold">CSP Cost Dashboard</RadzenText>
+        <div class="flex-grow-1"></div>
         <AuthorizeView>
             <Authorized>
-                <MudText Typo="Typo.body2" Color="Color.Inherit" Class="mr-1 d-none d-sm-flex">
+                <span class="mr-1 d-none d-sm-flex">
                     @(context.User.FindFirst("name")?.Value ?? context.User.Identity?.Name)
-                </MudText>
-                <MudTooltip Text="Sign out">
-                    <MudIconButton Icon="@Icons.Material.Filled.Logout"
-                                   Color="Color.Inherit"
-                                   Href="/logout"
-                                   aria-label="Sign out" />
-                </MudTooltip>
+                </span>
+                <RadzenLink Path="/logout" Icon="logout" Text="Sign out" />
             </Authorized>
         </AuthorizeView>
-        <MudTooltip Text="Take a tour of this page">
-            <MudIconButton data-tour="99"
+        <RadzenButton data-tour="99"
                            data-tour-title="You're all set"
                            data-tour-desc="Replay this page's tour any time from here. Enjoy exploring your Azure spend!"
-                           Icon="@Icons.Material.Filled.HelpOutline"
-                           Color="Color.Inherit"
-                           OnClick="StartTourAsync"
+                           Icon="help_outline"
+                           ButtonStyle="ButtonStyle.Light" Variant="Radzen.Variant.Text"
+                           Click="StartTourAsync" title="Take a tour of this page"
                            aria-label="Take a product tour" />
-        </MudTooltip>
-        <MudIconButton data-tour="91"
+        <RadzenButton data-tour="91"
                        data-tour-title="Light / dark mode"
                        data-tour-desc="Switch between light and dark themes to suit your preference."
-                       Icon="@(_isDark ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
-                       Color="Color.Inherit"
-                       OnClick="ToggleTheme"
+                       Icon="@(_isDark ? "light_mode" : "dark_mode")"
+                       ButtonStyle="ButtonStyle.Light" Variant="Radzen.Variant.Text"
+                       Click="ToggleTheme"
                        aria-label="Toggle dark / light mode" />
-    </MudAppBar>
+      </RadzenStack>
+    </RadzenHeader>
 
-    <MudDrawer @bind-Open="_drawerOpen" ClipMode="DrawerClipMode.Always" Elevation="2">
-        <MudDrawerHeader>
-            <MudText Typo="Typo.subtitle1" Class="mt-2 fw-bold">Navigation</MudText>
-        </MudDrawerHeader>
+    <RadzenSidebar @bind-Expanded="_drawerOpen" Responsive="true">
+        <RadzenText TextStyle="TextStyle.Subtitle1" class="pa-3 fw-bold">Navigation</RadzenText>
         <div data-tour="5"
              data-tour-title="Dashboard pages"
              data-tour-desc="Jump to cost overviews, budgets, breakdowns by subscription or resource group, tag chargeback, trends, optimization, security and more."
@@ -68,113 +56,112 @@
              data-tour-align="start">
             <NavMenu />
         </div>
-    </MudDrawer>
+    </RadzenSidebar>
 
-    <MudMainContent>
-        <MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="py-4">
+    <RadzenBody>
+        <div class="dashboard-content py-4">
 
             @* ── Tenant → subscription picker (view filter, scope-safe) ───── *@
             @if (_showPicker)
             {
-                <MudPaper data-tour="7"
+                <RadzenCard data-tour="7"
                           data-tour-title="Subscription filter"
                           data-tour-desc="Narrow every page to specific tenants and subscriptions. This is a view filter &mdash; it never widens what you're allowed to see."
-                          Class="pa-3 mb-4" Elevation="1">
+                          class="pa-3 mb-4">
                     <div class="d-flex align-center flex-wrap gap-2 mb-1">
-                        <MudIcon Icon="@Icons.Material.Outlined.AccountTree" Color="Color.Primary" Class="flex-none" />
-                        <MudText Typo="Typo.subtitle2" Class="flex-none">Subscriptions</MudText>
-                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="flex-none">
+                        <RadzenIcon Icon="account_tree" class="flex-none" />
+                        <RadzenText TextStyle="TextStyle.Subtitle2" class="flex-none mb-0">Subscriptions</RadzenText>
+                        <RadzenText TextStyle="TextStyle.Caption" class="flex-none mb-0">
                             @_selectedDisplayCount of @_allSubIds.Count selected@(_groups.Count > 1 ? $" · {_groups.Count} tenants" : "")
-                        </MudText>
-                        <MudSpacer />
-                        <MudButton Size="Size.Small" Variant="Variant.Text"
-                                   OnClick="SelectAllSubs" Class="flex-none text-lowercase">all</MudButton>
-                        <MudButton Size="Size.Small" Variant="Variant.Text"
-                                   OnClick="ClearAllSubs" Class="flex-none text-lowercase">none</MudButton>
+                        </RadzenText>
+                        <div class="flex-grow-1"></div>
+                        <RadzenButton Size="ButtonSize.Small" Variant="Radzen.Variant.Text"
+                                      Click="SelectAllSubs" class="flex-none">all</RadzenButton>
+                        <RadzenButton Size="ButtonSize.Small" Variant="Radzen.Variant.Text"
+                                      Click="ClearAllSubs" class="flex-none">none</RadzenButton>
                     </div>
-                    <MudExpansionPanels MultiExpansion="true" Elevation="0" Dense="true">
+                    <RadzenAccordion Multiple="true">
+                      <Items>
                         @foreach (var g in _groups)
                         {
-                            <MudExpansionPanel Expanded="@(_groups.Count == 1)">
-                                <TitleContent>
+                            <RadzenAccordionItem Selected="@(_groups.Count == 1)">
+                                <Template>
                                     <div class="d-flex align-center gap-2">
-                                        <MudCheckBox T="bool?"
+                                        <span @onclick:stopPropagation="true">
+                                        <RadzenCheckBox TValue="bool?"
                                                      TriState="true"
                                                      Value="@TenantState(g)"
-                                                     ValueChanged="@((bool? v) => OnTenantToggled(g, v))"
-                                                     Color="Color.Primary"
-                                                     Dense="true"
-                                                     @onclick:stopPropagation="true" />
-                                        <MudIcon Icon="@Icons.Material.Outlined.Domain" Size="Size.Small" Color="Color.Secondary" />
-                                        <MudText Typo="Typo.body2" Class="fw-bold">@g.TenantName</MudText>
-                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                     Change="@((bool? v) => OnTenantToggled(g, v))"
+                                                     aria-label="@($"Select {g.TenantName}")" />
+                                        </span>
+                                        <RadzenIcon Icon="domain" />
+                                        <span class="fw-bold">@g.TenantName</span>
+                                        <span class="text-caption">
                                             (@CheckedCount(g)/@g.Subs.Count)
-                                        </MudText>
+                                        </span>
                                     </div>
-                                </TitleContent>
+                                </Template>
                                 <ChildContent>
                                     @foreach (var s in g.Subs)
                                     {
                                         <div class="d-flex align-center gap-2" style="margin-left:2.25rem">
-                                            <MudCheckBox T="bool"
+                                            <RadzenCheckBox TValue="bool"
                                                          Value="@IsSubChecked(s.Id)"
-                                                         ValueChanged="@((bool v) => OnSubToggled(s.Id, v))"
-                                                         Color="Color.Primary"
-                                                         Dense="true" />
+                                                         Change="@((bool v) => OnSubToggled(s.Id, v))"
+                                                         aria-label="@($"Select {s.Name}")" />
                                             <div>
-                                                <MudText Typo="Typo.body2">@s.Name</MudText>
-                                                <MudText Typo="Typo.caption" Color="Color.Secondary">@s.Id</MudText>
+                                                <RadzenText class="mb-0">@s.Name</RadzenText>
+                                                <RadzenText TextStyle="TextStyle.Caption" class="mb-0">@s.Id</RadzenText>
                                             </div>
                                         </div>
                                     }
                                 </ChildContent>
-                            </MudExpansionPanel>
+                            </RadzenAccordionItem>
                         }
-                    </MudExpansionPanels>
-                </MudPaper>
+                      </Items>
+                    </RadzenAccordion>
+                </RadzenCard>
             }
 
             @* ── Global date-range filter ─────────────────────────────────── *@
-            <MudPaper data-tour="6"
+            <RadzenCard data-tour="6"
                       data-tour-title="Date range"
                       data-tour-desc="Set the reporting window for all charts and totals. Use the fit-to-data button to snap to the available range."
-                      Class="pa-3 mb-4 d-flex align-center flex-wrap gap-3" Elevation="1">
-                <MudIcon Icon="@Icons.Material.Outlined.DateRange" Color="Color.Primary" Class="flex-none" />
-                <MudText Typo="Typo.subtitle2" Class="flex-none">Date Range</MudText>
-                <MudDateRangePicker DateRange="_dateRange"
-                                    DateRangeChanged="OnDateRangeChanged"
-                                    Variant="Variant.Outlined"
-                                    Margin="Margin.Dense"
+                      class="pa-3 mb-4 d-flex align-center flex-wrap gap-3">
+                <RadzenIcon Icon="date_range" class="flex-none" />
+                <RadzenText TextStyle="TextStyle.Subtitle2" class="flex-none mb-0">Date Range</RadzenText>
+                <RadzenDatePicker TValue="DateTime?" Value="_dateRange.Start"
+                                    Change="@(value => OnDateRangeChanged(new(value, _dateRange.End)))"
                                     DateFormat="dd MMM yyyy"
-                                    AutoClose="true"
-                                    PickerVariant="PickerVariant.Dialog"
-                                    Style="min-width:240px; max-width:340px" />
-                <MudTooltip Text="Fit to available data range">
-                    <MudIconButton Icon="@Icons.Material.Filled.FitScreen"
-                                   Size="Size.Small"
-                                   OnClick="FitToDataRange"
+                                    Max="_dateRange.End" aria-label="Start date" />
+                <span>to</span>
+                <RadzenDatePicker TValue="DateTime?" Value="_dateRange.End"
+                                    Change="@(value => OnDateRangeChanged(new(_dateRange.Start, value)))"
+                                    DateFormat="dd MMM yyyy"
+                                    Min="_dateRange.Start" aria-label="End date" />
+                    <RadzenButton Icon="fit_screen"
+                                   Size="ButtonSize.Small" Variant="Radzen.Variant.Text"
+                                   Click="FitToDataRange" title="Fit to available data range"
                                    aria-label="Fit to available data range" />
-                </MudTooltip>
                 @if (_dataMin.HasValue)
                 {
-                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="flex-none">
+                    <RadzenText TextStyle="TextStyle.Caption" class="flex-none mb-0">
                         Available: @_dataMin.Value.ToString("d MMM yyyy") – @_dataMax!.Value.ToString("d MMM yyyy")
-                    </MudText>
+                    </RadzenText>
                 }
-            </MudPaper>
+            </RadzenCard>
 
             <LoadingStatus />
             @Body
-        </MudContainer>
-    </MudMainContent>
-</MudLayout>
+        </div>
+    </RadzenBody>
+</RadzenLayout>
 
 @code {
     private const string ThemeStorageKey = "cmcsp-theme";
     private bool _drawerOpen = true;
     private bool _isDark;
     private bool _prevDark;
-    private MudThemeProvider _themeProvider = default!;
 
     // Phase 9: tenant → subscription view-filter picker (replaces the old customer dropdown and
     // the read-only subscription accordion). Selection drives DashboardStateService.
@@ -186,7 +173,7 @@
     private sealed record SubItem(string Id, string Name);
     private sealed record TenantGroup(long CustomerId, string TenantId, string TenantName, List<SubItem> Subs);
 
-    private DateRange _dateRange = new(
+    private DashboardDateRange _dateRange = new(
         new DateTime(DateTime.Now.Year - 1, 1, 1),
         DateTime.Now);
 
@@ -206,6 +193,7 @@
 
     private void HandleStateChanged() => InvokeAsync(() =>
     {
+        _dateRange = State.SelectedRange;
         RecomputeSelectedCount();
         StateHasChanged();
     });
@@ -327,7 +315,6 @@
 
     private void SelectAllSubs() => Commit(new HashSet<string>(_allSubIds, StringComparer.OrdinalIgnoreCase));
     private void ClearAllSubs() => Commit(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
-
     private void HandleSubscriptionsChanged(string correlationId)
     {
         _ = InvokeAsync(async () =>
@@ -342,7 +329,7 @@
         });
     }
 
-    private void OnDateRangeChanged(DateRange range)
+    private void OnDateRangeChanged(DashboardDateRange range)
     {
         _dateRange = range;
         State.SetDateRange(range);
@@ -371,8 +358,6 @@
             return;
         }
 
-        // Fires when MudBlazor restores dark preference from localStorage, or when
-        // the user clicks the toggle button.
         if (_isDark != _prevDark)
         {
             _prevDark = _isDark;
@@ -414,6 +399,7 @@
 
     private async Task ApplyThemeToChartsAsync(bool isDark)
     {
+        ThemeService.SetTheme(isDark ? "material-dark" : "material");
         try
         {
             // Sets window.Apex.theme so charts created on navigation use the right mode.
@@ -461,7 +447,7 @@
             _dataMin = data.Min(r => r.Date);
             _dataMax = data.Max(r => r.Date);
 
-            var range = new DateRange(_dataMin.Value, _dataMax.Value);
+            var range = new DashboardDateRange(_dataMin.Value, _dataMax.Value);
             _dateRange = range;
             State.SetDateRange(range);
             await InvokeAsync(StateHasChanged);

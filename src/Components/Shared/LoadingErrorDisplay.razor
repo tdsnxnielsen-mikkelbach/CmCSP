@@ -1,10 +1,10 @@
 @if (Loading)
 {
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+    <RadzenProgressBar Class="mb-4" ShowValue="false" ProgressBarStyle="ProgressBarStyle.Primary" Mode="ProgressBarMode.Indeterminate" />
 }
 @if (Error is not null)
 {
-    <MudAlert Severity="Severity.Error" Class="mb-4">@Error</MudAlert>
+    <RadzenAlert AlertStyle="AlertStyle.Danger" Class="mb-4" AllowClose="false">@Error</RadzenAlert>
 }
 
 @code {

@@ -12,96 +12,85 @@
 
 @if (_loading)
 {
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+    <RadzenProgressBar Class="mb-4" ShowValue="false" ProgressBarStyle="ProgressBarStyle.Primary" Mode="ProgressBarMode.Indeterminate" />
 }
 @if (_error is not null)
 {
-    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+    <RadzenAlert AlertStyle="AlertStyle.Danger" Class="mb-4" AllowClose="false">@_error</RadzenAlert>
 }
 
-<MudText Typo="Typo.h5" Class="mb-1 fw-bold"
-         data-tour="10"
-         data-tour-title="Optimization"
-         data-tour-desc="Live Azure inventory joined to cost &mdash; orphaned resources to remove and tag-governance gaps to close.">Optimization</MudText>
-<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+<RadzenText Class="mb-1 fw-bold" data-tour="10" data-tour-title="Optimization" data-tour-desc="Live Azure inventory joined to cost &mdash; orphaned resources to remove and tag-governance gaps to close." TextStyle="TextStyle.H5">Optimization</RadzenText>
+<RadzenText Class="mb-4" TextStyle="TextStyle.Body2" Style="color: var(--rz-secondary);">
     Live Azure inventory joined to cost data — orphaned resources to remove and tag-governance gaps.
-</MudText>
+</RadzenText>
 
 @if (!_loading && Opt.LastAccessDenied)
 {
-    <MudAlert Severity="Severity.Warning" Class="mb-4" Icon="@Icons.Material.Outlined.Lock">
+    <RadzenAlert AlertStyle="AlertStyle.Warning" Class="mb-4" Icon="lock"  AllowClose="false">
         This page reads <strong>live Azure resource inventory</strong> via Azure Resource Graph, which
         requires the app identity to have the <strong>Reader</strong> role on the target subscriptions
         to populate it.
-    </MudAlert>
+    </RadzenAlert>
 }
 
 @* ── KPI summary ────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4"
-         data-tour="12"
-         data-tour-title="Inventory summary"
-         data-tour-desc="Inventory summary &mdash; total, orphaned and untagged resources at a glance.">
+<RadzenRow Class="mb-4" data-tour="12" data-tour-title="Inventory summary" data-tour-desc="Inventory summary &mdash; total, orphaned and untagged resources at a glance." Gap="1rem">
     <KpiCard Label="Total Resources" Value="@_totalResources.ToString("N0")" Md="3" />
     <KpiCard Label="Orphaned Resources" Value="@_orphans.Count.ToString("N0")"
-             ValueColor="@(_orphans.Count > 0 ? Color.Error : Color.Success)" Md="3" />
+             ValueColor="@(_orphans.Count > 0 ? BadgeStyle.Danger : BadgeStyle.Success)" Md="3" />
     <KpiCard Label="Untagged Resources" Value="@_untaggedCount.ToString("N0")"
-             ValueColor="@(_untaggedCount > 0 ? Color.Warning : Color.Success)" Md="3" />
+             ValueColor="@(_untaggedCount > 0 ? BadgeStyle.Warning : BadgeStyle.Success)" Md="3" />
     <KpiCard Label="Tagged %" Value="@($"{_taggedPct:F1}%")"
-             ValueColor="@(_taggedPct >= 80 ? Color.Success : Color.Warning)" Md="3" />
-</MudGrid>
+             ValueColor="@(_taggedPct >= 80 ? BadgeStyle.Success : BadgeStyle.Warning)" Md="3" />
+</RadzenRow>
 
 @* ── Orphaned resources ─────────────────────────────────────────────────────── *@
-<MudPaper Class="pa-4 mb-4" Elevation="2">
-    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Orphaned &amp; Idle Resources</MudText>
+<RadzenCard Class="pa-4 mb-4">
+    <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Orphaned &amp; Idle Resources</RadzenText>
     @if (!_loading && _orphans.Count == 0)
     {
-        <MudAlert Severity="Severity.Success" Dense>
+        <RadzenAlert AlertStyle="AlertStyle.Success" AllowClose="false">
             No unattached disks, idle public IPs, orphaned NICs, empty App Service plans or
             stopped-but-allocated VMs were found. Nice and tidy.
-        </MudAlert>
+        </RadzenAlert>
     }
     else
     {
-        <MudDataGrid T="OrphanedResource"
-                     Items="_orphans"
-                     SortMode="SortMode.Multiple"
-                     Filterable
-                     FilterMode="DataGridFilterMode.ColumnFilterRow"
-                     Dense>
+        <RadzenDataGrid FilterMode="Radzen.FilterMode.Simple" TItem="OrphanedResource" Data="_orphans" AllowSorting="true" AllowMultiColumnSorting="true" AllowFiltering="true" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
             <Columns>
-                <PropertyColumn Property="r => r.Name"          Title="Name" />
-                <TemplateColumn Title="Reason">
-                    <CellTemplate>
-                        <MudChip T="string" Size="Size.Small" Color="@ReasonColor(context.Item.Reason)">
-                            @context.Item.Reason
-                        </MudChip>
-                    </CellTemplate>
-                </TemplateColumn>
-                <PropertyColumn Property="r => r.Type"          Title="Type" />
-                <PropertyColumn Property="r => r.ResourceGroup" Title="Resource Group" />
-                <PropertyColumn Property="r => r.Location"      Title="Region" />
-                <TemplateColumn Title="Subscription">
-                    <CellTemplate>@SubName(context.Item.SubscriptionId)</CellTemplate>
-                </TemplateColumn>
+                <RadzenDataGridColumn Property="Name" Title="Name" TItem="OrphanedResource" />
+                <RadzenDataGridColumn Title="Reason" TItem="OrphanedResource" Sortable="false" Filterable="false">
+                    <Template Context="context">
+                        <RadzenBadge BadgeStyle="@ReasonColor(context.Reason)">
+                            @context.Reason
+                        </RadzenBadge>
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn Property="Type" Title="Type" TItem="OrphanedResource" />
+                <RadzenDataGridColumn Property="ResourceGroup" Title="Resource Group" TItem="OrphanedResource" />
+                <RadzenDataGridColumn Property="Location" Title="Region" TItem="OrphanedResource" />
+                <RadzenDataGridColumn Title="Subscription" TItem="OrphanedResource" Sortable="false" Filterable="false">
+                    <Template Context="context">@SubName(context.SubscriptionId)</Template>
+                </RadzenDataGridColumn>
                 @if (ShowTenant)
                 {
-                    <TemplateColumn Title="Tenant">
-                        <CellTemplate>@SubTenant(context.Item.SubscriptionId)</CellTemplate>
-                    </TemplateColumn>
+                    <RadzenDataGridColumn Title="Tenant" TItem="OrphanedResource" Sortable="false" Filterable="false">
+                        <Template Context="context">@SubTenant(context.SubscriptionId)</Template>
+                    </RadzenDataGridColumn>
                 }
             </Columns>
-        </MudDataGrid>
+        </RadzenDataGrid>
     }
-</MudPaper>
+</RadzenCard>
 
 @* ── Untagged resources by type ─────────────────────────────────────────────── *@
 @if (_untaggedByType.Count > 0)
 {
-    <MudPaper Class="pa-4 mb-4" Elevation="2">
-        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Untagged Resources by Type</MudText>
-        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-2">
+    <RadzenCard Class="pa-4 mb-4">
+        <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Untagged Resources by Type</RadzenText>
+        <RadzenText Class="mb-2" TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">
             Stacked by subscription so you can see which subscription@(ShowTenant ? " and tenant" : "") each gap belongs to.
-        </MudText>
+        </RadzenText>
         <ApexChart TItem="TypeSubCount" Options="_barOpts">
             @foreach (var subId in _untaggedSubIds)
             {
@@ -114,7 +103,7 @@
                                  SeriesType="SeriesType.Bar" />
             }
         </ApexChart>
-    </MudPaper>
+    </RadzenCard>
 }
 
 @code {
@@ -139,7 +128,7 @@
         Chart = new Chart { Toolbar = new Toolbar { Show = false }, Stacked = true },
         PlotOptions = new PlotOptions { Bar = new PlotOptionsBar { Horizontal = true, BorderRadius = 3 } },
         DataLabels = new DataLabels { Enabled = false },
-        Legend = new Legend { Position = LegendPosition.Bottom }
+        Legend = new Legend { Position = ApexCharts.LegendPosition.Bottom }
     };
 
     protected override async Task OnInitializedAsync()
@@ -263,11 +252,11 @@
         return slash >= 0 && slash < type.Length - 1 ? type[(slash + 1)..] : type;
     }
 
-    private static Color ReasonColor(string reason) => reason switch
+    private static BadgeStyle ReasonColor(string reason) => reason switch
     {
-        "Unattached managed disk"        => Color.Error,
-        "Stopped but allocated VM"       => Color.Error,
-        "Empty App Service plan (no sites)" => Color.Warning,
-        _                                 => Color.Warning
+        "Unattached managed disk"        => BadgeStyle.Danger,
+        "Stopped but allocated VM"       => BadgeStyle.Danger,
+        "Empty App Service plan (no sites)" => BadgeStyle.Warning,
+        _                                 => BadgeStyle.Warning
     };
 }

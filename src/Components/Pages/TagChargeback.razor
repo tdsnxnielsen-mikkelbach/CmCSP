@@ -8,85 +8,76 @@
 
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
-         data-tour="10"
-         data-tour-title="Tag Chargeback"
-         data-tour-desc="Cost allocated by resource tags for chargeback / showback, plus live tag-coverage gaps.">Tag Chargeback</MudText>
+<RadzenText Class="mb-4 fw-bold" data-tour="10" data-tour-title="Tag Chargeback" data-tour-desc="Cost allocated by resource tags for chargeback / showback, plus live tag-coverage gaps." TextStyle="TextStyle.H5">Tag Chargeback</RadzenText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @if (!_loading && !Options.ExportBlob.Enabled)
 {
-    <MudAlert Severity="Severity.Info" Class="mb-4" Icon="@Icons.Material.Outlined.Info">
+    <RadzenAlert AlertStyle="AlertStyle.Info" Class="mb-4" Icon="info"  AllowClose="false">
         Tag Chargeback data is <strong>not available via the Cost Management Query API</strong>.
         Azure does not expose tag-key grouping through the Query API endpoint — tags are only included
         in scheduled <strong>Cost Management Exports</strong> written to blob storage.
         Enable <code>AzureCostManagement:ExportBlob:Enabled = true</code> and deploy the export
         infrastructure (<code>bicep/export-sub.bicep</code>) to populate this page.
-    </MudAlert>
+    </RadzenAlert>
 }
 
-<MudGrid Spacing="3" Class="mb-4"
-         data-tour="12"
-         data-tour-title="Tag coverage"
-         data-tour-desc="Tagged vs untagged cost and the number of distinct tag keys in use.">
+<RadzenRow Class="mb-4" data-tour="12" data-tour-title="Tag coverage" data-tour-desc="Tagged vs untagged cost and the number of distinct tag keys in use." Gap="1rem">
     <KpiCard Label="Total Tagged Cost" Value="@Fmt(_taggedCost)" Md="4" />
-    <KpiCard Label="Untagged Cost" Value="@Fmt(_untaggedCost)" ValueColor="Color.Warning" Md="4" />
+    <KpiCard Label="Untagged Cost" Value="@Fmt(_untaggedCost)" ValueColor="BadgeStyle.Warning" Md="4" />
     <KpiCard Label="Distinct Tag Keys" Value="@_tagData.Count.ToString()" Md="4" />
-</MudGrid>
+</RadzenRow>
 
 @if (!_loading && Optimization.LastAccessDenied)
 {
-    <MudAlert Severity="Severity.Warning" Class="mb-4" Icon="@Icons.Material.Outlined.Lock">
+    <RadzenAlert AlertStyle="AlertStyle.Warning" Class="mb-4" Icon="lock"  AllowClose="false">
         Live resource inventory is unavailable because the app identity is missing the
         <strong>Reader</strong> role on the target subscriptions. Grant Reader to see real tag
         coverage alongside cost data.
-    </MudAlert>
+    </RadzenAlert>
 }
 else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
 {
-    <MudPaper Class="pa-4 mb-4" Elevation="2">
-        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Live Resource Inventory — Tag Coverage</MudText>
-        <MudGrid Spacing="3" Class="mb-3">
+    <RadzenCard Class="pa-4 mb-4">
+        <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Live Resource Inventory — Tag Coverage</RadzenText>
+        <RadzenRow Class="mb-3" Gap="1rem">
             <KpiCard Label="Resources" Value="@cov.TotalResources.ToString("N0")" Md="4" />
             <KpiCard Label="Untagged Resources" Value="@cov.UntaggedResources.ToString("N0")"
-                     ValueColor="Color.Warning" Md="4" />
+                     ValueColor="BadgeStyle.Warning" Md="4" />
             <KpiCard Label="Tagged %" Value="@($"{cov.TaggedPercent:F1}%")"
-                     ValueColor="@(cov.TaggedPercent >= 80 ? Color.Success : Color.Warning)" Md="4" />
-        </MudGrid>
-        <MudDataGrid T="KeyValuePair<string, int>" Items="_tagKeyCounts" Dense SortMode="SortMode.Single">
+                     ValueColor="@(cov.TaggedPercent >= 80 ? BadgeStyle.Success : BadgeStyle.Warning)" Md="4" />
+        </RadzenRow>
+        <RadzenDataGrid TItem="KeyValuePair<string, int>" Data="_tagKeyCounts" AllowSorting="true" AllowMultiColumnSorting="false" AllowFiltering="false" FilterMode="Radzen.FilterMode.Simple" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
             <Columns>
-                <PropertyColumn Property="k => k.Key" Title="Tag Key" />
-                <PropertyColumn Property="k => k.Value" Title="Resources With This Tag" Format="N0" />
+                <RadzenDataGridColumn Property="Key" Title="Tag Key" TItem="KeyValuePair<string, int>" />
+                <RadzenDataGridColumn Property="Value" Title="Resources With This Tag" TItem="KeyValuePair<string, int>" FormatString="{0:N0}" />
             </Columns>
-        </MudDataGrid>
-    </MudPaper>
+        </RadzenDataGrid>
+    </RadzenCard>
 }
 
-<MudPaper Class="pa-4 mb-4" Elevation="2">
-    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Subscription Coverage</MudText>
-    <MudDataGrid T="SubCoverage"
-                 Items="_subCoverage"
-                 Dense
-                 SortMode="SortMode.Single">
+<RadzenCard Class="pa-4 mb-4">
+    <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Subscription Coverage</RadzenText>
+    <RadzenDataGrid TItem="SubCoverage" Data="_subCoverage" AllowSorting="true" AllowMultiColumnSorting="false" AllowFiltering="false" FilterMode="Radzen.FilterMode.Simple" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
         <Columns>
-            <PropertyColumn Property="s => s.SubscriptionName" Title="Subscription" />
+            <RadzenDataGridColumn Property="SubscriptionName" Title="Subscription" TItem="SubCoverage" />
             @if (ShowTenantColumn)
             {
-                <PropertyColumn Property="s => s.Tenant" Title="Tenant" />
+                <RadzenDataGridColumn Property="Tenant" Title="Tenant" TItem="SubCoverage" />
             }
-            <PropertyColumn Property="s => s.SubscriptionId" Title="Subscription ID" />
-            <PropertyColumn Property="s => s.TotalCost" Title="Total Cost" Format="N0" />
-            <PropertyColumn Property="s => s.TaggedCost" Title="Tagged Cost" Format="N0" />
-            <PropertyColumn Property="s => s.UntaggedCost" Title="Untagged Cost" Format="N0" />
+            <RadzenDataGridColumn Property="SubscriptionId" Title="Subscription ID" TItem="SubCoverage" />
+            <RadzenDataGridColumn Property="TotalCost" Title="Total Cost" TItem="SubCoverage" FormatString="{0:N0}" />
+            <RadzenDataGridColumn Property="TaggedCost" Title="Tagged Cost" TItem="SubCoverage" FormatString="{0:N0}" />
+            <RadzenDataGridColumn Property="UntaggedCost" Title="Untagged Cost" TItem="SubCoverage" FormatString="{0:N0}" />
         </Columns>
-    </MudDataGrid>
-</MudPaper>
+    </RadzenDataGrid>
+</RadzenCard>
 
-<MudGrid Spacing="3">
+<RadzenRow Gap="1rem">
     @* Cost distribution – horizontal bar instead of treemap (treemap not in SeriesType) *@
-    <MudItem xs="12" md="8">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Cost Distribution by Tag</MudText>
+    <RadzenColumn Size="12" SizeMD="8">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Cost Distribution by Tag</RadzenText>
             <ApexChart TItem="TagSeriesPoint" Options="_treemapOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
@@ -99,13 +90,13 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
                                      SeriesType="SeriesType.Bar" />
                 }
             </ApexChart>
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* Horizontal bar – top tags ranked *@
-    <MudItem xs="12" md="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Tag Cost Ranked</MudText>
+    <RadzenColumn Size="12" SizeMD="4">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Tag Cost Ranked</RadzenText>
             <ApexChart TItem="TagSeriesPoint" Options="_hbarOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
@@ -118,32 +109,27 @@ else if (!_loading && _tagCoverage is { } cov && cov.TotalResources > 0)
                                      SeriesType="SeriesType.Bar" />
                 }
             </ApexChart>
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* Table *@
-    <MudItem xs="12">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Tag Reference Table</MudText>
-            <MudDataGrid T="TagPoint"
-                         Items="_tagData"
-                         Dense
-                         SortMode="SortMode.Single"
-                         Filterable
-                         FilterMode="DataGridFilterMode.ColumnFilterRow">
+    <RadzenColumn Size="12">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Tag Reference Table</RadzenText>
+            <RadzenDataGrid FilterMode="Radzen.FilterMode.Simple" TItem="TagPoint" Data="_tagData" AllowSorting="true" AllowMultiColumnSorting="false" AllowFiltering="true" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
                 <Columns>
-                    <PropertyColumn Property="t => t.Tag"  Title="Tag Key" />
-                    <PropertyColumn Property="t => t.Cost" Title="Total Cost" Format="N0" />
-                    <TemplateColumn Title="Share %">
-                        <CellTemplate>
-                            @context.Item.SharePct.ToString("F1")%
-                        </CellTemplate>
-                    </TemplateColumn>
+                    <RadzenDataGridColumn Property="Tag" Title="Tag Key" TItem="TagPoint" />
+                    <RadzenDataGridColumn Property="Cost" Title="Total Cost" TItem="TagPoint" FormatString="{0:N0}" />
+                    <RadzenDataGridColumn Title="Share %" TItem="TagPoint" Sortable="false" Filterable="false">
+                        <Template Context="context">
+                            @context.SharePct.ToString("F1")%
+                        </Template>
+                    </RadzenDataGridColumn>
                 </Columns>
-            </MudDataGrid>
-        </MudPaper>
-    </MudItem>
-</MudGrid>
+            </RadzenDataGrid>
+        </RadzenCard>
+    </RadzenColumn>
+</RadzenRow>
 
 @code {
     private record TagPoint(string Tag, decimal Cost, decimal SharePct);

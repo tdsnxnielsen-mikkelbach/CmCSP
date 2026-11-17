@@ -1,33 +1,24 @@
 @inherits LayoutComponentBase
+@inject ThemeService Theme
 
-@* Minimal, auth-free layout for the public API landing page. Unlike MainLayout it
-   injects no cost/tenant services and renders no dashboard chrome, so anonymous
-   external visitors can read it without an Entra sign-in. *@
-
-<MudThemeProvider @bind-IsDarkMode="_isDark" />
-<MudPopoverProvider />
-
-<MudLayout>
-    <MudAppBar Elevation="1" Color="Color.Primary">
-        <MudIcon Icon="@Icons.Material.Filled.Api" Class="mr-2" />
-        <MudText Typo="Typo.h6" Class="fw-bold">CSP Cost Dashboard — Public API</MudText>
-        <MudSpacer />
-        <MudButton Href="/"
-                   Color="Color.Inherit"
-                   StartIcon="@Icons.Material.Filled.Dashboard">
-            Dashboard
-        </MudButton>
-        <MudIconButton Icon="@(_isDark ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
-                       Color="Color.Inherit"
-                       OnClick="@(() => _isDark = !_isDark)"
-                       aria-label="Toggle dark / light mode" />
-    </MudAppBar>
-
-    <MudMainContent>
+<RadzenLayout>
+    <RadzenHeader>
+        <RadzenStack Orientation="Radzen.Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.75rem" Class="pa-3">
+            <RadzenIcon Icon="api" />
+            <RadzenText TextStyle="TextStyle.H6" Class="fw-bold mb-0">CSP Cost Dashboard — Public API</RadzenText>
+            <div style="flex:1"></div>
+            <RadzenLink Path="/" Icon="dashboard" Text="Dashboard" />
+            <RadzenButton Icon="@(_isDark ? "light_mode" : "dark_mode")"
+                          Variant="Variant.Text" ButtonStyle="ButtonStyle.Light"
+                          Click="ToggleTheme" aria-label="Toggle dark / light mode" />
+        </RadzenStack>
+    </RadzenHeader>
+    <RadzenBody>
         @Body
-    </MudMainContent>
-</MudLayout>
+    </RadzenBody>
+</RadzenLayout>
 
 @code {
-    private bool _isDark;
+    private bool _isDark => Theme.Theme?.EndsWith("-dark", StringComparison.OrdinalIgnoreCase) == true;
+    private void ToggleTheme() => Theme.SetTheme(_isDark ? "material" : "material-dark");
 }

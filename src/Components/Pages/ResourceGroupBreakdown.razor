@@ -7,26 +7,20 @@
 
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
-         data-tour="10"
-         data-tour-title="Resource Group Breakdown"
-         data-tour-desc="Cost broken down by resource group &mdash; the top spenders and a searchable detail table.">Resource Group Breakdown</MudText>
+<RadzenText Class="mb-4 fw-bold" data-tour="10" data-tour-title="Resource Group Breakdown" data-tour-desc="Cost broken down by resource group &mdash; the top spenders and a searchable detail table." TextStyle="TextStyle.H5">Resource Group Breakdown</RadzenText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
-<MudGrid Spacing="3" Class="mb-4"
-         data-tour="12"
-         data-tour-title="Totals"
-         data-tour-desc="Totals across your resource groups and the average monthly cost of the top spenders.">
+<RadzenRow Class="mb-4" data-tour="12" data-tour-title="Totals" data-tour-desc="Totals across your resource groups and the average monthly cost of the top spenders." Gap="1rem">
     <KpiCard Label="Total Cost" Value="@Fmt(_totalCost)" Sm="4" Md="4" />
     <KpiCard Label="Resource Groups (top 15 shown)" Value="@_totalRgCount.ToString()" Sm="4" Md="4" />
     <KpiCard Label="Avg Monthly Cost (top 15)" Value="@Fmt(_avgMonthly)" Sm="4" Md="4" />
-</MudGrid>
+</RadzenRow>
 
-<MudGrid Spacing="3">
+<RadzenRow Gap="1rem">
     @* Horizontal bar – top 15 RGs *@
-    <MudItem xs="12" md="7">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top 15 Resource Groups by Cost</MudText>
+    <RadzenColumn Size="12" SizeMD="7">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Top 15 Resource Groups by Cost</RadzenText>
             <ApexChart TItem="RgSeriesPoint" Options="_hbarOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
@@ -39,36 +33,33 @@
                                      SeriesType="SeriesType.Bar" />
                 }
             </ApexChart>
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* Table *@
-    <MudItem xs="12" md="5">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Details</MudText>
-            <MudDataGrid T="RgPoint"
-                         Items="_barData"
-                         Dense
-                         SortMode="SortMode.Single">
+    <RadzenColumn Size="12" SizeMD="5">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Details</RadzenText>
+            <RadzenDataGrid TItem="RgPoint" Data="_barData" AllowSorting="true" AllowMultiColumnSorting="false" AllowFiltering="false" FilterMode="Radzen.FilterMode.Simple" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
                 <Columns>
-                    <PropertyColumn Property="r => r.RgName"       Title="Resource Group" />
-                    <PropertyColumn Property="r => r.SubscriptionName" Title="Subscription" />
+                    <RadzenDataGridColumn Property="RgName" Title="Resource Group" TItem="RgPoint" />
+                    <RadzenDataGridColumn Property="SubscriptionName" Title="Subscription" TItem="RgPoint" />
                     @if (ShowTenantColumn)
                     {
-                        <PropertyColumn Property="r => r.Tenant" Title="Tenant" />
+                        <RadzenDataGridColumn Property="Tenant" Title="Tenant" TItem="RgPoint" />
                     }
-                    <PropertyColumn Property="r => r.TotalCost"     Title="Total Cost"    Format="N0" />
-                    <PropertyColumn Property="r => r.MtdCost"       Title="MTD"           Format="N0" />
-                    <TemplateColumn Title="Share %">
-                        <CellTemplate>
-                            @context.Item.SharePct.ToString("F1")%
-                        </CellTemplate>
-                    </TemplateColumn>
+                    <RadzenDataGridColumn Property="TotalCost" Title="Total Cost" TItem="RgPoint" FormatString="{0:N0}" />
+                    <RadzenDataGridColumn Property="MtdCost" Title="MTD" TItem="RgPoint" FormatString="{0:N0}" />
+                    <RadzenDataGridColumn Title="Share %" TItem="RgPoint" Sortable="false" Filterable="false">
+                        <Template Context="context">
+                            @context.SharePct.ToString("F1")%
+                        </Template>
+                    </RadzenDataGridColumn>
                 </Columns>
-            </MudDataGrid>
-        </MudPaper>
-    </MudItem>
-</MudGrid>
+            </RadzenDataGrid>
+        </RadzenCard>
+    </RadzenColumn>
+</RadzenRow>
 
 @code {
     private record RgPoint(

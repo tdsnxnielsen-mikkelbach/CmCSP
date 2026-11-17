@@ -11,53 +11,47 @@
 
 @if (_loading)
 {
-    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+    <RadzenProgressBar Class="mb-4" ShowValue="false" ProgressBarStyle="ProgressBarStyle.Primary" Mode="ProgressBarMode.Indeterminate" />
 }
 @if (_error is not null)
 {
-    <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+    <RadzenAlert AlertStyle="AlertStyle.Danger" Class="mb-4" AllowClose="false">@_error</RadzenAlert>
 }
 
-<MudText Typo="Typo.h5" Class="mb-1 fw-bold"
-         data-tour="10"
-         data-tour-title="Sustainability"
-         data-tour-desc="Estimated Azure carbon emissions (kg CO₂e) from the Carbon Optimization API, with month-over-month trend.">Sustainability</MudText>
-<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+<RadzenText Class="mb-1 fw-bold" data-tour="10" data-tour-title="Sustainability" data-tour-desc="Estimated Azure carbon emissions (kg CO₂e) from the Carbon Optimization API, with month-over-month trend." TextStyle="TextStyle.H5">Sustainability</RadzenText>
+<RadzenText Class="mb-4" TextStyle="TextStyle.Body2" Style="color: var(--rz-secondary);">
     Estimated Azure carbon emissions (kg CO₂e, scopes 1–3) from the Carbon Optimization API.
     Data covers a rolling ~12-month window with roughly a one-month lag.
-</MudText>
+</RadzenText>
 
 @if (!_loading && Carbon.LastAccessDenied)
 {
-    <MudAlert Severity="Severity.Warning" Class="mb-4" Icon="@Icons.Material.Outlined.Lock">
+    <RadzenAlert AlertStyle="AlertStyle.Warning" Class="mb-4" Icon="lock"  AllowClose="false">
         This page reads the <strong>Carbon Optimization</strong> emissions API, which requires the app
         identity to have <strong>Reader</strong> (or the dedicated <strong>Carbon Optimization Reader</strong>)
         role on the target subscriptions. Grant it to populate this page.
-    </MudAlert>
+    </RadzenAlert>
 }
 
 @* ── KPI summary ────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4"
-         data-tour="12"
-         data-tour-title="Emissions summary"
-         data-tour-desc="Emissions summary &mdash; latest month, previous month, and the month-over-month change.">
+<RadzenRow Class="mb-4" data-tour="12" data-tour-title="Emissions summary" data-tour-desc="Emissions summary &mdash; latest month, previous month, and the month-over-month change." Gap="1rem">
     <KpiCard Label="@($"Latest Month ({_latestLabel})")"
              Value="@($"{_latest:N2} kg")" Md="4" />
     <KpiCard Label="Previous Month" Value="@($"{_previous:N2} kg")" Md="4" />
     <KpiCard Label="Month-over-Month"
              Value="@($"{(_momPercent >= 0 ? "+" : "")}{_momPercent:F1}%")"
-             ValueColor="@(_momPercent > 0 ? Color.Error : Color.Success)" Md="4" />
-</MudGrid>
+             ValueColor="@(_momPercent > 0 ? BadgeStyle.Danger : BadgeStyle.Success)" Md="4" />
+</RadzenRow>
 
 @* ── Monthly trend ──────────────────────────────────────────────────────────── *@
-<MudPaper Class="pa-4 mb-4" Elevation="2">
-    <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Emissions Trend (kg CO₂e)</MudText>
+<RadzenCard Class="pa-4 mb-4">
+    <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Monthly Emissions Trend (kg CO₂e)</RadzenText>
     @if (!_loading && _monthly.Count == 0)
     {
-        <MudAlert Severity="Severity.Info" Dense>
+        <RadzenAlert AlertStyle="AlertStyle.Info" AllowClose="false">
             No emissions data was returned. Carbon Optimization data is unavailable for these
             subscriptions, or the app identity lacks emissions access.
-        </MudAlert>
+        </RadzenAlert>
     }
     else
     {
@@ -70,13 +64,13 @@
                              SeriesType="SeriesType.Line" />
         </ApexChart>
     }
-</MudPaper>
+</RadzenCard>
 
 @* ── Emissions by resource type ─────────────────────────────────────────────── *@
 @if (_byType.Count > 0)
 {
-    <MudPaper Class="pa-4 mb-4" Elevation="2">
-        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Emissions by Resource Type (latest month)</MudText>
+    <RadzenCard Class="pa-4 mb-4">
+        <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Emissions by Resource Type (latest month)</RadzenText>
         <ApexChart TItem="CarbonEmissionByType" Options="_barOpts">
             <ApexPointSeries TItem="CarbonEmissionByType"
                              Items="_byType"
@@ -85,16 +79,16 @@
                              YValue="@(e => (decimal?)Math.Round(e.LatestMonthEmissions, 3))"
                              SeriesType="SeriesType.Bar" />
         </ApexChart>
-    </MudPaper>
+    </RadzenCard>
 }
 @* ── Emissions by subscription ───────────────────────────────── *@
 @if (_bySub.Count > 0)
 {
-    <MudPaper Class="pa-4 mb-4" Elevation="2">
-        <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Emissions by Subscription (latest month)</MudText>
-        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-2">
+    <RadzenCard Class="pa-4 mb-4">
+        <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Emissions by Subscription (latest month)</RadzenText>
+        <RadzenText Class="mb-2" TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">
             Shows which subscription@(ShowTenant ? " and tenant" : "") each emission total comes from.
-        </MudText>
+        </RadzenText>
         <ApexChart TItem="CarbonEmissionBySubscription" Options="_subBarOpts">
             <ApexPointSeries TItem="CarbonEmissionBySubscription"
                              Items="_bySub"
@@ -103,7 +97,7 @@
                              YValue="@(e => (decimal?)Math.Round(e.LatestMonthEmissions, 3))"
                              SeriesType="SeriesType.Bar" />
         </ApexChart>
-    </MudPaper>
+    </RadzenCard>
 }
 @code {
     private bool    _loading = true;

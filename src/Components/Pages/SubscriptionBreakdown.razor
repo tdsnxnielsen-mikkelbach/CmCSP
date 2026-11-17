@@ -8,27 +8,21 @@
 
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-4 fw-bold"
-         data-tour="10"
-         data-tour-title="Subscription Breakdown"
-         data-tour-desc="Cost by subscription &mdash; totals, share of spend, and a per-subscription detail table.">Subscription Breakdown</MudText>
+<RadzenText Class="mb-4 fw-bold" data-tour="10" data-tour-title="Subscription Breakdown" data-tour-desc="Cost by subscription &mdash; totals, share of spend, and a per-subscription detail table." TextStyle="TextStyle.H5">Subscription Breakdown</RadzenText>
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @* ── Summary card *@
-<MudGrid Spacing="3" Class="mb-4"
-         data-tour="12"
-         data-tour-title="Totals"
-         data-tour-desc="Totals, subscription count, and the largest subscription's share of spend.">
+<RadzenRow Class="mb-4" data-tour="12" data-tour-title="Totals" data-tour-desc="Totals, subscription count, and the largest subscription's share of spend." Gap="1rem">
     <KpiCard Label="Total Cost" Value="@Fmt(_totalCost)" Sm="4" Md="4" />
     <KpiCard Label="Subscriptions" Value="@_rows.Count.ToString()" Sm="4" Md="4" />
     <KpiCard Label="Largest Subscription Share" Value="@($"{_topShare:F1}%")" Sm="4" Md="4" />
-</MudGrid>
+</RadzenRow>
 
-<MudGrid Spacing="3">
+<RadzenRow Gap="1rem">
     @* Bar chart – cost by subscription *@
-    <MudItem xs="12" md="8">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Cost by Subscription</MudText>
+    <RadzenColumn Size="12" SizeMD="8">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Cost by Subscription</RadzenText>
             <ApexChart TItem="SubPoint" Options="_hbarOpts" @key="ChartKey">
                 <ApexPointSeries TItem="SubPoint"
                                  Items="_barData"
@@ -37,13 +31,13 @@
                                  YValue="@(e => (decimal?)e.Cost)"
                                  SeriesType="SeriesType.Bar" />
             </ApexChart>
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* Donut – share by subscription *@
-    <MudItem xs="12" md="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Cost Share</MudText>
+    <RadzenColumn Size="12" SizeMD="4">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Cost Share</RadzenText>
             <ApexChart TItem="SubPoint" Options="_donutOpts" @key="ChartKey">
                 <ApexPointSeries TItem="SubPoint"
                                  Items="_barData"
@@ -52,64 +46,54 @@
                                  YValue="@(e => (decimal?)e.Cost)"
                                  SeriesType="SeriesType.Donut" />
             </ApexChart>
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* Reference table *@
-    <MudItem xs="12">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudStack Row AlignItems="AlignItems.Center" Class="mb-3" Spacing="2">
-                <MudText Typo="Typo.subtitle1" Class="fw-bold">Subscription Reference</MudText>
-                <MudTooltip Text="Amortized Cost spreads reservation purchases evenly over the term. 
-RI Savings = ActualCost − AmortizedCost (positive = reservation benefit). 
-Values only available when CostDetails:Enabled = true." Arrow>
-                    <MudIcon Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Default" />
-                </MudTooltip>
-            </MudStack>
-            <MudDataGrid T="TableRow"
-                         Items="_rows"
-                         SortMode="SortMode.Multiple"
-                         Filterable
-                         FilterMode="DataGridFilterMode.ColumnFilterRow"
-                         Dense>
+    <RadzenColumn Size="12">
+        <RadzenCard Class="pa-4">
+            <RadzenStack AlignItems="AlignItems.Center" Class="mb-3" Orientation="Radzen.Orientation.Horizontal" Gap="0.5rem">
+                <RadzenText Class="fw-bold" TextStyle="TextStyle.Subtitle1">Subscription Reference</RadzenText>
+                <RadzenStack Gap="0" MouseEnter="@(element => Tooltips.Open(element, "Amortized Cost spreads reservation purchases evenly over the term. RI Savings = ActualCost − AmortizedCost (positive = reservation benefit). Values only available when CostDetails:Enabled = true."))" MouseLeave="@(_ => Tooltips.Close())">
+                    <RadzenIcon Icon="info"  IconColor="var(--rz-base)" />
+                </RadzenStack>
+            </RadzenStack>
+            <RadzenDataGrid FilterMode="Radzen.FilterMode.Simple" TItem="TableRow" Data="_rows" AllowSorting="true" AllowMultiColumnSorting="true" AllowFiltering="true" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
                 <Columns>
-                    <PropertyColumn Property="r => r.SubId"    Title="Subscription ID" />
-                    <PropertyColumn Property="r => r.SubName"  Title="Name" />
+                    <RadzenDataGridColumn Property="SubId" Title="Subscription ID" TItem="TableRow" />
+                    <RadzenDataGridColumn Property="SubName" Title="Name" TItem="TableRow" />
                     @if (ShowTenantColumn)
                     {
-                        <PropertyColumn Property="r => r.Tenant" Title="Tenant" />
+                        <RadzenDataGridColumn Property="Tenant" Title="Tenant" TItem="TableRow" />
                     }
-                    <PropertyColumn Property="r => r.TotalCost" Title="Actual Cost"
-                                    Format="N0" />
-                    <PropertyColumn Property="r => r.MtdCost"  Title="MTD (Actual)"
-                                    Format="N0" />
-                    <PropertyColumn Property="r => r.AmortizedCost" Title="Amortized Cost"
-                                    Format="N0" />
-                    <TemplateColumn Title="RI Savings">
-                        <CellTemplate>
-                            @if (context.Item.AmortizedCost > 0)
+                    <RadzenDataGridColumn Property="TotalCost" Title="Actual Cost" TItem="TableRow" FormatString="{0:N0}" />
+                    <RadzenDataGridColumn Property="MtdCost" Title="MTD (Actual)" TItem="TableRow" FormatString="{0:N0}" />
+                    <RadzenDataGridColumn Property="AmortizedCost" Title="Amortized Cost" TItem="TableRow" FormatString="{0:N0}" />
+                    <RadzenDataGridColumn Title="RI Savings" TItem="TableRow" Sortable="false" Filterable="false">
+                        <Template Context="context">
+                            @if (context.AmortizedCost > 0)
                             {
-                                var savings = context.Item.TotalCost - context.Item.AmortizedCost;
-                                <MudText Color="@(savings > 0 ? Color.Error : Color.Success)">
+                                var savings = context.TotalCost - context.AmortizedCost;
+                                <RadzenText Style="@($"color: var(--rz-{(savings > 0 ? BadgeStyle.Danger : BadgeStyle.Success).ToString().ToLowerInvariant()});")">
                                     @savings.ToString("N0")
-                                </MudText>
+                                </RadzenText>
                             }
                             else
                             {
-                                <MudText Color="Color.Default">—</MudText>
+                                <RadzenText Style="color: var(--rz-text-color);">—</RadzenText>
                             }
-                        </CellTemplate>
-                    </TemplateColumn>
-                    <TemplateColumn Title="Share %">
-                        <CellTemplate>
-                            @context.Item.SharePct.ToString("F1")%
-                        </CellTemplate>
-                    </TemplateColumn>
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn Title="Share %" TItem="TableRow" Sortable="false" Filterable="false">
+                        <Template Context="context">
+                            @context.SharePct.ToString("F1")%
+                        </Template>
+                    </RadzenDataGridColumn>
                 </Columns>
-            </MudDataGrid>
-        </MudPaper>
-    </MudItem>
-</MudGrid>
+            </RadzenDataGrid>
+        </RadzenCard>
+    </RadzenColumn>
+</RadzenRow>
 
 @code {
     private record SubPoint(string SubName, decimal Cost);

@@ -3,73 +3,58 @@
 
 @if (_visible)
 {
-    <MudPaper Elevation="2" Class="pa-3 mb-4"
-              Style="border-left: 4px solid var(--mud-palette-primary);">
+    <RadzenCard Class="pa-3 mb-4" Style="border-left: 4px solid var(--rz-primary);">
 
-        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Wrap="Wrap.Wrap">
+        <RadzenStack AlignItems="AlignItems.Center" Wrap="FlexWrap.Wrap" Orientation="Radzen.Orientation.Horizontal" Gap="0.5rem">
 
             @* ── Status icon + headline ─────────────────────────────────── *@
             @if (LoadingState.IsLoading)
             {
-                <MudProgressCircular Indeterminate="true"
-                                     Size="Size.Small"
-                                     Color="Color.Primary" />
-                <MudText Typo="Typo.body2">
+                <RadzenProgressBarCircular ShowValue="false" ProgressBarStyle="ProgressBarStyle.Primary" Mode="ProgressBarMode.Indeterminate" />
+                <RadzenText TextStyle="TextStyle.Body2">
                     <strong>Loading Azure cost data</strong> – please wait…
-                </MudText>
+                </RadzenText>
             }
             else if (LoadingState.IsAllDone)
             {
-                <MudIcon Icon="@Icons.Material.Filled.CheckCircle"
-                         Color="Color.Success" Size="Size.Small" />
-                <MudText Typo="Typo.body2"><strong>All datasets ready.</strong></MudText>
+                <RadzenIcon Icon="check_circle"  IconColor="var(--rz-success)" />
+                <RadzenText TextStyle="TextStyle.Body2"><strong>All datasets ready.</strong></RadzenText>
             }
             else
             {
-                <MudProgressCircular Indeterminate="true"
-                                     Size="Size.Small"
-                                     Color="Color.Warning" />
-                <MudText Typo="Typo.body2"><strong>Preparing…</strong></MudText>
+                <RadzenProgressBarCircular ShowValue="false" ProgressBarStyle="ProgressBarStyle.Warning" Mode="ProgressBarMode.Indeterminate" />
+                <RadzenText TextStyle="TextStyle.Body2"><strong>Preparing…</strong></RadzenText>
             }
 
-            <MudSpacer />
+            <div style="flex:1" />
 
             @* ── Per-dataset status chips ───────────────────────────────── *@
             @foreach (var ds in LoadingState.All)
             {
-                <MudChip T="string"
-                         Color="@ChipColor(ds.Phase)"
-                         Size="Size.Small"
-                         Variant="Variant.Outlined">
+                <RadzenBadge BadgeStyle="@ChipColor(ds.Phase)" Variant="Variant.Outlined">
                     @ChipIcon(ds.Phase)&nbsp;@ds.Label
                     @if (ds.Detail is not null)
                     {
                         <text>&nbsp;(@ds.Detail)</text>
                     }
-                </MudChip>
+                </RadzenBadge>
             }
 
             @* ── Dismiss button (only when all done) ───────────────────── *@
             @if (LoadingState.IsAllDone)
             {
-                <MudIconButton Icon="@Icons.Material.Filled.Close"
-                               Size="Size.Small"
-                               OnClick="@(() => _visible = false)"
-                               aria-label="Dismiss" />
+                <RadzenButton Icon="close"  Size="ButtonSize.Small" aria-label="Dismiss" ButtonStyle="ButtonStyle.Primary" Click="@(() => _visible = false)" />
             }
 
-        </MudStack>
+        </RadzenStack>
 
         @* ── Progress bar ──────────────────────────────────────────────── *@
         @if (!LoadingState.IsAllDone)
         {
-            <MudProgressLinear Value="@((double)LoadingState.DoneCount * 100 / 3)"
-                               Color="Color.Primary"
-                               Rounded="true"
-                               Class="mt-2" />
+            <RadzenProgressBar Value="@((double)LoadingState.DoneCount * 100 / 3)" Class="mt-2" ShowValue="false" ProgressBarStyle="ProgressBarStyle.Primary" />
         }
 
-    </MudPaper>
+    </RadzenCard>
 }
 
 @code {
@@ -116,12 +101,12 @@
         _cts.Dispose();
     }
 
-    private static Color ChipColor(LoadPhase p) => p switch
+    private static BadgeStyle ChipColor(LoadPhase p) => p switch
     {
-        LoadPhase.Loading => Color.Warning,
-        LoadPhase.Ready   => Color.Success,
-        LoadPhase.Failed  => Color.Error,
-        _                 => Color.Default
+        LoadPhase.Loading => BadgeStyle.Warning,
+        LoadPhase.Ready   => BadgeStyle.Success,
+        LoadPhase.Failed  => BadgeStyle.Danger,
+        _                 => BadgeStyle.Base
     };
 
     // Returns a small Unicode symbol used inline inside the chip text.

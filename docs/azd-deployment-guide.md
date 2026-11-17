@@ -1,146 +1,91 @@
-# CmCSP – Deployment with Azure Developer CLI (`azd`)
+# Deploying CmCSP with Azure Developer CLI
 
-This guide covers deploying CmCSP with the **Azure Developer CLI**. It provisions
-all infrastructure from the Bicep modules in `bicep/` and handles secrets, exports,
-and image builds via hooks.
+CmCSP deploys a .NET 10 Blazor + Radzen.Blazor + ApexCharts web app and a separate
+cost collector to Azure Container Apps. The deployment entry point is
+[azure.yaml](../azure.yaml); infrastructure is under [infra](../infra).
 
----
+## Prerequisites
 
-## How it maps
+- .NET 10 SDK, Azure CLI, Azure Developer CLI, and PowerShell 7.
+- Authenticated `az` and `azd` sessions for the intended subscription.
+- Deployment rights, including permission to create the required role assignments.
+- An Entra Web app registration and the cost permissions in [Azure roles](azure-roles.md).
+- For SQL setup: a configured Entra SQL administrator and either `Invoke-Sqlcmd`
+  or a compatible `sqlcmd` installation used by the provisioning hook.
 
-| Concern | Handled by |
-|---|---|
-| Resource group + app infra + storage + RBAC | `infra/main.bicep` (subscription scope) composing `infra/modules/app.bicep` + `infra/modules/storage.bicep` |
-| Web app image build / push / revision roll | `azd deploy` (service `web`, .NET SDK container build — no Dockerfile) |
-| Key Vault secrets, Container App env-var wiring | `infra/hooks/postprovision.ps1` |
-| Cost Management exports (subscription **or** billing scope) | `infra/hooks/postprovision.ps1` (scope switch) |
-| Cost collector Job image build / push / update | `infra/hooks/postdeploy.ps1` |
+## Existing environment: application update
 
-The old multi-pass managed-identity flow is collapsed into module ordering:
-`app` deploys first, then `storage` consumes its MI principal IDs for declarative
-RBAC — no second deployment pass and no stale role-assignment cleanup.
+```powershell
+azd env list
+dotnet build CmCSP.slnx --configuration Release
+azd deploy --environment <environment-name> --no-prompt
+```
 
----
+The web service is built with SDK container publishing (no Dockerfile required).
+The [postdeploy hook](../infra/hooks/postdeploy.ps1) separately publishes the
+collector and updates its image reference. Both image builds include the updated
+shared Core library. No infrastructure changes or collection runs are implied.
+The historical backfill project is not an azd service or a provisioned job.
+The collector hook isolates its temporary registry credentials from the operator's
+Docker configuration and fails explicitly if publishing/digest resolution/job update fails.
 
-## Pre-requisites
+## New environment
 
-| Requirement | Notes |
-|---|---|
-| Azure Developer CLI | `azd version` — install from <https://aka.ms/azd> |
-| Azure CLI ≥ 2.60 | `az --version` — used by the hooks |
-| .NET 10 SDK | `dotnet --version` — container build/push, no Docker required |
-| PowerShell 7+ | `pwsh --version` — the hooks are PowerShell |
-| App registration | Tenant ID, Client ID, Client Secret with Cost Management access |
-
----
-
-## First-time deployment
-
-```pwsh
-# 1. Authenticate
+```powershell
 azd auth login
-az login                      # hooks use az for KV / exports
-
-# 2. Create an environment (drives resource naming + the azd-env-name tag)
-azd env new cmcsp-prod
-
-# 3. Identity + subscriptions consumed by the app
-azd env set CMCSP_TENANT_ID        <tenant-guid>
-azd env set CMCSP_CLIENT_ID        <app-client-id>
-azd env set CMCSP_CLIENT_SECRET    <app-client-secret>
-azd env set CMCSP_SUBSCRIPTION_IDS <guid1,guid2,...>
-
-# 4. Choose the Cost Management export scope (see below)
+az login
+azd env new <environment-name>
+azd env set CMCSP_TENANT_ID "<tenant-guid>"
+azd env set CMCSP_CLIENT_ID "<app-client-id>"
+azd env set CMCSP_SUBSCRIPTION_IDS "<subscription-guid>"
 azd env set EXPORT_SCOPE subscription
-
-# 5. Provision infra + deploy the app in one step
-azd up
 ```
 
-`azd up` runs **provision** (Bicep) → **postprovision** (secrets, env vars,
-exports) → **deploy** (web image) → **postdeploy** (collector job image).
+Supply `CMCSP_CLIENT_SECRET` through your approved local secret-handling workflow;
+never commit the environment's secret values or print them in diagnostics.
+Set the location/subscription when prompted, then run `azd up`.
 
----
+The stages are:
 
-## Export scope switch (subscription ↔ billing account)
+1. `infra/main.bicep` provisions app, registry, vault, storage, RBAC, and optional data platform.
+2. `postprovision.ps1` seeds secrets, wires application/job settings, provisions
+   exports with the deployer's Azure identity, and applies SQL setup when enabled.
+3. azd publishes/deploys the web image.
+4. `postdeploy.ps1` publishes/deploys the collector image.
 
-The export scope is selected with the `EXPORT_SCOPE` environment variable and
-applied by the postprovision hook.
+## Export scope
 
-| `EXPORT_SCOPE` | Template | Auth | Deployment | Extra config |
-|---|---|---|---|---|
-| `subscription` | `infra/modules/export-sub.bicep` | Managed identity | `az deployment sub create` | — |
-| `billing` | `infra/modules/export-billing.bicep` | SAS token | `az deployment tenant create` (tenant scope) | `BILLING_ACCOUNT_ID` |
-| `none` (default) | — | — | skipped | — |
-
-Switch scope at any time, then re-run provisioning:
-
-```pwsh
-# Subscription scope
-azd env set EXPORT_SCOPE subscription
-azd provision
-
-# Billing account scope (requires tenant-level deploy permissions)
-azd env set EXPORT_SCOPE billing
-azd env set BILLING_ACCOUNT_ID <billing-account-id>
-azd provision
-```
-
-> Billing-account exports cannot use managed identity. The hook generates a
-> short-lived container SAS from the storage account key and passes it to
-> `export-billing.bicep`. Tenant-scope deployment requires Global Admin or
-> Billing Account Owner.
-
----
-
-## Optional settings
-
-```pwsh
-# Cost Details API (reservations + amortized cost)
-azd env set ENABLE_COST_DETAILS true
-
-# Custom export name / historical backfill (subscription scope only)
-azd env set EXPORT_NAME       cmcsp-daily-export
-azd env set HISTORICAL_MONTHS 3
-
-# Adopt existing resources instead of deriving new globally-unique names
-azd env set AZURE_RESOURCE_GROUP   rg-cmcsp-app
-azd env set ACR_NAME               cmcspacrXXXXXX
-azd env set KEY_VAULT_NAME         kv-cmcsp-XXXXXX
-azd env set STORAGE_ACCOUNT_NAME   cmcspstXXXXXX
-```
-
----
-
-## Day-2 operations
-
-```pwsh
-azd deploy        # rebuild + roll the web app image only
-azd provision     # re-apply infra / secrets / exports (e.g. after scope change)
-azd up            # both
-azd down          # tear down the environment's resources
-azd env get-values  # inspect resolved outputs
-```
-
----
-
-## Security notes
-
-- **`CMCSP_CLIENT_SECRET` is stored in `.azure/<env>/.env` in plaintext.** azd
-  env values are not encrypted. The hook copies it into Key Vault, but if local
-  plaintext is unacceptable, export it as a transient shell variable before
-  `azd provision` instead of using `azd env set`.
-- The `.azure/` directory is git-ignored.
-- All runtime access uses managed identities; only the app-registration client
-  secret is stored in Key Vault.
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
+| `EXPORT_SCOPE` | Behavior |
 |---|---|
-| `Required azd environment variable '...' is not set` | Run the corresponding `azd env set` and retry. |
-| `azd deploy` cannot find the Container App | Confirm the `azd-service-name: web` tag exists — it is applied by `infra/modules/app.bicep` via the `azdServiceName` param. |
-| Billing export fails with permission error | Tenant-scope deploy needs Global Admin / Billing Account Owner. |
-| Need the underlying `az` steps | See [csp-deployment-guide.md](csp-deployment-guide.md) for the manual command-by-command flow. |
+| `subscription` | Deploy subscription exports using managed identity for blob delivery |
+| `billing` | Deploy billing-account export; requires `BILLING_ACCOUNT_ID` and billing access |
+| `none` | Skip export provisioning |
+
+Run `azd provision` after changing export configuration. Runtime export detection
+and the Home page recovery action do not replace deployer-authorized provisioning.
+If export creation returns `RBACAccessDenied`, use the provisioning hook as an
+authorized deployer rather than assuming a service-principal role grant is sufficient.
+
+## Optional configuration
+
+| Environment setting | Purpose |
+|---|---|
+| `DEPLOY_DATA_PLATFORM=true` | Provision SQL and Managed Redis; incurs costs |
+| `SQL_ADMIN_LOGIN`, `SQL_ADMIN_OBJECT_ID` | SQL Entra administrator |
+| `ENABLE_COST_DETAILS=true` | Enable Cost Details integration |
+| `EXPORT_NAME`, `HISTORICAL_MONTHS` | Export provisioning options |
+| `AZURE_RESOURCE_GROUP`, `ACR_NAME`, `KEY_VAULT_NAME`, `STORAGE_ACCOUNT_NAME` | Adopt configured resource names |
+
+See [SQL/Redis](phase4-data-platform.md) and [multi-tenancy](phase9-multitenancy.md)
+before enabling their feature flags.
+
+## Verification and rollback
+
+Check the latest revision is ready and running the intended image; load the
+dashboard and sign in. Verify Radzen CSS/JS and ApexCharts JS return successfully,
+`/openapi/v1.json` returns a document, and `/api-docs` loads. Check the collector
+job image separately: successful web deployment alone does not prove the hook succeeded.
+
+Record the previous web and collector image digests before an update. Roll back
+by updating those workloads to the recorded digests and verifying readiness again.
+Do not reprovision or delete the environment merely to roll back an application image.

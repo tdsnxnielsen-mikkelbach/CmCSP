@@ -1,4 +1,4 @@
-using MudBlazor;
+using CmCSP.Models;
 
 namespace CmCSP.Services;
 
@@ -11,7 +11,7 @@ namespace CmCSP.Services;
 public sealed class DashboardStateService
 {
     // Default: beginning of previous year → today, giving ~17 months of data.
-    public DateRange SelectedRange { get; private set; } = new(
+    public DashboardDateRange SelectedRange { get; private set; } = new(
         new DateTime(DateTime.Now.Year - 1, 1, 1),
         DateTime.Now);
 
@@ -34,7 +34,7 @@ public sealed class DashboardStateService
     /// <summary>
     /// Monotonically increases on every filter change (date range, customer, subscriptions). Pages
     /// use it as a render <c>@key</c> on ApexCharts so the charts re-create with fresh data when a
-    /// filter changes — unlike MudBlazor grids, ApexCharts do not re-render on an external
+    /// filter changes — unlike data grids, ApexCharts do not re-render on an external
     /// StateHasChanged alone.
     /// </summary>
     public int ViewVersion { get; private set; }
@@ -47,7 +47,7 @@ public sealed class DashboardStateService
         OnStateChanged?.Invoke();
     }
 
-    public void SetDateRange(DateRange range)
+    public void SetDateRange(DashboardDateRange range)
     {
         SelectedRange = range;
         RaiseChanged();

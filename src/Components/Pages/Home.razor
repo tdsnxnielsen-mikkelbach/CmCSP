@@ -14,27 +14,21 @@
 <SubscriptionScopeBadge SelectedCount="_selectedSubCount" WithDataCount="_withDataSubCount" />
 
 @* ── Summary cards ────────────────────────────────────────────────────────── *@
-<MudGrid data-tour="10"
-         data-tour-title="Headline numbers"
-         data-tour-desc="At-a-glance totals for the selected range, month-to-date, year-to-date and average daily cost."
-         Spacing="3" Class="mb-4">
+<RadzenRow data-tour="10" data-tour-title="Headline numbers" data-tour-desc="At-a-glance totals for the selected range, month-to-date, year-to-date and average daily cost." Class="mb-4" Gap="1rem">
     <KpiCard Label="Total Cost (selected range)" Value="@Fmt(_totalCost)" Sm="6" Md="3" />
     <KpiCard Label="Cost Month-to-Date" Value="@Fmt(_costMtd)" Sm="6" Md="3" />
     <KpiCard Label="Cost Year-to-Date" Value="@Fmt(_costYtd)" Sm="6" Md="3" />
     <KpiCard Label="Avg Daily Cost" Value="@Fmt(_avgDailyCost)" Sm="6" Md="3" />
-</MudGrid>
+</RadzenRow>
 
 @* ── Ion margin strip (portfolio buy price / margin) ───────────────────── *@
 
 @* ── Charts ───────────────────────────────────────────────────────────────── *@
-<MudGrid data-tour="12"
-         data-tour-title="Cost charts"
-         data-tour-desc="Interactive trends and breakdowns. Charts update automatically as you change the filters above."
-         Spacing="3">
+<RadzenRow data-tour="12" data-tour-title="Cost charts" data-tour-desc="Interactive trends and breakdowns. Charts update automatically as you change the filters above." Gap="1rem">
     @* Cost vs Prior Month *@
-    <MudItem xs="12" md="6">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Daily Cost – Current vs Prior Month</MudText>
+    <RadzenColumn Size="12" SizeMD="6">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Daily Cost – Current vs Prior Month</RadzenText>
             <ApexChart TItem="DailyPoint" Options="_twoLineOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
@@ -53,13 +47,13 @@
                                      SeriesType="SeriesType.Line" />
                 }
             </ApexChart>
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* Monthly Trend *@
-    <MudItem xs="12" md="6">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Monthly Cost Trend</MudText>
+    <RadzenColumn Size="12" SizeMD="6">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Monthly Cost Trend</RadzenText>
             <ApexChart TItem="MonthlyPoint" Options="_barOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
@@ -72,13 +66,13 @@
                                      SeriesType="SeriesType.Bar" />
                 }
             </ApexChart>
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* Top 10 Services *@
-    <MudItem xs="12">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top 10 Services by Cost</MudText>
+    <RadzenColumn Size="12">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Top 10 Services by Cost</RadzenText>
             <ApexChart TItem="ServicePoint" Options="_hbarOpts" @key="ChartKey">
                 @foreach (var subId in _seriesSubIds)
                 {
@@ -91,51 +85,48 @@
                                      SeriesType="SeriesType.Bar" />
                 }
             </ApexChart>
-        </MudPaper>
-    </MudItem>
-</MudGrid>
+        </RadzenCard>
+    </RadzenColumn>
+</RadzenRow>
 
 @* ── Cost anomalies ───────────────────────────────────────────────────────── *@
 @if (_anomalies.Count > 0)
 {
-    <MudPaper Class="pa-4 mt-4" Elevation="2">
-        <MudStack Row AlignItems="AlignItems.Center" Class="mb-3" Spacing="2">
-            <MudIcon Icon="@Icons.Material.Filled.Warning" Color="Color.Warning" />
-            <MudText Typo="Typo.subtitle1" Class="fw-bold">Cost Anomalies</MudText>
-            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text">
+    <RadzenCard Class="pa-4 mt-4">
+        <RadzenStack AlignItems="AlignItems.Center" Class="mb-3" Orientation="Radzen.Orientation.Horizontal" Gap="0.5rem">
+            <RadzenIcon Icon="warning"  IconColor="var(--rz-warning)" />
+            <RadzenText Class="fw-bold" TextStyle="TextStyle.Subtitle1">Cost Anomalies</RadzenText>
+            <RadzenBadge BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat">
                 @_anomalies.Count detected
-            </MudChip>
-            <MudTooltip Arrow Text="Daily spend per subscription + service that is statistically unusual versus its trailing 30-day baseline (z-score ≥ 2.5). Recent days only.">
-                <MudIcon Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Default" />
-            </MudTooltip>
-        </MudStack>
-        <MudDataGrid T="CostAnomaly"
-                     Items="_anomalies"
-                     SortMode="SortMode.Multiple"
-                     Dense>
+            </RadzenBadge>
+            <RadzenStack Gap="0" MouseEnter="@(element => Tooltips.Open(element, "Daily spend per subscription + service that is statistically unusual versus its trailing 30-day baseline (z-score ≥ 2.5). Recent days only."))" MouseLeave="@(_ => Tooltips.Close())">
+                <RadzenIcon Icon="info"  IconColor="var(--rz-base)" />
+            </RadzenStack>
+        </RadzenStack>
+        <RadzenDataGrid TItem="CostAnomaly" Data="_anomalies" AllowSorting="true" AllowMultiColumnSorting="true" AllowFiltering="false" FilterMode="Radzen.FilterMode.Simple" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
             <Columns>
-                <PropertyColumn Property="a => a.Date" Title="Date" Format="yyyy-MM-dd" />
-                <PropertyColumn Property="a => a.SubscriptionName" Title="Subscription" />
-                <PropertyColumn Property="a => a.ServiceName" Title="Service" />
-                <PropertyColumn Property="a => a.Cost" Title=@($"Cost ({Options.TargetCurrency})") Format="N0" />
-                <PropertyColumn Property="a => a.Baseline" Title=@($"Baseline ({Options.TargetCurrency})") Format="N0" />
-                <TemplateColumn Title="Δ %" SortBy="@(a => a.DeltaPct)">
-                    <CellTemplate>
-                        <MudText Color="Color.Error">+@context.Item.DeltaPct.ToString("F0")%</MudText>
-                    </CellTemplate>
-                </TemplateColumn>
-                <PropertyColumn Property="a => a.ZScore" Title="z-score" Format="F1" />
+                <RadzenDataGridColumn Property="Date" Title="Date" TItem="CostAnomaly" FormatString="{0:yyyy-MM-dd}" />
+                <RadzenDataGridColumn Property="SubscriptionName" Title="Subscription" TItem="CostAnomaly" />
+                <RadzenDataGridColumn Property="ServiceName" Title="Service" TItem="CostAnomaly" />
+                <RadzenDataGridColumn Property="Cost" Title="@($"Cost ({Options.TargetCurrency})")" TItem="CostAnomaly" FormatString="{0:N0}" />
+                <RadzenDataGridColumn Property="Baseline" Title="@($"Baseline ({Options.TargetCurrency})")" TItem="CostAnomaly" FormatString="{0:N0}" />
+                <RadzenDataGridColumn Title="Δ %" TItem="CostAnomaly" Property="DeltaPct">
+                    <Template Context="context">
+                        <RadzenText Style="color: var(--rz-danger);">+@context.DeltaPct.ToString("F0")%</RadzenText>
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn Property="ZScore" Title="z-score" TItem="CostAnomaly" FormatString="{0:F1}" />
             </Columns>
-        </MudDataGrid>
-    </MudPaper>
+        </RadzenDataGrid>
+    </RadzenCard>
 }
 
 @* ── Subscription Management ─────────────────────────────────────────────── *@
-<MudExpansionPanels Class="mt-4" Elevation="2">
-    <MudExpansionPanel Text="Manage Subscriptions" Icon="@Icons.Material.Filled.ManageAccounts">
+<div class="mt-4">
+    <RadzenPanel Text="Manage Subscriptions" Icon="manage_accounts"  AllowCollapse="true" Collapsed="true">
 
         @* Active subscription chips *@
-        <MudText Typo="Typo.subtitle2" Class="mb-2">Active Subscriptions (@SubStore.AllIds.Count)</MudText>
+        <RadzenText Class="mb-2" TextStyle="TextStyle.Subtitle2">Active Subscriptions (@SubStore.AllIds.Count)</RadzenText>
         <div class="d-flex flex-wrap gap-2 mb-4">
             @foreach (var sub in SubStore.AllIds)
             {
@@ -144,34 +135,30 @@
                 var isConfig    = SubStore.ConfiguredIds.Any(c => c.Equals(capturedId, StringComparison.OrdinalIgnoreCase));
                 @if (isConfig)
                 {
-                    <MudChip T="string"
-                             Icon="@Icons.Material.Filled.Lock"
-                             Color="Color.Default"
-                             Size="Size.Small"
-                             title="@($"{capturedId} — defined in configuration, not removable at runtime")">
+                    <RadzenBadge BadgeStyle="BadgeStyle.Base" title="@($"{capturedId} — defined in configuration, not removable at runtime")"><RadzenIcon Icon="lock" />
                         @displayName
-                    </MudChip>
+                    </RadzenBadge>
                 }
                 else
                 {
-                    <MudChip T="string"
-                             Color="Color.Primary"
-                             Size="Size.Small"
-                             title="@capturedId"
-                             OnClose="@(async _ => await RemoveSubAsync(capturedId))">
+                    <RadzenBadge BadgeStyle="BadgeStyle.Primary" title="@capturedId">
                         @displayName
-                    </MudChip>
+                        <RadzenButton Icon="close" Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
+                                      ButtonStyle="ButtonStyle.Light" Disabled="_subBusy"
+                                      Click="@(() => RemoveSubAsync(capturedId))"
+                                      aria-label="@($"Remove {displayName}")" />
+                    </RadzenBadge>
                 }
             }
             @if (!SubStore.AllIds.Any())
             {
-                <MudText Typo="Typo.caption" Color="Color.Secondary">(none configured)</MudText>
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">(none configured)</RadzenText>
             }
         </div>
 
         @if (Options.ExportBlob.Enabled && SubStore.AllIds.Any())
         {
-            <MudText Typo="Typo.subtitle2" Class="mb-2">Export Provisioning</MudText>
+            <RadzenText Class="mb-2" TextStyle="TextStyle.Subtitle2">Export Provisioning</RadzenText>
             <div class="d-flex flex-column gap-2 mb-4">
                 @foreach (var sub in SubStore.AllIds)
                 {
@@ -180,31 +167,19 @@
                     var isProvisionBusy = _provisionBusy.Contains(capturedId);
                     <div class="d-flex align-center justify-space-between gap-2 flex-wrap">
                         <div class="d-flex align-center gap-2 flex-wrap">
-                            <MudText Typo="Typo.body2">@displayName</MudText>
+                            <RadzenText TextStyle="TextStyle.Body2">@displayName</RadzenText>
                             @if (_exportPaths.TryGetValue(capturedId, out var path))
                             {
-                                <MudChip T="string"
-                                         Size="Size.Small"
-                                         Variant="Variant.Text"
-                                         Color="@ExportPathColor(path.State)"
-                                         Icon="@ExportPathIcon(path.State)"
-                                         title="@path.Detail">
+                                <RadzenBadge BadgeStyle="@ExportPathColor(path.State)" title="@path.Detail" Variant="Variant.Flat"><RadzenIcon Icon="@ExportPathIcon(path.State)" />
                                     @path.ShortLabel
-                                </MudChip>
+                                </RadzenBadge>
                             }
                             else if (_exportPathsBusy)
                             {
-                                <MudText Typo="Typo.caption" Color="Color.Secondary">checking…</MudText>
+                                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">checking…</RadzenText>
                             }
                         </div>
-                        <MudButton Variant="Variant.Outlined"
-                                   Color="Color.Secondary"
-                                   Size="Size.Small"
-                                   StartIcon="@Icons.Material.Filled.Sync"
-                                   OnClick="@(async () => await ReprovisionExportAsync(capturedId))"
-                                   Disabled="@(_subBusy || isProvisionBusy)">
-                            @(isProvisionBusy ? "Re-provisioning..." : "Re-provision Export")
-                        </MudButton>
+                        <RadzenButton Variant="Variant.Outlined" Size="ButtonSize.Small" Disabled="@(_subBusy || isProvisionBusy)" ButtonStyle="ButtonStyle.Secondary" Click="@(async () => await ReprovisionExportAsync(capturedId))" Icon="sync" Text="@(isProvisionBusy ? "Re-provisioning..." : "Re-provision Export")" />
                     </div>
                 }
             </div>
@@ -213,133 +188,108 @@
         @* Status alert *@
         @if (_subResult is not null)
         {
-            <MudAlert Severity="@_subResult.Severity" Dense="true" ShowCloseIcon="true"
-                      CloseIconClicked="@(() => _subResult = null)" Class="mb-3">
+            <RadzenAlert AlertStyle="@_subResult.AlertStyle" Class="mb-3" AllowClose="true" Close="@(() => _subResult = null)">
                 @_subResult.Message
-            </MudAlert>
+            </RadzenAlert>
         }
 
-        <MudGrid Spacing="3">
+        <RadzenRow Gap="1rem">
             @* ── Add manually ───────────────────────────────────────────────── *@
-            <MudItem xs="12" md="6">
-                <MudPaper Class="pa-3" Outlined="true">
-                    <MudText Typo="Typo.subtitle2" Class="mb-2">Add Manually</MudText>
-                    <MudTextField @bind-Value="_newSubId"
-                                  Label="Subscription ID (GUID)"
-                                  Placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                                  FullWidth
-                                  Variant="Variant.Outlined"
-                                  OnKeyDown="@OnSubKeyDown" />
-                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Class="mt-2"
-                               OnClick="AddManualAsync" Disabled="_subBusy">
-                        Add
-                    </MudButton>
-                </MudPaper>
-            </MudItem>
+            <RadzenColumn Size="12" SizeMD="6">
+                <RadzenCard Class="pa-3">
+                    <RadzenText Class="mb-2" TextStyle="TextStyle.Subtitle2">Add Manually</RadzenText>
+                    <RadzenFormField Text="Subscription ID (GUID)" Style="width:100%;">
+                        <RadzenTextBox @bind-Value="_newSubId" Immediate="true" Placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" aria-label="Subscription ID (GUID)" @onkeydown="@OnSubKeyDown" Style="width:100%;" />
+                    </RadzenFormField>
+                    <RadzenButton Variant="Variant.Filled" Class="mt-2" Disabled="_subBusy" ButtonStyle="ButtonStyle.Primary" Click="AddManualAsync" Text="Add" />
+                </RadzenCard>
+            </RadzenColumn>
 
             @* ── Import from CSV / paste ─────────────────────────────────────── *@
-            <MudItem xs="12" md="6">
-                <MudPaper Class="pa-3" Outlined="true">
-                    <MudText Typo="Typo.subtitle2" Class="mb-2">Import from CSV / Text</MudText>
-                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-1">
+            <RadzenColumn Size="12" SizeMD="6">
+                <RadzenCard Class="pa-3">
+                    <RadzenText Class="mb-2" TextStyle="TextStyle.Subtitle2">Import from CSV / Text</RadzenText>
+                    <RadzenText Class="mb-1" TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">
                         Paste subscription IDs (one per line, or any CSV — GUIDs are extracted automatically)
-                    </MudText>
-                    <MudTextField @bind-Value="_csvPaste"
-                                  Lines="4"
-                                  FullWidth
-                                  Variant="Variant.Outlined"
-                                  Placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+                    </RadzenText>
+                    <RadzenTextArea @bind-Value="_csvPaste" Placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" Rows="4" Style="width:100%;" />
                     <div class="d-flex align-center gap-2 mt-2 flex-wrap">
-                        <MudButton Variant="Variant.Filled" Color="Color.Secondary"
-                                   OnClick="ImportPastedAsync" Disabled="_subBusy">
-                            Import Pasted
-                        </MudButton>
-                        <MudText Typo="Typo.caption">— or —</MudText>
-                        @* Hidden file input; the MudButton acts as its label *@
-                        <InputFile id="subCsvFile" OnChange="ImportFileAsync" accept=".csv,.txt" style="display:none" />
-                        <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
-                                   HtmlTag="label" for="subCsvFile" Disabled="_subBusy">
+                        <RadzenButton Variant="Variant.Filled" Disabled="_subBusy" ButtonStyle="ButtonStyle.Secondary" Click="ImportPastedAsync" Text="Import Pasted" />
+                        <RadzenText TextStyle="TextStyle.Caption">— or —</RadzenText>
+                        <InputFile id="subCsvFile" OnChange="ImportFileAsync" accept=".csv,.txt" disabled="@_subBusy" style="display:none" />
+                        <label class="rz-button rz-variant-outlined rz-secondary rz-shade-default" for="subCsvFile" aria-disabled="@_subBusy">
                             Upload .csv / .txt
-                        </MudButton>
+                        </label>
                     </div>
-                </MudPaper>
-            </MudItem>
-        </MudGrid>
-    </MudExpansionPanel>
-</MudExpansionPanels>
+                </RadzenCard>
+            </RadzenColumn>
+        </RadzenRow>
+    </RadzenPanel>
+</div>
 
 @* ── Data Collection ─────────────────────────────────────────────────────── *@
-<MudExpansionPanels Class="mt-4" Elevation="2">
-    <MudExpansionPanel Text="Data Collection" Icon="@Icons.Material.Filled.CloudSync">
+<div class="mt-4">
+    <RadzenPanel Text="Data Collection" Icon="cloud_sync"  AllowCollapse="true" Collapsed="true">
 
         <div class="d-flex align-center justify-space-between gap-2 flex-wrap mb-3">
-            <MudText Typo="Typo.body2">
+            <RadzenText TextStyle="TextStyle.Body2">
                 Refresh the shared cost cache from the latest exports. Runs automatically every night;
                 trigger an on-demand refresh here.
-            </MudText>
-            <MudButton Variant="Variant.Filled"
-                       Color="Color.Primary"
-                       StartIcon="@Icons.Material.Filled.PlayArrow"
-                       OnClick="CollectNowAsync"
-                       Disabled="@(_collectBusy || !JobControl.IsConfigured)">
-                @(_collectBusy ? "Collecting…" : "Collect now")
-            </MudButton>
+            </RadzenText>
+            <RadzenButton Variant="Variant.Filled"  Disabled="@(_collectBusy || !JobControl.IsConfigured)" ButtonStyle="ButtonStyle.Primary" Click="CollectNowAsync" Icon="play_arrow" Text="@(_collectBusy ? "Collecting…" : "Collect now")" />
         </div>
 
         @if (!JobControl.IsConfigured)
         {
-            <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+            <RadzenAlert AlertStyle="AlertStyle.Info" Class="mb-3" AllowClose="false">
                 On-demand collection isn't configured in this environment (the job coordinates are not set).
-            </MudAlert>
+            </RadzenAlert>
         }
 
         @if (_collectMessage is not null)
         {
-            <MudAlert Severity="@_collectSeverity" Dense="true" ShowCloseIcon="true"
-                      CloseIconClicked="@(() => _collectMessage = null)" Class="mb-3">
+            <RadzenAlert AlertStyle="@_collectSeverity" Class="mb-3" AllowClose="true" Close="@(() => _collectMessage = null)">
                 @_collectMessage
-            </MudAlert>
+            </RadzenAlert>
         }
 
         @if (_lastRun is not null)
         {
-            <MudText Typo="Typo.subtitle2" Class="mb-2">Last run</MudText>
+            <RadzenText Class="mb-2" TextStyle="TextStyle.Subtitle2">Last run</RadzenText>
             <div class="d-flex align-center gap-2 flex-wrap mb-1">
-                <MudChip T="string" Size="Size.Small" Variant="Variant.Text"
-                         Color="@(_lastRun.Status == "Success" ? Color.Success : Color.Error)"
-                         Icon="@(_lastRun.Status == "Success" ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.Error)">
+                <RadzenBadge BadgeStyle="@(_lastRun.Status == "Success" ? BadgeStyle.Success : BadgeStyle.Danger)" Variant="Variant.Flat"><RadzenIcon Icon="@(_lastRun.Status == "Success" ? "check_circle" : "error")" />
                     @_lastRun.Status
-                </MudChip>
-                <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="Color.Default">
+                </RadzenBadge>
+                <RadzenBadge BadgeStyle="BadgeStyle.Base" Variant="Variant.Flat">
                     @_lastRun.Trigger
-                </MudChip>
-                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                </RadzenBadge>
+                <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">
                     @_lastRun.FinishedUtc.ToLocalTime().ToString("g")
                     · @($"{_lastRun.DurationMs / 1000.0:N1}s")
                     · @($"{_lastRun.MainRows + _lastRun.RgRows + _lastRun.TagRows + _lastRun.AmortRows:N0} rows")
-                </MudText>
+                </RadzenText>
             </div>
             @if (!string.IsNullOrWhiteSpace(_lastRun.Error))
             {
-                <MudText Typo="Typo.caption" Color="Color.Error" Class="mb-1">@_lastRun.Error</MudText>
+                <RadzenText Class="mb-1" TextStyle="TextStyle.Caption" Style="color: var(--rz-danger);">@_lastRun.Error</RadzenText>
             }
         }
         else
         {
-            <MudText Typo="Typo.caption" Color="Color.Secondary">No collection runs recorded yet.</MudText>
+            <RadzenText TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">No collection runs recorded yet.</RadzenText>
         }
 
         @if (JobControl.PortalExecutionHistoryUrl is { } logUrl)
         {
             <div class="mt-2">
-                <MudLink Href="@logUrl" Target="_blank" Typo="Typo.caption">
-                    <MudIcon Icon="@Icons.Material.Filled.OpenInNew" Size="Size.Small" Class="me-1" />
+                <RadzenLink Target="_blank" Path="@logUrl">
+                    <RadzenIcon Icon="open_in_new"  Class="me-1" />
                     View job logs &amp; execution history
-                </MudLink>
+                </RadzenLink>
             </div>
         }
-    </MudExpansionPanel>
-</MudExpansionPanels>
+    </RadzenPanel>
+</div>
 
 @code {
     private record DailyPoint(int Day, string SubscriptionId, decimal Cost);
@@ -378,7 +328,7 @@
     // ── Data collection (CostCollectorJob) ──────────────────────────────────
     private bool _collectBusy;
     private string? _collectMessage;
-    private Severity _collectSeverity = Severity.Info;
+    private AlertStyle _collectSeverity = AlertStyle.Info;
     private CollectionAuditRecord? _lastRun;
 
     private async Task LoadLastRunAsync()
@@ -399,16 +349,16 @@
             switch (status.Status)
             {
                 case "NotConfigured":
-                    _collectSeverity = Severity.Warning;
+                    _collectSeverity = AlertStyle.Warning;
                     _collectMessage = "On-demand collection isn't configured in this environment.";
                     return;
                 case "StartFailed":
-                    _collectSeverity = Severity.Error;
+                    _collectSeverity = AlertStyle.Danger;
                     _collectMessage = "Failed to start the collection job. Check the app's permissions on the job.";
                     return;
             }
 
-            _collectSeverity = Severity.Info;
+            _collectSeverity = AlertStyle.Info;
             _collectMessage = status.Coalesced
                 ? "A collection run is already in progress — showing its status."
                 : "Collection started. This can take a few minutes.";
@@ -423,7 +373,7 @@
                 {
                     await LoadLastRunAsync();
                     var ok = _lastRun?.Status == "Success";
-                    _collectSeverity = ok ? Severity.Success : Severity.Warning;
+                    _collectSeverity = ok ? AlertStyle.Success : AlertStyle.Warning;
                     _collectMessage = ok
                         ? "Collection complete — dashboards now show the latest data."
                         : "Collection finished. See the last-run status below.";
@@ -432,13 +382,13 @@
                 StateHasChanged();
             }
 
-            _collectSeverity = Severity.Info;
+            _collectSeverity = AlertStyle.Info;
             _collectMessage = "Collection is still running. Refresh later to see the result.";
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Collect-now failed.");
-            _collectSeverity = Severity.Error;
+            _collectSeverity = AlertStyle.Danger;
             _collectMessage = "Something went wrong starting collection.";
         }
         finally
@@ -627,29 +577,29 @@
         }
     }
 
-    private static Color ExportPathColor(ExportPathState state) => state switch
+    private static BadgeStyle ExportPathColor(ExportPathState state) => state switch
     {
-        ExportPathState.Provisioned   => Color.Success,
-        ExportPathState.Reused        => Color.Info,
-        ExportPathState.NoIdentity    => Color.Warning,
-        ExportPathState.NotProvisioned => Color.Error,
-        ExportPathState.Misconfigured => Color.Error,
-        ExportPathState.Unknown       => Color.Default,
-        _                             => Color.Default
+        ExportPathState.Provisioned   => BadgeStyle.Success,
+        ExportPathState.Reused        => BadgeStyle.Info,
+        ExportPathState.NoIdentity    => BadgeStyle.Warning,
+        ExportPathState.NotProvisioned => BadgeStyle.Danger,
+        ExportPathState.Misconfigured => BadgeStyle.Danger,
+        ExportPathState.Unknown       => BadgeStyle.Base,
+        _                             => BadgeStyle.Base
     };
 
     private static string ExportPathIcon(ExportPathState state) => state switch
     {
-        ExportPathState.Provisioned    => Icons.Material.Filled.CheckCircle,
-        ExportPathState.Reused         => Icons.Material.Filled.Link,
-        ExportPathState.NoIdentity     => Icons.Material.Filled.Warning,
-        ExportPathState.NotProvisioned => Icons.Material.Filled.ErrorOutline,
-        ExportPathState.Misconfigured  => Icons.Material.Filled.ReportProblem,
-        ExportPathState.Unknown        => Icons.Material.Filled.HelpOutline,
-        _                              => Icons.Material.Filled.RemoveCircleOutline
+        ExportPathState.Provisioned    => "check_circle",
+        ExportPathState.Reused         => "link",
+        ExportPathState.NoIdentity     => "warning",
+        ExportPathState.NotProvisioned => "error_outline",
+        ExportPathState.Misconfigured  => "report_problem",
+        ExportPathState.Unknown        => "help_outline",
+        _                              => "remove_circle_outline"
     };
 
-    private sealed record SubResult(Severity Severity, string Message);
+    private sealed record SubResult(AlertStyle AlertStyle, string Message);
     private SubResult? _subResult;
 
     private async Task AddManualAsync()
@@ -661,16 +611,16 @@
         {
             var (added, invalid) = await SubStore.AddAsync([_newSubId.Trim()], correlationId);
             if (invalid.Count > 0)
-                _subResult = new(Severity.Error, $"Not a valid GUID: {invalid[0]}");
+                _subResult = new(AlertStyle.Danger, $"Not a valid GUID: {invalid[0]}");
             else if (added == 0)
-                _subResult = new(Severity.Info, "Subscription ID is already in the list.");
+                _subResult = new(AlertStyle.Info, "Subscription ID is already in the list.");
             else
             {
                 await RefreshSubNamesAsync();
                 await InvalidateAndRefreshAllAsync(correlationId);
                 var id   = _newSubId.Trim().ToLowerInvariant();
                 var name = _subNames.TryGetValue(id, out var n) ? n : id;
-                _subResult = new(Severity.Success,
+                _subResult = new(AlertStyle.Success,
                     name != id ? $"Subscription '{name}' added." : "Subscription added.");
                 _newSubId = string.Empty;
                 await DetectExportPathsAsync();
@@ -704,7 +654,7 @@
         }
         catch (Exception ex)
         {
-            _subResult = new(Severity.Error, $"Could not read file: {ex.Message}");
+            _subResult = new(AlertStyle.Danger, $"Could not read file: {ex.Message}");
         }
     }
 
@@ -712,7 +662,7 @@
     {
         if (ids.Count == 0)
         {
-            _subResult = new(Severity.Warning, "No subscription IDs (GUIDs) found in the input.");
+            _subResult = new(AlertStyle.Warning, "No subscription IDs (GUIDs) found in the input.");
             return;
         }
         var correlationId = Guid.NewGuid().ToString("N");
@@ -731,7 +681,7 @@
             var skipped = ids.Count - added - invalid.Count;
             if (skipped > 0) parts.Add($"{skipped} already present");
             _subResult = new(
-                added > 0 ? Severity.Success : Severity.Warning,
+                added > 0 ? AlertStyle.Success : AlertStyle.Warning,
                 string.Join("; ", parts));
 
             if (added > 0)
@@ -765,15 +715,15 @@
             var result = await ExportProvisioner.ProvisionAsync(id, correlationId);
             _subResult = result switch
             {
-                { Succeeded: true } => new(Severity.Success, $"{displayName}: {result.Message}"),
-                { Skipped: true } => new(Severity.Info, $"{displayName}: {result.Message}"),
-                _ => new(Severity.Error, $"{displayName}: {result.Message}")
+                { Succeeded: true } => new(AlertStyle.Success, $"{displayName}: {result.Message}"),
+                { Skipped: true } => new(AlertStyle.Info, $"{displayName}: {result.Message}"),
+                _ => new(AlertStyle.Danger, $"{displayName}: {result.Message}")
             };
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Home[{CorrelationId}]: export re-provisioning failed for {SubId}", correlationId, id);
-            _subResult = new(Severity.Error, $"{displayName}: export re-provisioning failed - {ex.Message}");
+            _subResult = new(AlertStyle.Danger, $"{displayName}: export re-provisioning failed - {ex.Message}");
         }
         finally
         {

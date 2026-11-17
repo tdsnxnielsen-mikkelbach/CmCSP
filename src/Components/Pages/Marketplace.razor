@@ -7,42 +7,36 @@
 
 <LoadingErrorDisplay Loading="@_loading" Error="@_error" />
 
-<MudText Typo="Typo.h5" Class="mb-1 fw-bold"
-         data-tour="10"
-         data-tour-title="Azure Marketplace"
-         data-tour-desc="Month-to-date Azure spend split into Microsoft first-party services and third-party Marketplace (ISV / SaaS) charges.">Azure Marketplace</MudText>
-<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+<RadzenText Class="mb-1 fw-bold" data-tour="10" data-tour-title="Azure Marketplace" data-tour-desc="Month-to-date Azure spend split into Microsoft first-party services and third-party Marketplace (ISV / SaaS) charges." TextStyle="TextStyle.H5">Azure Marketplace</RadzenText>
+<RadzenText Class="mb-4" TextStyle="TextStyle.Body2" Style="color: var(--rz-secondary);">
     Month-to-date Azure spend split into Microsoft first-party services and third-party
     Azure Marketplace (ISV / SaaS-on-Azure) charges. Azure spend only.
-</MudText>
+</RadzenText>
 
 @if (!_loading && _rows.Count == 0)
 {
-    <MudAlert Severity="Severity.Info" Class="mb-4">
+    <RadzenAlert AlertStyle="AlertStyle.Info" Class="mb-4" AllowClose="false">
         No publisher-type breakdown is available. This requires the Cost Management Query API
         (the dimension is unavailable for some CSP/indirect subscriptions).
-    </MudAlert>
+    </RadzenAlert>
 }
 
 @* ── KPI cards ──────────────────────────────────────────────────────────────── *@
-<MudGrid Spacing="3" Class="mb-4"
-         data-tour="12"
-         data-tour-title="Spend split"
-         data-tour-desc="Headline spend split &mdash; total, first-party Azure, third-party Marketplace, and the Marketplace share.">
+<RadzenRow Class="mb-4" data-tour="12" data-tour-title="Spend split" data-tour-desc="Headline spend split &mdash; total, first-party Azure, third-party Marketplace, and the Marketplace share." Gap="1rem">
     <KpiCard Label="Total Spend (MTD)" Value="@Fmt(_total)" Sm="6" Md="3" />
     <KpiCard Label="Azure (first-party)" Value="@Fmt(_azure)" Sm="6" Md="3" />
     <KpiCard Label="Marketplace (third-party)" Value="@Fmt(_marketplace)" Sm="6" Md="3" />
     <KpiCard Label="Marketplace Share"
              Value="@($"{_marketplacePct:F1}%")"
-             ValueColor="@(_marketplacePct >= 25 ? Color.Warning : Color.Default)"
+             ValueColor="@(_marketplacePct >= 25 ? BadgeStyle.Warning : BadgeStyle.Base)"
              Sm="6" Md="3" />
-</MudGrid>
+</RadzenRow>
 
-<MudGrid Spacing="3">
+<RadzenRow Gap="1rem">
     @* Donut – Azure vs Marketplace *@
-    <MudItem xs="12" md="4">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Azure vs Marketplace</MudText>
+    <RadzenColumn Size="12" SizeMD="4">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Azure vs Marketplace</RadzenText>
             <ApexChart TItem="SplitPoint" Options="_donutOpts" @key="ChartKey">
                 <ApexPointSeries TItem="SplitPoint"
                                  Items="_split"
@@ -51,18 +45,18 @@
                                  YValue="@(e => (decimal?)e.Cost)"
                                  SeriesType="SeriesType.Donut" />
             </ApexChart>
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* Bar – top Marketplace services *@
-    <MudItem xs="12" md="8">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Top Marketplace Services</MudText>
+    <RadzenColumn Size="12" SizeMD="8">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Top Marketplace Services</RadzenText>
             @if (_marketplaceItems.Count == 0)
             {
-                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                <RadzenText TextStyle="TextStyle.Body2" Style="color: var(--rz-secondary);">
                     No third-party Marketplace charges in the current period.
-                </MudText>
+                </RadzenText>
             }
             else
             {
@@ -75,30 +69,23 @@
                                      SeriesType="SeriesType.Bar" />
                 </ApexChart>
             }
-        </MudPaper>
-    </MudItem>
+        </RadzenCard>
+    </RadzenColumn>
 
     @* Detail table *@
-    <MudItem xs="12">
-        <MudPaper Class="pa-4" Elevation="2">
-            <MudText Typo="Typo.subtitle1" Class="mb-3 fw-bold">Spend by Publisher Type &amp; Service</MudText>
-            <MudDataGrid T="DetailRow"
-                         Items="_rows"
-                         SortMode="SortMode.Multiple"
-                         Filterable
-                         FilterMode="DataGridFilterMode.ColumnFilterRow"
-                         Dense>
+    <RadzenColumn Size="12">
+        <RadzenCard Class="pa-4">
+            <RadzenText Class="mb-3 fw-bold" TextStyle="TextStyle.Subtitle1">Spend by Publisher Type &amp; Service</RadzenText>
+            <RadzenDataGrid FilterMode="Radzen.FilterMode.Simple" TItem="DetailRow" Data="_rows" AllowSorting="true" AllowMultiColumnSorting="true" AllowFiltering="true" Density="Density.Compact" AllowPaging="true" PageSize="25" PageSizeOptions="@(new int[] { 10, 25, 50, 100 })" ShowPagingSummary="true">
                 <Columns>
-                    <PropertyColumn Property="r => r.PublisherType" Title="Publisher Type" />
-                    <PropertyColumn Property="r => r.Service" Title="Service" />
-                    <PropertyColumn Property="r => r.Cost"
-                                    Title=@($"Cost ({Options.TargetCurrency})")
-                                    Format="N0" />
+                    <RadzenDataGridColumn Property="PublisherType" Title="Publisher Type" TItem="DetailRow" />
+                    <RadzenDataGridColumn Property="Service" Title="Service" TItem="DetailRow" />
+                    <RadzenDataGridColumn Property="Cost" Title="@($"Cost ({Options.TargetCurrency})")" TItem="DetailRow" FormatString="{0:N0}" />
                 </Columns>
-            </MudDataGrid>
-        </MudPaper>
-    </MudItem>
-</MudGrid>
+            </RadzenDataGrid>
+        </RadzenCard>
+    </RadzenColumn>
+</RadzenRow>
 
 @code {
     private record SplitPoint(string Label, decimal Cost);

@@ -7,90 +7,77 @@
 
 <PageTitle>Public API – CSP Dashboard</PageTitle>
 
-<MudContainer MaxWidth="MaxWidth.Large" Class="my-6">
+<div class="rz-container my-6">
 
-    <MudText Typo="Typo.h3" GutterBottom="true">Cost Management Public API</MudText>
-    <MudText Typo="Typo.body1" Class="mb-6" Style="max-width:60rem;">
+    <RadzenText TextStyle="TextStyle.H3" Class=" mb-3">Cost Management Public API</RadzenText>
+    <RadzenText Class="mb-6" Style="max-width:60rem;" TextStyle="TextStyle.Body1">
         Every dataset that powers this dashboard is also available as a read-only REST API for
         external clients. Responses are JSON and mirror the cost, optimization, security,
         sustainability, reservation, and collection views. Requests are authenticated with a
         single shared API key.
-    </MudText>
+    </RadzenText>
 
-    <MudGrid Spacing="3" Class="mb-6">
-        <MudItem xs="12" md="6">
-            <MudCard Elevation="2" Class="pa-2" Style="height:100%;">
-                <MudCardContent>
-                    <MudText Typo="Typo.h6" GutterBottom="true">
-                        <MudIcon Icon="@Icons.Material.Filled.MenuBook" Class="mr-2" />
+    <RadzenRow Class="mb-6" Gap="1rem">
+        <RadzenColumn Size="12" SizeMD="6">
+            <RadzenCard Class="pa-2" Style="height:100%;">
+                <div>
+                    <RadzenText TextStyle="TextStyle.H6" Class=" mb-3">
+                        <RadzenIcon Icon="menu_book"  Class="mr-2" />
                         Interactive reference
-                    </MudText>
-                    <MudText Typo="Typo.body2" Class="mb-4">
+                    </RadzenText>
+                    <RadzenText Class="mb-4" TextStyle="TextStyle.Body2">
                         Browse every endpoint, read the per-method descriptions, and try live
                         requests from the Scalar UI.
-                    </MudText>
-                    <MudButton Href="/api-docs"
-                               Target="_blank"
-                               Variant="Variant.Filled"
-                               Color="Color.Primary"
-                               EndIcon="@Icons.Material.Filled.OpenInNew">
-                        Open API reference
-                    </MudButton>
-                </MudCardContent>
-            </MudCard>
-        </MudItem>
-        <MudItem xs="12" md="6">
-            <MudCard Elevation="2" Class="pa-2" Style="height:100%;">
-                <MudCardContent>
-                    <MudText Typo="Typo.h6" GutterBottom="true">
-                        <MudIcon Icon="@Icons.Material.Filled.DataObject" Class="mr-2" />
+                    </RadzenText>
+                    <RadzenLink Target="_blank" Icon="open_in_new" Path="/api-docs" Text="Open API reference" />
+                </div>
+            </RadzenCard>
+        </RadzenColumn>
+        <RadzenColumn Size="12" SizeMD="6">
+            <RadzenCard Class="pa-2" Style="height:100%;">
+                <div>
+                    <RadzenText TextStyle="TextStyle.H6" Class=" mb-3">
+                        <RadzenIcon Icon="data_object"  Class="mr-2" />
                         OpenAPI document
-                    </MudText>
-                    <MudText Typo="Typo.body2" Class="mb-4">
+                    </RadzenText>
+                    <RadzenText Class="mb-4" TextStyle="TextStyle.Body2">
                         Generate a client in your language of choice from the machine-readable
                         OpenAPI 3 specification.
-                    </MudText>
-                    <MudButton Href="/openapi/v1.json"
-                               Target="_blank"
-                               Variant="Variant.Outlined"
-                               Color="Color.Primary"
-                               EndIcon="@Icons.Material.Filled.Download">
-                        Download openapi.json
-                    </MudButton>
-                </MudCardContent>
-            </MudCard>
-        </MudItem>
-    </MudGrid>
+                    </RadzenText>
+                    <RadzenLink Target="_blank" Icon="download" Path="/openapi/v1.json" Text="Download openapi.json" />
+                </div>
+            </RadzenCard>
+        </RadzenColumn>
+    </RadzenRow>
 
-    <MudPaper Elevation="2" Class="pa-4 mb-6">
-        <MudText Typo="Typo.h6" GutterBottom="true">Authentication</MudText>
-        <MudText Typo="Typo.body2" Class="mb-3">
-            Send your API key in the <MudChip T="string" Size="Size.Small" Color="Color.Primary">@ApiOptions.HeaderName</MudChip>
+    <RadzenCard Class="pa-4 mb-6">
+        <RadzenText TextStyle="TextStyle.H6" Class=" mb-3">Authentication</RadzenText>
+        <RadzenText Class="mb-3" TextStyle="TextStyle.Body2">
+            Send your API key in the <RadzenBadge BadgeStyle="BadgeStyle.Primary">@ApiOptions.HeaderName</RadzenBadge>
             header on every request. Requests without a valid key receive <b>401 Unauthorized</b>.
-        </MudText>
-        <MudTextField T="string"
-                      Label="@($"{ApiOptions.HeaderName} value")"
-                      Value="@ApiOptions.ApiKey"
-                      ReadOnly="true"
-                      Variant="Variant.Outlined"
-                      Adornment="Adornment.Start"
-                      AdornmentIcon="@Icons.Material.Filled.Key" />
-        <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+        </RadzenText>
+        <RadzenFormField Text="@($"{ApiOptions.HeaderName} value")" Style="width:100%;">
+            <Start><RadzenIcon Icon="key" /></Start>
+            <ChildContent>
+                <RadzenTextBox Value="@ApiOptions.ApiKey" ReadOnly="true" aria-label="@($"{ApiOptions.HeaderName} value")" Style="width:100%;" />
+            </ChildContent>
+        </RadzenFormField>
+        <RadzenAlert AlertStyle="AlertStyle.Info" Class="mt-3" AllowClose="false">
             This is the default demo key. Override it per deployment via the
             <code>PublicApi:ApiKey</code> configuration setting and rotate it regularly.
-        </MudAlert>
-    </MudPaper>
+        </RadzenAlert>
+    </RadzenCard>
 
-    <MudPaper Elevation="2" Class="pa-4 mb-6">
-        <MudText Typo="Typo.h6" GutterBottom="true">Example request</MudText>
-        <MudText Typo="Typo.body2" Class="mb-2">Base URL: <code>@BaseUrl</code></MudText>
+    <RadzenCard Class="pa-4 mb-6">
+        <RadzenText TextStyle="TextStyle.H6" Class=" mb-3">Example request</RadzenText>
+        <RadzenText Class="mb-2" TextStyle="TextStyle.Body2">Base URL: <code>@BaseUrl</code></RadzenText>
         <pre style="background:#1e1e1e;color:#d4d4d4;padding:1rem;border-radius:6px;overflow:auto;">
 <code>curl "@BaseUrl/api/v1/cost/main" \
   -H "@ApiOptions.HeaderName: @ApiOptions.ApiKey"</code></pre>
-    </MudPaper>
+    </RadzenCard>
 
-    <MudText Typo="Typo.h5" GutterBottom="true">Endpoints</MudText>
-    <MudSimpleTable Elevation="2" Dense="true" Hover="true" Class="mb-6">
+    <RadzenText TextStyle="TextStyle.H5" Class=" mb-3">Endpoints</RadzenText>
+    <table class="rz-data-grid-data mb-6">
         <thead>
             <tr>
                 <th>Method</th>
@@ -102,23 +89,23 @@
             @foreach (var group in Endpoints)
             {
                 <tr>
-                    <td colspan="3" style="background:var(--mud-palette-background-grey);font-weight:600;">
+                    <td colspan="3" style="background:var(--rz-base-200);font-weight:600;">
                         @group.Key
                     </td>
                 </tr>
                 @foreach (var e in group.Value)
                 {
                     <tr>
-                        <td><MudChip T="string" Size="Size.Small" Color="Color.Success">GET</MudChip></td>
+                        <td><RadzenBadge BadgeStyle="BadgeStyle.Success">GET</RadzenBadge></td>
                         <td><code>@e.Path</code></td>
                         <td>@e.Description</td>
                     </tr>
                 }
             }
         </tbody>
-    </MudSimpleTable>
+    </table>
 
-</MudContainer>
+</div>
 
 @code {
     private string BaseUrl => Nav.BaseUri.TrimEnd('/');

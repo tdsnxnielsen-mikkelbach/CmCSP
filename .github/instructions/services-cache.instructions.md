@@ -3,6 +3,10 @@ applyTo: "src/**/Services/**/*.cs"
 ---
 ## Cache & Data Platform Architecture — Always Read Before Editing
 
+The application targets .NET 10. Its presentation stack is Blazor Interactive
+Server + Radzen.Blazor + ApexCharts; shared models and services must not depend
+on a UI library's filter/date-range types.
+
 Cost data flows through three concerns that must be kept distinct. Any change to a
 service file must preserve this contract:
 
@@ -33,6 +37,11 @@ Consumers depend on the `ICacheService` abstraction; the backing store is chosen
 | `cm_main` | Cost by service/meter | `BlobCostManagementService` |
 | `cm_rg` | Cost by resource group | `BlobCostManagementService` |
 | `cm_tag` | Cost by tag | `BlobCostManagementService` |
+| `cm_main_amort` | API-backed amortized cost | `CostManagementService` |
+
+In multi-tenant mode keys are prefixed through the current `TenantScope`.
+Preserve customer/partner cache separation, scoped SQL reads, and ownership
+stamping on writes; view filters never widen the authorized tenant scope.
 
 ### Read / Write Paths (`BlobCostManagementService`)
 - **Read (web app):** when `IDbContextFactory<CmcspDbContext>` is injected (SQL enabled),
@@ -54,6 +63,8 @@ Consumers depend on the `ICacheService` abstraction; the backing store is chosen
   skipped, not fetched.
 - Fresh collection is owned by **`CostCollectorJob`** (nightly + on-demand), which calls
   `ICostManagementService.RefreshAsync()`. Any new cache key must also be produced there.
+- Inventory, security and carbon enrichments are separate on-demand ARM reads with
+  their own in-process memoization, not collected cost datasets.
 
 ### Configuration
 TTL and store settings live in `CostManagementOptions` (`appsettings.json` → `AzureCostManagement`):

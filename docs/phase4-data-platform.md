@@ -1,204 +1,86 @@
-# Phase 4 — SQL + Redis data platform
+# SQL and Managed Redis data platform
 
-Phase 4 replaces the bespoke Azure Table/Blob persistence and the in-process +
-Storage-backed cache with two standard managed services:
+The optional data platform separates the export source feed, durable facts, and
+disposable cache. It serves the .NET 10 Blazor + Radzen + ApexCharts dashboard and
+the collector through the shared [Core project](../src/CmCSP.Core/CmCSP.Core.csproj).
 
-- **Azure SQL Database (serverless tier)** — durable store for parsed cost rows, the
-  collection audit trail, and the user-added subscription list.
-- **Azure Managed Redis (Basic SKU)** — a shared cache across web replicas and jobs,
-  replacing the `IMemoryCache` + `AzureStorageCacheService` (Table/Blob) hybrid.
+## Storage responsibilities
 
-**Everything authenticates with managed identity.** No SQL logins, no Redis access keys,
-no connection-string secrets in config or Key Vault.
+| Store | Responsibility |
+|---|---|
+| Azure Blob cost exports | Authoritative CSV input; not a cache |
+| Azure SQL `CostFact` | Durable aggregated cost facts |
+| SQL `CollectionAudit`, `UserSubscription`, `AppSetting` | Audit and runtime state |
+| SQL `Customer`, `CustomerSubscription` | Optional multi-tenant registry |
+| `ICacheService` | Ready-to-serve datasets, memory L1 plus configured L2 |
 
-> Status: in progress. The data model (this document, the EF Core context, and
-> `infra/sql/schema.sql`) is the first increment. Provisioning the live SQL/Redis
-> resources and cutting services over are gated, follow-on steps.
+EF Core entities/context live under [Data](../src/CmCSP.Core/Data);
+[schema.sql](../infra/sql/schema.sql) is the idempotent provisioning DDL.
+The SQL fact natural key contains dataset, usage date, subscription, dimensions,
+and currency. Preserve subscription disambiguation and idempotent upsert behavior.
 
-## Why this change
+## Read and write paths
 
-The current design works but carries avoidable complexity and cost:
+- Collector `RefreshAsync`: parse exports, upsert facts in batches, publish caches.
+- Web reads: load SQL facts and warm serving caches; an empty initial SQL store
+  can fall back to a one-off export parse.
+- Amortized cost remains API-backed.
+- Backfill: explicitly import all historical export CSVs into SQL.
+- Startup warmup: rehydrate existing shared entries without live collection.
 
-- `AzureStorageCacheService` hand-rolls a 60 KB Table-vs-Blob routing scheme and a
-  separate `CacheCleanupJob` to evict expired rows. Redis does TTL eviction natively.
-- Cost rows, audit rows, and the subscription list live in three different Table/Blob
-  shapes with bespoke (de)serialisation. SQL gives one queryable, durable store.
-- The subscription list is dual-written to a Key Vault secret **and** a temp file.
+## Cache selection
 
-## Data model
+`AzureCostManagement:Redis:Enabled=true` selects `RedisCacheService`.
+It wraps `IMemoryCache` with Managed Redis and native TTL eviction. Redis
+authentication uses `DefaultAzureCredential` and the Azure Redis token extension.
+TLS port defaults to 10000.
 
-EF Core context: `CmCSP.Data.CmcspDbContext` (project `CmCSP.Core`). Raw DDL mirror:
-[`infra/sql/schema.sql`](../infra/sql/schema.sql).
+Otherwise `AzureStorageCacheService` supplies memory L1 and optional Table/Blob L2.
+The legacy implementation routes small payloads to Table Storage and large
+payloads to Blob Storage. Consumers depend on `ICacheService`, not on its backing store.
 
-### `CostFact` — aggregated cost rows
+`CacheExpirationMinutes` and the Redis/AzureCache sections control cache settings.
+Scoped deployments prefix cost keys by tenant/customer. The principal datasets
+are `cm_main`, `cm_rg`, `cm_tag`, and API-backed `cm_main_amort`.
 
-The durable replacement for the Table/Blob cache of parsed `CostRow`s. One row per
-**natural key** `(Dataset, UsageDate, SubscriptionId, ServiceName, ResourceGroupName, Tag, Currency)`,
-enforced by a unique index so re-collection and historical backfill **upsert** cleanly
-(latest write wins).
+## Enablement
 
-| Column | Type | Notes |
-|---|---|---|
-| `Id` | `bigint` identity | surrogate PK |
-| `Dataset` | `nvarchar(16)` | `main`, `rg`, `tag`, `main_amort` |
-| `UsageDate` | `date` | daily granularity |
-| `SubscriptionId` / `SubscriptionName` | `nvarchar(36)` / `(256)` | |
-| `ServiceName` | `nvarchar(256)` | populated for `main` / `main_amort` |
-| `ResourceGroupName` | `nvarchar(256)` | populated for `rg` |
-| `Tag` | `nvarchar(512)` | populated for `tag` |
-| `Cost` / `NormalizedCost` | `decimal(38,18)` | raw + TargetCurrency |
-| `Currency` | `nvarchar(8)` | ISO 4217 |
+The platform is gated by `DEPLOY_DATA_PLATFORM` / `deployDataPlatform`.
 
-Dimension columns default to `''` (not `NULL`) so the unique natural-key index dedupes
-correctly — SQL Server treats `NULL`s as distinct.
-
-### `CollectionAudit` — collection run history
-
-Mirrors `CollectionAuditRecord` (replaces the `cmcspcollectaudit` table). Indexed by
-`StartedUtc DESC` for the dashboard's "last run" read.
-
-### `UserSubscription` — runtime UI-added subscriptions
-
-`SubscriptionId` (PK) + `AddedUtc`. Config-provided IDs stay in config; only UI-added
-IDs are persisted here, replacing the Key Vault secret + temp-file dual-write.
-
-### `AppSetting` — small runtime flags
-
-`Key`/`Value`/`UpdatedUtc` — e.g. the runtime `CostDetails.Enabled` flag, replacing
-one-off Key Vault flag secrets.
-
-## Authentication (managed identity, no secrets)
-
-SQL connection string uses Entra token auth — `Microsoft.Data.SqlClient` acquires the
-token via `DefaultAzureCredential`:
-
-```
-Server=tcp:<server>.database.windows.net,1433;Database=<db>;Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;
-```
-
-Each managed identity is provisioned as a **contained database user** with
-`db_datareader` + `db_datawriter`:
-
-```sql
-CREATE USER [<mi-name>] FROM EXTERNAL PROVIDER;
-ALTER ROLE db_datareader ADD MEMBER [<mi-name>];
-ALTER ROLE db_datawriter ADD MEMBER [<mi-name>];
-```
-
-For system-assigned managed identities, `<mi-name>` is the **resource name** (its Entra
-display name) — i.e. the Container App (`cmcsp`) and the collect job (`cmcsp-collect`).
-The postprovision hook (Phase 8) runs this T-SQL as the deployer (the SQL Entra admin).
-
-Redis (Managed Redis, Basic) uses Entra data-access policies per MI principal; access-key
-auth is disabled. The client (`StackExchange.Redis`) authenticates with a
-`DefaultAzureCredential` token.
-
-The cache tier is selected by config: `AzureCostManagement:Redis:Enabled=true` routes through
-[`RedisCacheService`](../src/CmCSP.Core/Services/RedisCacheService.cs); otherwise the legacy
-[`AzureStorageCacheService`](../src/CmCSP.Core/Services/AzureStorageCacheService.cs) (Table/Blob)
-is used. Both implement [`ICacheService`](../src/CmCSP.Core/Services/ICacheService.cs) and wrap
-`IMemoryCache` as L1. The postprovision hook sets `AzureCostManagement__Redis__Enabled/HostName/Port`
-on the app + collect job when the data platform is provisioned.
-
-## Migrations
-
-The schema is owned by EF Core migrations in `CmCSP.Core`:
-
-```
-dotnet ef migrations add <Name> --project src/CmCSP.Core --startup-project src/CmCSP.csproj
-dotnet ef database update      --project src/CmCSP.Core --startup-project src/CmCSP.csproj
-```
-
-`infra/sql/schema.sql` is the idempotent raw-DDL equivalent for script-based application
-(e.g. from the provisioning hook) and as a review reference.
-
-## Rollout sequence (gated)
-
-1. ✅ Data model: EF Core context + `infra/sql/schema.sql` + this doc.
-2. ✅ Provision Azure SQL serverless + Managed Redis in bicep (MI-only auth) — **cost-incurring**.
-   Authored in [`infra/modules/data.bicep`](../infra/modules/data.bicep), gated behind the `deployDataPlatform`
-   flag in [`infra/main.bicep`](../infra/main.bicep). Enable with
-   `azd env set DEPLOY_DATA_PLATFORM true` plus the SQL Entra admin (see below), then `azd provision`.
-3. ✅ Postprovision hook: create MI contained-DB users + apply `infra/sql/schema.sql`.
-   Implemented as Phase 8 in [`infra/hooks/postprovision.ps1`](../infra/hooks/postprovision.ps1)
-   (runs only when `DATA_PLATFORM_ENABLED=true`; uses the deployer's Entra credential).
-4. ✅ Redis-backed `ICacheService`; migrate `CollectionAuditService` and
-   `SubscriptionStoreService` to SQL. Both services take an optional
-   `IDbContextFactory<CmcspDbContext>` (registered in `Program.cs` when
-   `ConnectionStrings:Sql` is set) and use SQL as the system of record, falling back to
-   Table Storage / Key Vault when SQL is absent.
-5. ✅ One-time historical backfill of existing blob exports into `CostFact`. Run-once
-   `CostBackfillJob` ([`src/CostBackfillJob`](../src/CostBackfillJob/Program.cs)) reads every
-   export CSV and upserts aggregated rows by natural key (idempotent, latest export wins).
-6. ✅ Retire `CacheCleanupJob`. Removed the project, its `bicep/app.bicep` job + `bicep/main.bicep`
-   storage RBAC, and the `postdeploy`/`postprovision` wiring. Redis does TTL eviction natively and the
-   `CostFact` table is durable (not pruned on a cadence), so the job is obsolete. Blob exports remain the
-   source feed for the collector and backfill.
-
-## Enabling the data platform
-
-The data platform is **off by default**. To provision it:
-
-```pwsh
-# Entra admin for the SQL server — typically the deployer (interactive user)
-azd env set SQL_ADMIN_LOGIN  (az ad signed-in-user show --query userPrincipalName -o tsv)
-azd env set SQL_ADMIN_OBJECT_ID (az ad signed-in-user show --query id -o tsv)
+```powershell
+azd env set SQL_ADMIN_LOGIN "<entra-admin-login>"
+azd env set SQL_ADMIN_OBJECT_ID "<entra-admin-object-id>"
 azd env set DEPLOY_DATA_PLATFORM true
 azd provision
-azd deploy   # always re-deploy the real image after provision
+azd deploy
 ```
 
-The bicep creates the SQL server (Entra-only auth, deployer as AD admin), a serverless
-database, an Azure Managed Redis (`Balanced_B0`) cluster with key-auth disabled, and a
-`default` access-policy assignment for the Container App + collect job managed identities.
-The contained-DB users and schema are applied by the postprovision hook.
+Provisioning incurs Azure charges. The hook applies schema, creates contained
+database users, and wires connection/cache settings to the web app and collector.
+It disables legacy Storage L2 when Redis is selected.
 
-When the data platform is enabled, the postprovision hook (Phase 6) **disables** the legacy
-storage Table/Blob cache (`AzureCostManagement__AzureCache__Enabled=false`) so Redis is the
-sole L2 cache; SQL `CostFact` is the durable store. With the platform off, the app falls back
-to the storage cache and parses exports directly (no SQL).
+## Authentication
 
-### SQL serverless auto-pause (performance note)
+SQL uses an Entra-authenticated connection string:
 
-The database is `GP_S_Gen5_2` serverless with `autoPauseDelay = 60 min` and `minCapacity 0.5`.
-After 60 min idle the DB auto-pauses; the first query then pays a resume penalty (seconds).
-The worst case is a **cold cache and a paused DB at the same time**. In practice this is
-hidden once Phase 5 is in effect — the web app keeps `minReplicas: 1` (warm L1 + warm Redis
-connection) and Redis L2 serves most reads, so SQL is hit rarely (cold replica / new revision /
-nightly collector). **Decision (2026-06-19):** keep auto-pause at 60 min for cost — the resume
-penalty is acceptable given how seldom SQL is on the request path. Revisit `autoPauseDelay` /
-`minCapacity` only if cold-start latency becomes user-visible.
+```text
+Server=tcp:<server>.database.windows.net,1433;Database=<database>;Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;
+```
 
+Runtime identities need contained users with the configured data-reader/writer
+roles. Redis has per-identity Entra access policies and disabled access-key auth.
+These are not SQL-password or Redis-key secrets. The Entra app credential for
+browser sign-in and service-principal Azure calls is a separate concern.
 
-## Cost data flow (source feed → durable store → cache)
+## Capacity and failure behavior
 
-`BlobCostManagementService` separates three concerns:
+The data module defines SQL serverless with 60-minute auto-pause and minimum
+capacity 0.5, plus Managed Redis `Balanced_B0`. SQL resume can delay a cold read;
+memory/Redis normally shield interactive requests. Redis connection failures
+are logged and can degrade to L1-only operation; this is not durable storage.
 
-1. **Source feed** — Cost Management blob exports (CSV). Parsed, never cached.
-2. **Durable store** — SQL `CostFact`. Survives cache eviction and restarts.
-3. **Cache** — `ICacheService` (L1 `IMemoryCache` + L2 Redis) serving `cm_main`/`cm_rg`/`cm_tag`.
+Use the repository's `-chiseled-extra` .NET container bases: SqlClient requires
+globalization support. Do not switch to invariant-globalization images.
 
-- **Write path (collector):** `ICostManagementService.RefreshAsync(ct)` parses the exports and,
-  when SQL is configured, upserts the aggregated rows into `CostFact` (`UpsertFactsAsync`, keyed
-  by the natural key, batched at 5k) before warming the cache. Amortized data stays API-only.
-- **Read path (web app):** `PopulateAllCachesAsync` loads from `CostFact` (`LoadFromSqlAsync`)
-  and warms the cache; only an empty `CostFact` (pre-first-collection) triggers a one-off blob
-  parse. The optional `IDbContextFactory<CmcspDbContext>` ctor param is injected by DI when
-  `ConnectionStrings:Sql` is set.
-
-## Collector fan-out (per-subscription partitioning)
-
-`CostCollectorJob` supports splitting the subscription set across executions:
-
-| Env var | Default | Meaning |
-|---------|---------|---------|
-| `COLLECT_PARTITION_COUNT` | `1` | Number of partitions. `>1` enables fan-out. |
-| `COLLECT_PARTITION_INDEX` | `0` | This execution's partition (`0 .. count-1`). |
-
-Each execution collects only the subscriptions where `index == position % count` and restricts
-blob parsing/persistence via `BlobCostManagementService.SubscriptionFilter`. This is **data-safe**
-because `CostFact`'s natural key includes `SubscriptionId`, so disjoint partitions never conflict.
-
-Container Apps Jobs run identical replicas with no native task index, so fan-out is achieved with
-**separate scheduled executions** each pinned to a distinct `COLLECT_PARTITION_INDEX`, rather than
-by bumping `parallelism` (which the bicep keeps at `1` by default).
+See [collection](data-collection.md), [roles](azure-roles.md), and
+[service instructions](../.github/instructions/services-cache.instructions.md).
