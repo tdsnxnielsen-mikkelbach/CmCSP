@@ -55,6 +55,7 @@ public sealed class BlobCostManagementService : ICostManagementService
 
     // ── Cache ──────────────────────────────────────────────────────────────────
     private const string KeyMain = "cm_main";
+    private const string KeyMainDailySub = "cm_main_daily_sub";
     private const string KeyRg   = "cm_rg";
     private const string KeyTag  = "cm_tag";
 
@@ -130,6 +131,77 @@ public sealed class BlobCostManagementService : ICostManagementService
     public Task<List<CostRow>> GetMainCostDataAsync(CancellationToken ct = default) =>
         GetOrPopulateAsync(KeyMain, ct);
 
+    public async Task<List<SubscriptionDailyCost>> GetDailySubscriptionCostsAsync(CancellationToken ct = default)
+    {
+        var scope = Scope;
+        if (scope.IsDenied || (!scope.IsUnscoped && scope.CustomerIds.Count == 0))
+            return [];
+
+        var cacheKey = Scoped(KeyMainDailySub);
+        var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
+        var (found, cached) =
+            await _cache.TryGetValueAsync<List<SubscriptionDailyCost>>(cacheKey, ttl, ct);
+        if (found && cached is not null)
+        {
+            _loadingState.Update(KeyMain, LoadPhase.Ready, $"{cached.Count:N0} daily subscription rows (cached)");
+            return cached;
+        }
+
+        var scopeKey = Scoped(string.Empty);
+        var fetchLock = _fetchLocks.GetOrAdd(scopeKey, static _ => new SemaphoreSlim(1, 1));
+        await fetchLock.WaitAsync(ct);
+        try
+        {
+            (found, cached) =
+                await _cache.TryGetValueAsync<List<SubscriptionDailyCost>>(cacheKey, ttl, ct);
+            if (found && cached is not null)
+            {
+                _loadingState.Update(KeyMain, LoadPhase.Ready, $"{cached.Count:N0} daily subscription rows (cached)");
+                return cached;
+            }
+
+            _loadingState.Update(KeyMain, LoadPhase.Loading);
+            if (_dbFactory is not null)
+            {
+                var sqlSummary = await LoadDailySubscriptionCostsFromSqlAsync(scope, ct);
+                if (sqlSummary.Count > 0)
+                {
+                    await _cache.SetAsync(cacheKey, sqlSummary, ttl, ct);
+                    _loadingState.Update(KeyMain, LoadPhase.Ready, $"{sqlSummary.Count:N0} daily subscription rows");
+                    return sqlSummary;
+                }
+
+                if (!scope.IsUnscoped)
+                {
+                    await _cache.SetAsync(cacheKey, sqlSummary, ttl, ct);
+                    _loadingState.Update(KeyMain, LoadPhase.Ready, "0 daily subscription rows");
+                    return sqlSummary;
+                }
+            }
+
+            await PopulateAllCachesAsync(ct);
+            var (populated, result) =
+                await _cache.TryGetValueAsync<List<SubscriptionDailyCost>>(cacheKey, ttl, ct);
+            _loadingState.Update(KeyMain, LoadPhase.Ready, $"{result?.Count ?? 0:N0} daily subscription rows");
+            return populated && result is not null ? result : [];
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _loadingState.Update(KeyMain, LoadPhase.Idle);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _loadingState.Update(KeyMain, LoadPhase.Failed, "summary query failed");
+            _logger.LogError(ex, "Failed to load daily subscription cost summary for scope {Scope}.", Scope.CacheKeyPrefix);
+            throw;
+        }
+        finally
+        {
+            fetchLock.Release();
+        }
+    }
+
     public Task<List<CostRow>> GetRgCostDataAsync(CancellationToken ct = default) =>
         GetOrPopulateAsync(KeyRg, ct);
 
@@ -179,7 +251,7 @@ public sealed class BlobCostManagementService : ICostManagementService
         // Remove the current scope's payloads (empty prefix in the single-tenant path).
         await Task.WhenAll(new[]
         {
-            KeyMain, KeyRg, KeyTag, "cm_main_amort", "cm_budgets", "cm_budgets_subs",
+            KeyMain, KeyMainDailySub, KeyRg, KeyTag, "cm_main_amort", "cm_budgets", "cm_budgets_subs",
             "cm_advisor", "cm_advisor_scores", "cm_sub_names", "cm_forecast",
             "cm_forecast_amort", "cm_publisher"
         }.Select(key => _cache.RemoveAsync(Scoped(key), ct)));
@@ -525,8 +597,10 @@ public sealed class BlobCostManagementService : ICostManagementService
         List<CostRow> mainList, List<CostRow> rgList, List<CostRow> tagList, bool anyError, CancellationToken ct)
     {
         var expiry = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
+        var dailySubscriptionCosts = CostDataAggregation.BySubscriptionDay(mainList);
         await Task.WhenAll(
             _cache.SetAsync(Scoped(KeyMain), mainList, expiry, ct),
+            _cache.SetAsync(Scoped(KeyMainDailySub), dailySubscriptionCosts, expiry, ct),
             _cache.SetAsync(Scoped(KeyRg), rgList, expiry, ct),
             _cache.SetAsync(Scoped(KeyTag), tagList, expiry, ct));
 
@@ -577,6 +651,51 @@ public sealed class BlobCostManagementService : ICostManagementService
             main.Count, rg.Count, tag.Count, cutoff, scope.IsUnscoped ? "unscoped" : scope.CacheKeyPrefix);
 
         return (main, rg, tag);
+    }
+
+    private async Task<List<SubscriptionDailyCost>> LoadDailySubscriptionCostsFromSqlAsync(
+        TenantScope scope, CancellationToken ct)
+    {
+        var cutoff = DateOnly.FromDateTime(RowCutoff);
+        await using var db = await _dbFactory!.CreateDbContextAsync(ct);
+        var query = db.CostFacts
+            .AsNoTracking()
+            .Where(f => f.Dataset == DatasetMain && f.UsageDate >= cutoff);
+
+        if (!scope.IsUnscoped)
+        {
+            var ids = scope.CustomerIds;
+            query = query.Where(f => ids.Contains(f.CustomerId));
+        }
+
+        var groups = await query
+            .GroupBy(f => new
+            {
+                f.UsageDate,
+                f.CustomerId,
+                f.SubscriptionId,
+                f.SubscriptionName,
+                f.TenantId
+            })
+            .Select(g => new
+            {
+                g.Key.UsageDate,
+                g.Key.CustomerId,
+                g.Key.SubscriptionId,
+                g.Key.SubscriptionName,
+                g.Key.TenantId,
+                NormalizedCost = g.Sum(f => f.NormalizedCost)
+            })
+            .ToListAsync(ct);
+
+        return groups.Select(g => new SubscriptionDailyCost(
+                g.UsageDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
+                g.SubscriptionId,
+                g.SubscriptionName,
+                g.CustomerId,
+                g.TenantId,
+                g.NormalizedCost))
+            .ToList();
     }
 
     /// <summary>Upserts the parsed rows into <c>CostFact</c> by natural key (idempotent, latest wins).</summary>

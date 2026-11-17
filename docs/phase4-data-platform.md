@@ -22,8 +22,9 @@ and currency. Preserve subscription disambiguation and idempotent upsert behavio
 ## Read and write paths
 
 - Collector `RefreshAsync`: parse exports, upsert facts in batches, publish caches.
-- Web reads: load SQL facts and warm serving caches; an empty initial SQL store
-  can fall back to a one-off export parse.
+- Web reads: use the existing dataset/date indexes for detailed facts; summary
+  pages use a scoped SQL `GROUP BY` for daily subscription totals. An empty initial
+  SQL store can fall back to a one-off export parse.
 - Amortized cost remains API-backed.
 - Backfill: explicitly import all historical export CSVs into SQL.
 - Startup warmup: rehydrate existing shared entries without live collection.
@@ -40,8 +41,8 @@ The legacy implementation routes small payloads to Table Storage and large
 payloads to Blob Storage. Consumers depend on `ICacheService`, not on its backing store.
 
 `CacheExpirationMinutes` and the Redis/AzureCache sections control cache settings.
-Scoped deployments prefix cost keys by tenant/customer. The principal datasets
-are `cm_main`, `cm_rg`, `cm_tag`, and API-backed `cm_main_amort`.
+Scoped deployments prefix cost keys by tenant/customer. The principal datasets are `cm_main`, `cm_main_daily_sub`, `cm_rg`, `cm_tag`,
+and API-backed `cm_main_amort`.
 
 ## Enablement
 

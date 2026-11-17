@@ -47,6 +47,7 @@ public sealed class CostManagementService : ICostManagementService
 
     // ── cache keys ──────────────────────────────────────────────────────────
     private const string KeyMain        = "cm_main";
+    private const string KeyMainDailySub = "cm_main_daily_sub";
     private const string KeyMainAmort   = "cm_main_amort";
     private const string KeyRg          = "cm_rg";
     private const string KeyTag         = "cm_tag";
@@ -118,6 +119,22 @@ public sealed class CostManagementService : ICostManagementService
     public Task<List<CostRow>> GetMainCostDataAsync(CancellationToken ct = default) =>
         GetOrFetchAsync(KeyMain, QueryType.ByService, metric: "ActualCost", ct);
 
+    public async Task<List<SubscriptionDailyCost>> GetDailySubscriptionCostsAsync(CancellationToken ct = default)
+    {
+        var ttl = TimeSpan.FromMinutes(_options.CacheExpirationMinutes);
+        var key = Scoped(KeyMainDailySub);
+        var (found, cached) = await _cache.TryGetValueAsync<List<SubscriptionDailyCost>>(key, ttl, ct);
+        if (found && cached is not null)
+        {
+            _loadingState.Update(KeyMain, LoadPhase.Ready, $"{cached.Count:N0} daily subscription rows (cached)");
+            return cached;
+        }
+
+        var result = CostDataAggregation.BySubscriptionDay(await GetMainCostDataAsync(ct));
+        await _cache.SetAsync(key, result, ttl, ct);
+        return result;
+    }
+
     public Task<List<CostRow>> GetAmortizedMainCostDataAsync(CancellationToken ct = default) =>
         GetOrFetchAsync(KeyMainAmort, QueryType.ByService, metric: "AmortizedCost", ct);
 
@@ -139,7 +156,7 @@ public sealed class CostManagementService : ICostManagementService
     {
         await Task.WhenAll(new[]
         {
-            KeyMain, KeyMainAmort, KeyRg, KeyTag, KeyBudgets, KeyBudgetsSubs,
+            KeyMain, KeyMainDailySub, KeyMainAmort, KeyRg, KeyTag, KeyBudgets, KeyBudgetsSubs,
             KeyAdvisor, KeyAdvisorScores, KeySubNames, KeyForecast, KeyForecastAmort, KeyPublisher
         }.Select(key => _cache.RemoveAsync(Scoped(key), ct)));
         // Reset phases so the loading banner re-appears on the next fetch.
@@ -154,6 +171,10 @@ public sealed class CostManagementService : ICostManagementService
         // Query-API path has no durable SQL store: invalidate and re-fetch into the cache.
         await InvalidateCacheAsync(ct);
         var main = await GetMainCostDataAsync(ct);
+        var dailySubscriptionCosts = CostDataAggregation.BySubscriptionDay(main);
+        await _cache.SetAsync(
+            Scoped(KeyMainDailySub), dailySubscriptionCosts,
+            TimeSpan.FromMinutes(_options.CacheExpirationMinutes), ct);
         var rg   = await GetRgCostDataAsync(ct);
         var tag  = await GetTagCostDataAsync(ct);
         return new CostCollectionResult(main.Count, rg.Count, tag.Count);

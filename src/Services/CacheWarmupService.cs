@@ -91,8 +91,7 @@ public sealed class CacheWarmupService : BackgroundService
             rehydrated);
     }
 
-    // Rehydrates the four shared datasets for one tenant partition (prefix). Returns the count
-    // of datasets found in the persistent cache (a miss means the collector hasn't produced it).
+    // Rehydrates shared datasets and their subscription summary for one tenant partition.
     private async Task<int> RehydratePartitionAsync(string prefix, CancellationToken stoppingToken)
     {
         var rehydrated = 0;
@@ -130,6 +129,23 @@ public sealed class CacheWarmupService : BackgroundService
             {
                 _logger.LogWarning(ex, "CacheWarmupService: failed to rehydrate {Key}.", key);
             }
+        }
+
+        var summaryKey = prefix + "cm_main_daily_sub";
+        try
+        {
+            var (found, summary) = await _cache.TryGetValueAsync<List<SubscriptionDailyCost>>(
+                summaryKey, _memoryTtl, stoppingToken);
+            if (found && summary is not null)
+                rehydrated++;
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "CacheWarmupService: failed to rehydrate {Key}.", summaryKey);
         }
         return rehydrated;
     }

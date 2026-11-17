@@ -289,6 +289,14 @@ public abstract class CostPageBase : ComponentBase, IDisposable
         return rows.Where(r => sel.Contains(r.SubscriptionId)).ToList();
     }
 
+    protected IReadOnlyList<SubscriptionDailyCost> ApplySubFilter(IEnumerable<SubscriptionDailyCost> rows)
+    {
+        var sel = State.SelectedSubscriptionIds;
+        if (sel.Count == 0)
+            return rows as IReadOnlyList<SubscriptionDailyCost> ?? rows.ToList();
+        return rows.Where(r => sel.Contains(r.SubscriptionId)).ToList();
+    }
+
     /// <summary>True when tenant attribution is meaningful (multi-tenancy on with rows tagged).</summary>
     protected bool ShowTenantColumn => Options.MultiTenancy.Enabled;
 
@@ -326,6 +334,33 @@ public abstract class CostPageBase : ComponentBase, IDisposable
                 _subTenantMap[r.SubscriptionId] = r.TenantId;
         }
         await WarmTenantNamesAsync(list, ct);
+    }
+
+    protected async Task IndexSubscriptionData(
+        IEnumerable<SubscriptionDailyCost> rows, CancellationToken ct = default)
+    {
+        var list = rows as ICollection<SubscriptionDailyCost> ?? rows.ToList();
+        foreach (var row in list)
+        {
+            if (string.IsNullOrWhiteSpace(row.SubscriptionId)) continue;
+            if (!string.IsNullOrWhiteSpace(row.SubscriptionName) &&
+                (!_subNames.TryGetValue(row.SubscriptionId, out var existing) ||
+                 string.IsNullOrWhiteSpace(existing) ||
+                 existing.Equals(row.SubscriptionId, StringComparison.OrdinalIgnoreCase)))
+            {
+                _subNames[row.SubscriptionId] = row.SubscriptionName;
+            }
+            if (!string.IsNullOrWhiteSpace(row.TenantId))
+                _subTenantMap[row.SubscriptionId] = row.TenantId;
+        }
+
+        if (Options.MultiTenancy.Enabled)
+        {
+            var tenantIds = list.Select(row => row.TenantId)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+            await Task.WhenAll(tenantIds.Select(id => TenantNames.GetDisplayNameAsync(id, ct)));
+        }
     }
 
     /// <summary>

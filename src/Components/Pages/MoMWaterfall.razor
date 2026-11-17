@@ -125,7 +125,7 @@
         _selectedRange = State.SelectedRange;
         await RunLoadAsync(async () =>
         {
-            var dataTask = CostService.GetMainCostDataAsync(ct);
+            var dataTask = CostService.GetDailySubscriptionCostsAsync(ct);
             var nameTask = CostService.GetSubscriptionDisplayNamesAsync(ct);
             var data  = ApplySubFilter(await dataTask);
             _subNames = await nameTask;
@@ -236,10 +236,10 @@
         }, ct);
     }
 
-    private async Task OnDateRangeChanged(CmCSP.Models.DashboardDateRange range)
+    private Task OnDateRangeChanged(CmCSP.Models.DashboardDateRange range)
     {
         State.SetDateRange(range);
         _selectedRange = range;
-        await LoadAsync(CancellationToken.None);
+        return Task.CompletedTask;
     }
 }

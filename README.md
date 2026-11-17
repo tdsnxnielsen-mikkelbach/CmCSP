@@ -38,6 +38,8 @@ is a disposable serving layer. With the data platform disabled, the app reads
 exports directly and can use the legacy Table/Blob shared cache. Direct API mode
 and enrichment calls use Azure REST APIs. Cross-tenant customer collection uses
 per-tenant service-principal tokens; managed identity alone cannot cross tenants.
+Trend, budget, month-over-month, and subscription summaries use daily
+subscription-level aggregates; dimension-heavy views retain their detailed rows.
 
 ## UI
 

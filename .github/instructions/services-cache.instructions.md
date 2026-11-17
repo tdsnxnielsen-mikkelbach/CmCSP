@@ -38,6 +38,7 @@ compress serialized L2 payloads with gzip while continuing to read legacy uncomp
 | Key | Dataset | Owner |
 |-----|---------|-------|
 | `cm_main` | Cost by service/meter | `BlobCostManagementService` |
+| `cm_main_daily_sub` | Daily main-cost totals by subscription | `BlobCostManagementService` / `CostManagementService` |
 | `cm_rg` | Cost by resource group | `BlobCostManagementService` |
 | `cm_tag` | Cost by tag | `BlobCostManagementService` |
 | `cm_main_amort` | API-backed amortized cost | `CostManagementService` |

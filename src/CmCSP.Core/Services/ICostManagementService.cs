@@ -10,6 +10,9 @@ public interface ICostManagementService
     /// <summary>Daily costs grouped by SubscriptionName + MeterCategory (service).</summary>
     Task<List<CostRow>> GetMainCostDataAsync(CancellationToken ct = default);
 
+    /// <summary>Daily main-cost totals grouped by subscription for summary charts and tables.</summary>
+    Task<List<SubscriptionDailyCost>> GetDailySubscriptionCostsAsync(CancellationToken ct = default);
+
     /// <summary>Daily costs grouped by SubscriptionName + ResourceGroupName.</summary>
     Task<List<CostRow>> GetRgCostDataAsync(CancellationToken ct = default);
 

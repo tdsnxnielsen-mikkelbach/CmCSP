@@ -9,7 +9,8 @@ controls; it does not host a nightly collection service.
 1. Home-tenant cost exports arrive as CSV blobs in `cost-exports`.
 2. `RefreshAsync` parses/aggregates cost and, with SQL enabled, upserts `CostFact`.
 3. Ready-to-serve datasets are published through `ICacheService`: memory L1 plus
-   Managed Redis L2, or the configured legacy Table/Blob L2.
+   Managed Redis L2, or the configured legacy Table/Blob L2. A daily
+   subscription-cost summary is published alongside the detailed main-cost rows.
 4. Amortized cost is fetched through the API path.
 5. The collector writes an audit record and exits with success/failure status.
 

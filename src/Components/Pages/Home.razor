@@ -297,6 +297,7 @@
     private record ServicePoint(string ServiceName, string SubscriptionId, string Label, decimal Cost);
 
     private List<CostRow> _data = [];
+    private List<SubscriptionDailyCost> _dailyData = [];
     private bool _subNamesBusy;
 
     private decimal _totalCost;
@@ -401,7 +402,10 @@
     {
         await RunLoadAsync(async () =>
         {
-            _data = ApplySubFilter(await CostService.GetMainCostDataAsync(ct)).ToList();
+            var mainTask = CostService.GetMainCostDataAsync(ct);
+            var summaryTask = CostService.GetDailySubscriptionCostsAsync(ct);
+            _data = ApplySubFilter(await mainTask).ToList();
+            _dailyData = ApplySubFilter(await summaryTask).ToList();
             await IndexSubscriptionData(_data, ct);
             Compute();
 
@@ -421,16 +425,19 @@
     {
         var start  = State.SelectedRange.Start ?? DateTime.Now.AddYears(-1);
         var end    = State.SelectedRange.End   ?? DateTime.Now;
+        var filteredSummary = _dailyData.Where(r => r.Date >= start && r.Date <= end).ToList();
         // Anchor "today" to the most recent date present in the data rather than the wall
         // clock. Azure cost data lags by 1-3 days and a brand-new calendar month often has
         // no rows yet, which would otherwise make Month-to-Date read 0. Fall back to UtcNow
         // only when there is no data at all.
-        var today  = _data.Count > 0 ? _data.Max(r => r.Date) : DateTime.UtcNow;
+        var today  = _dailyData.Count > 0
+            ? _dailyData.Max(r => r.Date)
+            : _data.Count > 0 ? _data.Max(r => r.Date) : DateTime.UtcNow;
         var filtered = _data.Where(r => r.Date >= start && r.Date <= end).ToList();
         _seriesSubIds = GetOrderedSubscriptionIds();
 
-        _totalCost    = filtered.Sum(r => r.NormalizedCost);
-        _withDataSubCount = filtered
+        _totalCost    = filteredSummary.Sum(r => r.NormalizedCost);
+        _withDataSubCount = filteredSummary
             .Where(r => !string.IsNullOrWhiteSpace(r.SubscriptionId))
             .Select(r => r.SubscriptionId)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -438,11 +445,11 @@
         // MTD and YTD are relative to the latest data date (see `today` above) — do NOT use
         // the range-filtered set so they remain correct even when the date picker spans
         // multiple years.
-        _costMtd      = _data.Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month)
+        _costMtd      = _dailyData.Where(r => r.Date.Year == today.Year && r.Date.Month == today.Month)
                              .Sum(r => r.NormalizedCost);
-        _costYtd      = _data.Where(r => r.Date.Year == today.Year)
+        _costYtd      = _dailyData.Where(r => r.Date.Year == today.Year)
                              .Sum(r => r.NormalizedCost);
-        var distinctDays = filtered.Select(r => r.Date.Date).Distinct().Count();
+        var distinctDays = filteredSummary.Select(r => r.Date.Date).Distinct().Count();
         _avgDailyCost = distinctDays > 0 ? _totalCost / distinctDays : 0m;
 
         // Daily data for current and prior month
@@ -450,11 +457,11 @@
         var priorMonth = curMonth.AddMonths(-1);
         var curDays = Enumerable.Range(1, DateTime.DaysInMonth(curMonth.Year, curMonth.Month)).ToList();
         var priorDays = Enumerable.Range(1, DateTime.DaysInMonth(priorMonth.Year, priorMonth.Month)).ToList();
-        var curBySubDay = filtered
+        var curBySubDay = filteredSummary
             .Where(r => r.Date.Year == curMonth.Year && r.Date.Month == curMonth.Month)
             .GroupBy(r => new { r.SubscriptionId, Day = r.Date.Day })
             .ToDictionary(g => (SubId: g.Key.SubscriptionId, g.Key.Day), g => g.Sum(r => r.NormalizedCost));
-        var priorBySubDay = filtered
+        var priorBySubDay = filteredSummary
             .Where(r => r.Date.Year == priorMonth.Year && r.Date.Month == priorMonth.Month)
             .GroupBy(r => new { r.SubscriptionId, Day = r.Date.Day })
             .ToDictionary(g => (SubId: g.Key.SubscriptionId, g.Key.Day), g => g.Sum(r => r.NormalizedCost));
@@ -474,13 +481,13 @@
             .ToList();
 
         // Monthly trend
-        var monthlyTotals = filtered
+        var monthlyTotals = filteredSummary
             .GroupBy(r => new { r.Date.Year, r.Date.Month })
             .Select(g => new DateTime(g.Key.Year, g.Key.Month, 1))
             .OrderBy(d => d)
             .ToList();
 
-        var monthlyBySub = filtered
+        var monthlyBySub = filteredSummary
             .GroupBy(r => new { r.SubscriptionId, r.Date.Year, r.Date.Month })
             .ToDictionary(
                 g => (SubId: g.Key.SubscriptionId, MonthStart: new DateTime(g.Key.Year, g.Key.Month, 1)),

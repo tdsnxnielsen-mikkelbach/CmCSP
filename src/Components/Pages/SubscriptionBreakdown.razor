@@ -113,7 +113,7 @@
     {
         await RunLoadAsync(async () =>
         {
-            var dataTask  = CostService.GetMainCostDataAsync(ct);
+            var dataTask  = CostService.GetDailySubscriptionCostsAsync(ct);
             var nameTask  = CostService.GetSubscriptionDisplayNamesAsync(ct);
             var amortTask = Options.CostDetails.Enabled
                 ? CostService.GetAmortizedMainCostDataAsync(ct)

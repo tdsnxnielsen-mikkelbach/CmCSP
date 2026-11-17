@@ -199,11 +199,17 @@
         _selectedRange = State.SelectedRange;
         await RunLoadAsync(async () =>
         {
-            var dataTask = _metric == "AmortizedCost"
-                ? CostService.GetAmortizedMainCostDataAsync(ct)
-                : CostService.GetMainCostDataAsync(ct);
             var nameTask = CostService.GetSubscriptionDisplayNamesAsync(ct);
-            var data  = ApplySubFilter(await dataTask);
+            List<SubscriptionDailyCost> data;
+            if (_metric == "AmortizedCost")
+            {
+                var amortized = ApplySubFilter(await CostService.GetAmortizedMainCostDataAsync(ct));
+                data = CostDataAggregation.BySubscriptionDay(amortized);
+            }
+            else
+            {
+                data = ApplySubFilter(await CostService.GetDailySubscriptionCostsAsync(ct)).ToList();
+            }
             _subNames = await nameTask;
             await IndexSubscriptionData(data, ct);
             // Anchor the forecast month to the real current calendar month when it has data.
