@@ -66,7 +66,9 @@ See [collection operations](data-collection.md).
    sign-in/admin-consent callback addresses.
 3. Set the home tenant and enable the multi-tenancy feature through the
    deployment parameters/settings.
-4. Register an active customer and complete consent, GDAP setup, and required Azure access.
+4. Register an active customer and complete consent, GDAP setup, and the Azure role
+   assignments in the [customer tenant onboarding checklist](azure-roles.md#customer-tenant-onboarding).
+   The app does not assign roles to itself.
 5. Discover/map its subscriptions and run approved collection.
 6. Test partner, customer, unknown-tenant, and suspended-customer behavior separately.
 

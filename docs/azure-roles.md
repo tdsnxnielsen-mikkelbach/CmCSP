@@ -53,10 +53,14 @@ than simply a missing role assignment.
   [reader-sub.bicep](../infra/modules/reader-sub.bicep) or an approved parent scope.
 - **Security Reader** and **Carbon Optimization Reader** are optional narrower
   alternatives configured by `grantSecurityCarbonRolesOnSubscription`.
-- Reservation expiry data may need **Reservations Reader** at the applicable
-  reservation/tenant scope.
+- Reservation expiry (`GET /providers/Microsoft.Capacity/reservationOrders`) needs
+  **Reservations Reader**. Reservations are tenant-level resources and do not inherit
+  subscription RBAC; see [Customer tenant onboarding](#customer-tenant-onboarding).
+- Reservation purchase recommendations (`Microsoft.Consumption/reservationRecommendations`)
+  are covered by **Cost Management Reader** on each subscription.
 - Billing-account/customer access must follow the billing agreement's authorization
-  model. Do not assume subscription RBAC grants billing-account access.
+  model. Do not assume subscription RBAC grants billing-account access. Microsoft
+  Partner Agreement billing roles do not grant reservation access.
 
 ## Managed data platform
 
@@ -71,6 +75,64 @@ Customer consent, GDAP relationship setup, and Azure subscription RBAC are disti
 The application registration must be present/consented in the customer tenant and
 its API-token identity must have the needed Azure access there. A home-tenant
 managed identity cannot be used as a general cross-tenant identity.
+
+### Entra app registration permissions
+
+Microsoft Graph permissions do not grant any Azure cost or reservation access; that
+comes only from the Azure role assignments below.
+
+| Permission | Type | Purpose |
+|---|---|---|
+| `openid`, `profile`, `User.Read` | Delegated | User sign-in and consent |
+| `CrossTenantInformation.ReadBasic.All` | Application | Resolve customer tenant display names |
+
+No other API permissions are required; remove unused ones.
+
+### Customer tenant onboarding
+
+Each tenant (home and every customer) has its **own** service principal for the
+multi-tenant app, with a different object ID. Assign roles to that tenant's object ID
+(**Entra ID → Enterprise applications** → search the app's client ID). The app is
+read-only and never assigns roles to itself, so these assignments are made by a
+customer administrator.
+
+| Role | Scope | Used for |
+|---|---|---|
+| Cost Management Reader | Root management group (covers future subscriptions) or each subscription | Cost queries, reservation recommendations |
+| Reader | Same as above | Subscription discovery, inventory |
+| Reservations Reader | Tenant level `/providers/Microsoft.Capacity`, or each reservation order | Reservation expiry |
+| Cost Management Contributor | Subscription (optional) | Only when the app creates exports |
+
+1. Register the customer on `/customers` and have a Global Administrator native to the
+   customer tenant open the consent link. This creates the service principal there.
+2. Find the service principal object ID in the customer tenant.
+3. Assign Cost Management Reader and Reader:
+
+   ```powershell
+   az role assignment create --assignee-object-id <sp-object-id> --assignee-principal-type ServicePrincipal `
+     --role "Cost Management Reader" --scope "/providers/Microsoft.Management/managementGroups/<tenant-id>"
+   az role assignment create --assignee-object-id <sp-object-id> --assignee-principal-type ServicePrincipal `
+     --role "Reader" --scope "/providers/Microsoft.Management/managementGroups/<tenant-id>"
+   ```
+
+4. Assign Reservations Reader at tenant level. This requires User Access Administrator
+   at root, which a Global Administrator obtains through
+   [elevate access](https://learn.microsoft.com/azure/role-based-access-control/elevate-access-global-admin):
+
+   ```powershell
+   Connect-AzAccount -Tenant <tenant-id>
+   New-AzRoleAssignment -Scope "/providers/Microsoft.Capacity" -PrincipalId <sp-object-id> `
+     -RoleDefinitionName "Reservations Reader"
+   ```
+
+   Alternatively use the portal (**Reservations → select a reservation → Role assignment**)
+   or assign per order at `/providers/Microsoft.Capacity/reservationOrders/<orderId>`.
+   See [Grant RBAC access to reservations](https://learn.microsoft.com/azure/cost-management-billing/reservations/manage-reservations-rbac-powershell).
+5. Verify with `az role assignment list --assignee <sp-object-id> --all -o table`.
+   Tenant-level reservation assignments made through PowerShell are not shown in the portal.
+6. On `/customers`, run **Discover subscriptions** and then collection. Role changes can
+   take several minutes to propagate, and reservation results are memoized for
+   `CacheExpirationMinutes`.
 
 See [multi-tenancy](phase9-multitenancy.md), [CSP setup](csp-deployment-guide.md),
 and [collection operations](data-collection.md).

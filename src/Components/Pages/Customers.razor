@@ -115,7 +115,6 @@ else
                             <div class="d-flex flex-wrap gap-2 align-center mb-2">
                                 <RadzenButton Size="ButtonSize.Small" Variant="Variant.Outlined" Disabled="_busy" ButtonStyle="ButtonStyle.Primary" Click="@(() => CopyConsentLinkAsync(c.TenantId))" Icon="link" Text="Copy consent link" />
                                 <RadzenButton Size="ButtonSize.Small" Variant="Variant.Filled" Disabled="@(_busy || !Gdap.CanAcquireCrossTenantTokens)" ButtonStyle="ButtonStyle.Secondary" Click="@(() => DiscoverSubsAsync(c.Id, c.TenantId))" Icon="sync" Text="Discover subscriptions" />
-                                <RadzenButton Size="ButtonSize.Small" Variant="Variant.Outlined" Disabled="@(_busy || !Gdap.CanAcquireCrossTenantTokens)" ButtonStyle="ButtonStyle.Success" Click="@(() => GrantReaderAsync(c.Id, c.TenantId))" Icon="key" Text="Grant Cost Reader" />
                                 @if (!string.IsNullOrWhiteSpace(c.GdapRelationshipId))
                                 {
                                     <RadzenBadge BadgeStyle="BadgeStyle.Base" Variant="Variant.Flat"><RadzenIcon Icon="verified_user" />
@@ -132,14 +131,15 @@ else
 
                             <RadzenText Class="mb-2 fw-bold" TextStyle="TextStyle.Subtitle2">Subscriptions</RadzenText>
                             <RadzenText Class="mb-2 d-block" TextStyle="TextStyle.Caption" Style="color: var(--rz-secondary);">
-                                Use <b>Discover subscriptions</b> above to map automatically (needs the app to
-                                hold <b>Reader</b> in the customer tenant). Can't use discovery? Map a
-                                subscription <b>manually</b> below by pasting its GUID. Note: mapping only links
-                                the subscription here &mdash; cost data still requires the app to have
-                                <b>Reader</b> (or <b>Cost Management Reader</b>) on that subscription so the
-                                collector can read its usage. For CSP / Azure&nbsp;Plan customers where you hold
-                                Owner via AOBO, <b>Grant Cost Reader</b> assigns that role to the app
-                                automatically on every mapped subscription.
+                                After admin consent, a customer administrator must assign this app's service
+                                principal in their tenant (Enterprise applications &rarr; search the app ID)
+                                <b>Cost Management Reader</b> and <b>Reader</b> on the root management group or
+                                each subscription, plus <b>Reservations Reader</b> at tenant level
+                                (<code>/providers/Microsoft.Capacity</code>) for reservation expiry. The app
+                                is read-only and never assigns roles to itself. Then use
+                                <b>Discover subscriptions</b> above, or map a subscription <b>manually</b>
+                                below by pasting its GUID. Mapping only links the subscription here &mdash;
+                                cost data still requires the role assignments.
                             </RadzenText>
                             @{
                                 var subs = _subsByCustomer.TryGetValue(c.Id, out var s) ? s : [];
@@ -378,51 +378,13 @@ else
             if (result.Discovered == 0)
                 Notify(
                     "No subscriptions found. Admin consent only grants Microsoft Graph access — it does " +
-                    "NOT grant Azure resource access. The customer must also assign this app the " +
-                    "'Reader' (or 'Cost Management Reader') role on their subscription(s) or management " +
-                    "group in Access control (IAM), or include those Azure roles in the GDAP relationship.",
+                    "NOT grant Azure resource access. A customer administrator must also assign this app's " +
+                    "service principal 'Reader' and 'Cost Management Reader' on their subscription(s) or " +
+                    "root management group in Access control (IAM).",
                     NotificationSeverity.Warning);
             else
                 Notify($"Discovered {result.Discovered} subscription(s); mapped {result.Added} new.", NotificationSeverity.Success);
             await ReloadAsync();
-        }
-        catch (Exception ex)
-        {
-            Notify(ex.Message, NotificationSeverity.Error);
-        }
-        finally
-        {
-            _busy = false;
-        }
-    }
-
-    private async Task GrantReaderAsync(long customerId, string tenantId)
-    {
-        _busy = true;
-        try
-        {
-            var result = await Gdap.GrantCostReaderAsync(customerId, tenantId);
-            if (result.Total == 0)
-            {
-                Notify(
-                    result.Messages.Count > 0 ? result.Messages[0] : "Nothing to grant.",
-                    NotificationSeverity.Warning);
-            }
-            else if (result.Failed == 0)
-            {
-                Notify(
-                    $"Cost Management Reader ensured on {result.Total} subscription(s) " +
-                    $"({result.Granted} newly granted, {result.AlreadyPresent} already in place).",
-                    NotificationSeverity.Success);
-            }
-            else
-            {
-                var detail = result.Messages.Count > 0 ? " " + string.Join(" ", result.Messages) : string.Empty;
-                Notify(
-                    $"Granted {result.Granted}, already {result.AlreadyPresent}, failed {result.Failed} " +
-                    $"of {result.Total}.{detail}",
-                    NotificationSeverity.Warning);
-            }
         }
         catch (Exception ex)
         {

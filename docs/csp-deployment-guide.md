@@ -13,6 +13,8 @@ ApexCharts. Azure infrastructure and deployment are described in the
    authorization-code flow; implicit grants are not required.
 3. Grant the Azure cost and optional enrichment permissions in
    [Azure roles](azure-roles.md) to the identities actually obtaining API tokens.
+   Keep only the Entra API permissions listed there; for each customer tenant follow
+   the [onboarding checklist](azure-roles.md#customer-tenant-onboarding).
 4. Authenticate the deployment operator with `az login` and `azd auth login`.
 5. Configure the azd environment's tenant, app ID, subscription list, and export scope.
    Supply the app credential securely; the hook stores it in Key Vault.

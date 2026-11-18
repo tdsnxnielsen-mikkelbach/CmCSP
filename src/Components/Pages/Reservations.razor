@@ -193,13 +193,14 @@ else
     }
 </RadzenCard>
 
-@* ── Phase 7: purchase recommendations + expiry (Reader / Consumption read) ──── *@
+@* ── Phase 7: purchase recommendations + expiry (Cost Management Reader / Reservations Reader) ── *@
 @if (Optimization.LastAccessDenied)
 {
     <RadzenAlert AlertStyle="AlertStyle.Warning" Class="mt-4" Icon="lock"  AllowClose="false">
-        Reservation purchase recommendations and expiry need the app identity to have the
-        <strong>Reader</strong> role (and <code>Microsoft.Consumption</code> read) on the target
-        subscriptions to populate these sections.
+        Purchase recommendations need <strong>Cost Management Reader</strong> on the target
+        subscriptions. Reservation expiry needs <strong>Reservations Reader</strong> at tenant level
+        (<code>/providers/Microsoft.Capacity</code>) or on each reservation order &mdash; reservations
+        do not inherit subscription roles. Assign these to the app's service principal in each tenant.
     </RadzenAlert>
 }
 
@@ -209,7 +210,7 @@ else
     {
         <RadzenAlert AlertStyle="AlertStyle.Info" AllowClose="false">
             No reservation or savings-plan purchase recommendations were returned. This is normal
-            when usage is already well covered, or when the identity lacks Reader / Consumption read.
+            when usage is already well covered, or when the identity lacks Cost Management Reader.
         </RadzenAlert>
     }
     else

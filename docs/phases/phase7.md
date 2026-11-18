@@ -18,8 +18,9 @@ collector's durable dataset contract.
 
 Subscription Reader grants are configured for the web/collector identities on
 the deployment subscription. Other subscriptions and service-principal token
-identities require their own appropriate access. Reservation expiry can need
-additional Reservations Reader access.
+identities require their own appropriate access. Recommendations use Cost
+Management Reader; reservation expiry needs Reservations Reader at tenant or
+reservation-order scope, because reservations do not inherit subscription RBAC.
 
 Access problems are surfaced through logging and UI banners. See
 [Azure roles](../azure-roles.md).
